@@ -2,7 +2,7 @@
 
 Read and follow `AGENTS.md`, `docs/PRD.md`, and `docs/ARCHITECTURE.md` before making changes.
 
-The repository currently contains planning documents and a directory skeleton only. Do not generate application code or install packages until the user requests implementation.
+MVP implementation is in progress (authorized 2026-10-14); see `README.md` for commands and verification status. Run `npm run check` and `npm run build` after code changes.
 
 - Use `AGENTS.md` for shared engineering and safety rules; avoid duplicating or contradicting it here.
 - Keep the personal-assistant MVP within the PRD. Record unresolved decisions instead of treating assumptions as approved requirements.

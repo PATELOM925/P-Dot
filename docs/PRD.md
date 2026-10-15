@@ -2,13 +2,13 @@
 
 Status: Draft for review
 
-Date: 2026-10-09
+Date: 2026-10-09 (updated 2026-10-14)
 
-Phase: Planning and repository structure only
+Phase: MVP implementation in progress (authorized 2026-10-14)
 
 ## 1. Product summary
 
-P-Dot is a web-based personal assistant that helps an individual ask questions, research topics, draft content, and plan everyday work through a conversational interface. Nebius provides model inference, Tavily provides web search when requested, and Vercel hosts the frontend and backend API.
+P-Dot is a web-based personal assistant that helps an individual ask questions, research topics, draft content, and plan everyday work through a conversational interface. Nebius provides model inference, Tavily provides web search when requested, and Cloudflare Workers hosts the frontend and backend API.
 
 The initial product supports assistance within a conversation. It does not independently execute tasks in external applications.
 
@@ -17,10 +17,11 @@ The initial product supports assistance within a conversation. It does not indep
 Confirmed by the user:
 
 - A frontend webpage with login-related functionality.
-- A backend hosted on Vercel.
+- A backend hosted on Cloudflare (originally Vercel; changed 2026-10-15, see `docs/decisions/0004-cloudflare-workers-deployment.md`).
 - An AI layer using Nebius and Tavily.
 - Repository instructions, an initial directory structure, and this PRD.
-- No application implementation in the current phase.
+- Backend and minimal frontend implementation (requested 2026-10-14).
+- Supabase for authentication and database, and streamed assistant replies (decided 2026-10-14; see `docs/decisions/`).
 
 Proposed assumptions requiring review before implementation:
 
@@ -136,20 +137,25 @@ Numerical targets and analytics tooling remain undecided until a baseline and pr
 2. Foundation: Initialize the approved framework, environment validation, UI shell, and authentication.
 3. Assistant: Add authenticated chat orchestration and the Nebius adapter.
 4. Research and history: Add Tavily retrieval, source display, persistence, and deletion.
-5. Release preparation: Verify access boundaries, accessibility, error handling, usage limits, and Vercel deployment configuration.
+5. Release preparation: Verify access boundaries, accessibility, error handling, usage limits, and Cloudflare deployment configuration.
 
-Implementation starts only after a new user instruction authorizes it.
+Implementation of phases 2–4 was authorized on 2026-10-14; phase 5 (release preparation) remains.
 
 ## 11. Open decisions
 
-- Authentication and database provider: Supabase is one candidate.
+Resolved on 2026-10-14:
+
+- Authentication and database provider: Supabase ([decision 0001](decisions/0001-supabase-auth-and-database.md)).
+- Streaming versus complete-response delivery: streaming ([decision 0002](decisions/0002-streaming-responses.md)).
+
+Still open (provisional implementation defaults are listed in [decision 0003](decisions/0003-provisional-defaults.md)):
+
 - Nebius model identifier, model availability, inference budget, and context window.
 - Conversation retention, backup retention, and account deletion policy.
 - Per-user request limits, total service budget, and initial audience size.
-- Streaming versus complete-response delivery.
 - Hosting region and any data-residency requirements.
 - Whether practical planning remains chat-only or later grows into a task/reminder feature.
 
 ## 12. Release acceptance
 
-The MVP is ready only when signup/recovery/login/logout work, the assistant API rejects unauthorized access, both provider paths are verified with real credentials, conversation ownership is tested, history and deletion work, and documented validation passes in a Vercel preview deployment. None of these implementation conditions is claimed complete by this scaffold.
+The MVP is ready only when signup/recovery/login/logout work, the assistant API rejects unauthorized access, both provider paths are verified with real credentials, conversation ownership is tested, history and deletion work, and documented validation passes in a Cloudflare preview deployment. None of these conditions is claimed complete yet: the implementation has been verified only with unit tests and mocked providers.

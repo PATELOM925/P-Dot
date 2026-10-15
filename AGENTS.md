@@ -2,7 +2,7 @@
 
 ## Current phase
 
-P-Dot is in planning and scaffolding. Do not implement application code, install dependencies, provision services, or deploy until the user asks to begin implementation. Empty directories are intentional.
+MVP implementation was authorized on 2026-10-14. The backend and a minimal frontend exist; see `README.md` for setup, commands, and verification status. Do not provision services or deploy unless the user asks. Remaining empty directories (with `.gitkeep`) are intentional.
 
 ## Product and source of truth
 
@@ -13,9 +13,9 @@ P-Dot is in planning and scaffolding. Do not implement application code, install
 
 ## Planned stack
 
-- Next.js App Router and TypeScript for the web frontend and Vercel-hosted API routes.
+- Next.js App Router and TypeScript for the web frontend and API routes, deployed to Cloudflare Workers with the OpenNext adapter (`docs/decisions/0004-cloudflare-workers-deployment.md`).
 - Nebius Token Factory for model inference; Tavily for optional web search.
-- Authentication provider and persistent database are not selected. Supabase is a candidate, not an approved dependency.
+- Supabase for authentication and Postgres (accepted in `docs/decisions/0001-supabase-auth-and-database.md`). Use only the publishable key with the user's session; do not add the secret/service-role key.
 - Keep provider access in server-only modules. The browser must never receive provider secrets.
 
 ## Structure
@@ -25,9 +25,10 @@ P-Dot is in planning and scaffolding. Do not implement application code, install
 - `src/server/`: authentication, assistant orchestration, provider adapters, and persistence.
 - `src/lib/`: shared utilities without secrets; `src/types/`: shared contracts.
 - `tests/`: unit, integration, and end-to-end coverage when implementation starts.
+- `supabase/migrations/`: database schema and row-level security policies.
 - `docs/`: requirements, architecture, and decisions.
 
-## Implementation rules for the next phase
+## Implementation rules
 
 - Make small, reviewable changes. Do not add frameworks or services without a concrete need.
 - Validate request bodies and verify authentication on the server before reading private data or invoking paid providers.

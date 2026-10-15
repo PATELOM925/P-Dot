@@ -5,16 +5,19 @@
 *.pem
 *.key
 
-# Future dependencies and build output
+# Dependencies and build output
 node_modules/
 .next/
 out/
 dist/
 coverage/
 *.tsbuildinfo
+next-env.d.ts
 
 # Local deployment and test artifacts
-.vercel/
+.open-next/
+.wrangler/
+.dev.vars
 playwright-report/
 test-results/
 *.log

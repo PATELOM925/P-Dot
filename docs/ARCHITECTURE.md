@@ -1,6 +1,6 @@
-# Proposed architecture
+# Architecture
 
-Status: Planned; no runtime or packages initialized.
+Status: Implemented for the MVP and unit-tested with mocked providers; not yet verified against live Supabase, Nebius, or Tavily (see `README.md`).
 
 ## System boundaries
 
@@ -9,85 +9,83 @@ Browser: Next.js pages and UI
    |
    | authenticated same-origin requests
    v
-Vercel: Next.js API routes
-   |-- authentication and ownership checks
-   |-- assistant orchestration
-   |     |-- Nebius Token Factory: model inference
+Cloudflare Worker (OpenNext): Next.js API routes
+   |-- src/proxy.ts: session cookie refresh, page redirects
+   |-- authentication and ownership checks (Supabase Auth, getClaims)
+   |-- assistant orchestration (src/server/assistant)
+   |     |-- Nebius Token Factory: streamed model inference
    |     `-- Tavily: optional web retrieval
-   `-- persistence adapter: provider to be selected
+   `-- persistence (src/server/db) -> Supabase Postgres with row-level security
 ```
 
-Use a single Next.js application initially. Its API routes form the backend deployed to Vercel; a separate always-on API server is not planned. The authentication/session mechanism must be selected before private routes are implemented.
+A single Next.js application. Its API routes form the backend, deployed as one Cloudflare Worker through the OpenNext adapter ([decision 0004](decisions/0004-cloudflare-workers-deployment.md)); there is no separate always-on API server. Sessions are Supabase Auth cookies managed by `@supabase/ssr`. The app uses only the publishable key, so every database query runs under RLS as the signed-in user ([decision 0001](decisions/0001-supabase-auth-and-database.md)).
 
 ## Intended directory structure
 
 ```text
 src/
+  proxy.ts                 session refresh + redirects (Next.js 16 "proxy")
   app/
-    (auth)/
-      login/
-      signup/
-      forgot-password/
-      reset-password/
-    (workspace)/
-      chat/
-      settings/
+    page.tsx, layout.tsx   landing page, root layout, globals.css
+    (auth)/                login, signup, forgot-password, reset-password
+    (workspace)/           chat, settings (server-side auth guard in layout)
+    auth/confirm/          email verification and recovery link handler
     api/
-      chat/
-      conversations/
-      health/
-  components/
-    ui/
-    layout/
+      chat/                POST: streamed assistant reply (NDJSON)
+      conversations/       GET list; [id]/ GET detail, DELETE
+      health/              GET liveness + configured integrations
+  components/layout/       workspace header
   features/
-    auth/
-    chat/
-    settings/
-  server/
-    auth/
-    assistant/
-    providers/
-      nebius/
-      tavily/
-    db/
-  lib/
-  types/
-public/
+    auth/                  server actions, form component
+    chat/                  workspace UI, API client, NDJSON reader
+  server/                  server-only modules
+    config.ts              env validation (lazy; build needs no secrets)
+    log.ts                 metadata-only structured logs
+    auth/                  getClaims-based session, proxy helper
+    assistant/             context budget, prompt assembly, orchestration
+    providers/             nebius/ (SSE streaming), tavily/, shared errors/timeouts
+    db/                    Supabase client, conversation repository, quota gate
+    http/                  body limits, origin check, error responses, NDJSON
+  lib/                     limits, zod schemas, URL safety, Supabase public config
+  types/                   API contracts shared with the browser
+supabase/migrations/       schema, RLS policies, quota function
 tests/
-  unit/
-  integration/
-  e2e/
-docs/
-  decisions/
+  unit/                    validation, providers, assistant, API routes
+  integration/             live RLS test (skipped unless configured)
+  support/                 in-memory fakes and stream helpers
+docs/decisions/            accepted and proposed decisions
 ```
 
-Parenthesized folders are planned Next.js route groups and will not appear in URLs. Directories contain only `.gitkeep` placeholders until implementation. The landing page and root layout will eventually live directly under `src/app/`.
+Parenthesized folders are Next.js route groups and do not appear in URLs. `src/components/ui/`, `src/features/settings/`, and `tests/e2e/` are still empty placeholders.
 
 ## Responsibilities
 
 - API routes: Validate requests, verify identity, invoke application services, and translate errors into public responses.
 - Assistant service: Assemble bounded conversation context, optionally retrieve search results, call inference, and associate source references with the response.
 - Provider adapters: Isolate provider-specific authentication, request/response mapping, and timeouts. Mark these modules server-only when implemented.
-- Database adapter: Persist private records and apply ownership checks. Do not use Vercel local files or process memory for durable storage.
+- Database adapter: Persist private records and apply ownership checks. Do not use local files or process memory (Workers isolates are ephemeral) for durable storage.
 - Feature folders: Group product-specific presentation and client state. Shared UI primitives belong in `components/ui/`.
 
-## Proposed data entities
+## Data model
 
-- User: Identity managed by the chosen authentication provider.
-- Conversation: ID, owner ID, title, creation time, update time.
-- Message: ID, conversation ID, role, content, creation time, completion status, optional source references.
-- Usage record: User ID, time window, request count, and bounded cost/token metadata needed for enforcement.
+Defined in `supabase/migrations/20261014000000_initial_schema.sql`:
 
-These are conceptual entities, not an approved database schema. Every conversation/message operation must verify ownership on the server.
+- User: `auth.users`, managed by Supabase Auth.
+- `conversations`: ID, owner, title, created/updated time. A trigger bumps `updated_at` when a message is added.
+- `messages`: ID, conversation, owner, role (`user`/`assistant`), content, web-search outcome (`off`/`used`/`no_results`/`failed`), source references (`[{title, url}]`), created time. Only completed assistant replies are stored, so there is no per-message completion status; an unanswered trailing user message is what the UI offers to retry.
+- `usage_windows`: per-user request count per fixed window, written only by `consume_chat_quota()`.
+
+RLS allows each user to select and insert only their own rows and to delete only their own conversations (messages cascade). Updates are revoked. Repository methods also filter by the session user ID. Token counts are logged per request but not yet enforced as a budget.
 
 ## Provider contracts
 
-Nebius exposes an OpenAI-compatible API. Configure the base URL and model ID rather than coupling product code to one model. Tavily accepts a search query and returns result metadata and excerpts. Validate provider responses, bound context size, and use timeouts; do not pass arbitrary retrieved instructions into privileged operations.
+Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_URL}/chat/completions` with `stream: true` and parses server-sent events, including errors sent mid-stream. The base URL and model ID are configuration. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data. The assistant has no tools, so retrieved content cannot trigger actions.
 
 Reference documentation:
 
 - [Next.js installation and App Router](https://nextjs.org/docs/app/getting-started/installation)
-- [Vercel Next.js hosting](https://vercel.com/docs/frameworks/full-stack/nextjs)
+- [OpenNext for Cloudflare](https://opennext.js.org/cloudflare)
+- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 - [Nebius API reference](https://api.tokenfactory.nebius.com/docs)
 - [Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)
 
@@ -95,6 +93,6 @@ Recheck current provider documentation and dependency versions when implementati
 
 ## Deployment plan
 
-Connect the repository to Vercel after the framework is initialized. Keep preview and production credentials separate. Store secrets in Vercel environment settings; configure authentication redirect URLs for each intended environment. Model inference runs on Nebius infrastructure, while Tavily supplies retrieval.
+Deploy with `npm run deploy` (OpenNext build, then `wrangler deploy`) or Cloudflare Workers Builds. Keep preview and production credentials separate. `NEXT_PUBLIC_*` values are inlined at build time; keys are Worker secrets and other settings are Worker variables read at runtime. Configure authentication redirect URLs for each intended origin. Model inference runs on Nebius infrastructure, while Tavily supplies retrieval.
 
-There is intentionally no `vercel.json`, package manifest, lockfile, CI workflow, or deployment in this planning scaffold. Add configuration only when the implementation requires it.
+Deployment configuration is `wrangler.jsonc` and `open-next.config.ts` (no R2/KV cache: every route is rendered per request). Workers have no per-route `maxDuration`; the Nebius/Tavily timeouts in code bound each request, and the Worker CPU-time limit applies to compute, not to time spent waiting on providers. There is no CI workflow and no deployment yet.

@@ -2,7 +2,7 @@
 
 Read and follow `AGENTS.md`, `docs/PRD.md`, and `docs/ARCHITECTURE.md` before making changes.
 
-The current authorization covers instructions, product planning, and directory structure only. Do not write application code, install dependencies, provision services, or deploy until asked.
+MVP implementation was authorized on 2026-10-14; see `README.md` for commands and verification status. Do not provision services or deploy until asked.
 
 - Treat `AGENTS.md` as the canonical shared instruction file; this file provides supplementary context.
 - Inspect repository state before edits and preserve existing user work.

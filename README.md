@@ -1,35 +1,227 @@
 # P-Dot
 
-A planned personal assistant with a web interface, a Vercel-hosted backend, Nebius model inference, and Tavily web search.
+A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Current status: documentation and directory structure only. No application code, dependencies, or deployment have been created.**
+**Status: MVP implementation in progress.** The backend (auth, chat streaming, web search, history, usage limits) and a minimal frontend are written and unit-tested with mocked providers. They have **not** yet been run against a real Supabase project, Nebius, or Tavily, and nothing is deployed. See [Verification status](#verification-status).
 
-## Start here
+## Stack
 
-- [Product requirements](docs/PRD.md): MVP scope, user journeys, acceptance criteria, and open decisions.
-- [Architecture](docs/ARCHITECTURE.md): planned stack, folder map, provider boundaries, and deployment approach.
-- [Shared agent instructions](AGENTS.md): repository rules and current phase restrictions.
-- [Claude instructions](CLAUDE.md) and [Codex instructions](CODEX.md): tool-specific guidance.
+- Next.js 16 (App Router, TypeScript) for pages and API routes, deployed to Cloudflare Workers with the OpenNext adapter ([decision 0004](docs/decisions/0004-cloudflare-workers-deployment.md))
+- Supabase for authentication and Postgres (row-level security) — [decision 0001](docs/decisions/0001-supabase-auth-and-database.md)
+- Nebius Token Factory (OpenAI-compatible) for inference, streamed to the browser as NDJSON — [decision 0002](docs/decisions/0002-streaming-responses.md)
+- Tavily for opt-in web search
+- Zod for validation, Vitest for tests
+
+## Setup
+
+Requires Node.js 22.12 or newer.
+
+1. **Install dependencies**
+
+   ```bash
+   npm install
+   ```
+
+2. **Create a Supabase project** and apply the schema in [`supabase/migrations/20261014000000_initial_schema.sql`](supabase/migrations/20261014000000_initial_schema.sql), either by pasting it into the Supabase SQL editor or with the Supabase CLI (`supabase link`, then `supabase db push`).
+
+3. **Configure Supabase Auth** (Authentication → URL Configuration and Email Templates):
+   - Site URL: your production URL (or `http://localhost:3000` for local work).
+   - Redirect URLs: add `http://localhost:3000/**` and each deployed origin you use, e.g. `https://p-dot.<your-account>.workers.dev/**`.
+   - Recommended email links (they work even if the email is opened in a different browser):
+     - Confirm signup: `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email&next=/chat`
+     - Reset password: `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/reset-password`
+
+     The default `{{ .ConfirmationURL }}` templates also work, but only when the link is opened in the same browser that started the flow.
+
+4. **Set environment variables**: copy `.env.example` to `.env.local` and fill it in. You need the Supabase URL and publishable key, a Nebius API key, and a Nebius chat model ID (list available models with `GET https://api.tokenfactory.nebius.com/v1/models`). `TAVILY_API_KEY` is optional. Never use the Supabase secret/service-role key in this app.
+
+5. **Run the app**
+
+   ```bash
+   npm run dev
+   ```
+
+   Open http://localhost:3000, create an account, confirm the email, and start a conversation. `GET /api/health` reports which integrations are configured (without checking that they are reachable).
+
+## Local development and testing (Docker)
+
+Run Supabase locally instead of using a hosted project. Requires Docker running. [`supabase/config.toml`](supabase/config.toml) is already configured for this app (site URL `http://localhost:3000`, redirect URLs, 8-character minimum password, email confirmations on, rate limit of 2 emails per hour).
+
+### 1. Start Supabase
+
+`supabase init` is already done: the config is committed in `supabase/`, so do not run it again (it refuses to overwrite `config.toml`).
+
+```bash
+npm install
+npm run db:start
+```
+
+The first run downloads a few GB of images and applies the migration. It prints the API URL, a publishable key, Studio (`http://127.0.0.1:54323`, a database browser) and the fake inbox (`http://127.0.0.1:54324`). `npm run db:status` prints them again.
+
+### Local services and links
+
+| Service | URL | What it does |
+| --- | --- | --- |
+| P-Dot app | http://localhost:3000 | The Next.js app (`npm run dev`). Use `localhost`, not `127.0.0.1`, so cookies and email links share one host. |
+| Health check | http://localhost:3000/api/health | Reports which integrations are configured (booleans only; does not call the providers). |
+| Supabase API | http://127.0.0.1:54321 | The URL the app uses for Auth and database requests (`NEXT_PUBLIC_SUPABASE_URL`). |
+| Supabase Studio | http://127.0.0.1:54323 | Admin web UI. **Authentication → Users** lists accounts (unconfirmed ones show as waiting for verification). **Table Editor** shows `conversations`, `messages` and `usage_windows`. **SQL Editor** runs queries. It shows every user's rows, because it is an admin view; the app itself only sees the signed-in user's data. |
+| Mailpit (fake inbox) | http://127.0.0.1:54324 | Catches every email local Supabase would send: signup confirmation and password reset. **Nothing is sent to real addresses; look here instead of your real inbox.** |
+| Postgres | `postgresql://postgres:postgres@127.0.0.1:54322/postgres` | Direct database connection for any Postgres client (local development only). |
+
+Where is my confirmation email? After signing up, the app shows "Check your email for a confirmation link". Open Mailpit, open the "Confirm your signup" email and click the link. It returns to `/auth/confirm` and then `/chat`, signed in. Password-reset emails arrive in the same inbox. If nothing arrives, the address may already be registered (the app shows the same message either way), or the local limit of 2 emails per hour was reached (raise `email_sent` under `[auth.rate_limit]` in `supabase/config.toml`, then `npm run db:stop && npm run db:start`).
+
+### 2. Configure `.env.local`
+
+Create `.env.local` (git-ignored) in the project root:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<publishable key from db:start>
+SITE_URL=http://localhost:3000
+
+# Needed only for chat replies; auth and history work without them
+NEBIUS_API_KEY=<your Nebius key>
+NEBIUS_MODEL=<model ID from your Nebius account>
+TAVILY_API_KEY=
+```
+
+If the CLI prints an "anon key" instead of a publishable key, use that.
+
+### 3. Run the app
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:3000` (not `127.0.0.1`, so cookies and email links share one host). Restart `npm run dev` after changing `.env.local`.
+
+### 4. Manual test checklist
+
+| Test | Expected result |
+| --- | --- |
+| `GET http://localhost:3000/api/health` | `"auth": true` (`"inference": true` once Nebius is set) |
+| Sign up | "Check your email"; open the fake inbox, click the link, you land in `/chat` |
+| Sign out, then open `/chat` | Redirected to `/login` |
+| Sign in with a wrong password | "Incorrect email or password…" |
+| Forgot password | Email in the fake inbox; the link opens `/reset-password`; after saving you are signed in |
+| Send a message without Nebius settings | "This service is not configured yet." and nothing is saved |
+| Send a message with Nebius settings | Reply streams in; the conversation appears in the sidebar |
+| Studio → Table Editor | `conversations`, `messages`, `usage_windows` hold your rows |
+| Second user in a private window | Sees none of the first user's conversations |
+| Delete a conversation | Gone from the sidebar and from Studio |
+| Exceed `CHAT_REQUESTS_PER_WINDOW` (set it to 2 to try) | 429 "You have reached your request limit" |
+
+To skip email confirmation, set `enable_confirmations = false` under `[auth.email]` in `config.toml`, then `npm run db:stop && npm run db:start`. If reset emails stop arriving, raise `email_sent` under `[auth.rate_limit]`.
+
+### 5. Automated checks
+
+```bash
+npm run check
+```
+
+runs lint, type-check, and unit tests. To also run the row-level security tests against the local database, create two confirmed users (Studio → Authentication → Add user, with "Auto Confirm User" checked) and set these variables in the same terminal before `npm test`:
+
+```powershell
+$env:SUPABASE_TEST_URL="http://127.0.0.1:54321"
+$env:SUPABASE_TEST_PUBLISHABLE_KEY="<publishable key>"
+$env:SUPABASE_TEST_USER_A_EMAIL="<user A email>"
+$env:SUPABASE_TEST_USER_A_PASSWORD="<user A password>"
+$env:SUPABASE_TEST_USER_B_EMAIL="<user B email>"
+$env:SUPABASE_TEST_USER_B_PASSWORD="<user B password>"
+npm test
+```
+
+The 4 tests in `tests/integration/rls.test.ts` should then run instead of being skipped.
+
+### Housekeeping
+
+| Command | Effect |
+| --- | --- |
+| `npm run db:reset` | Wipe the local database and re-apply the migration |
+| `npm run db:stop` | Stop the Docker containers |
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Development server on port 3000 |
+| `npm run build` | Production build (does not need secrets) |
+| `npm run db:start` / `db:status` / `db:reset` / `db:stop` | Manage the local Supabase stack (Docker) |
+| `npm run preview` | Build for Cloudflare and run the Worker locally in the Workers runtime |
+| `npm run deploy` | Build for Cloudflare and deploy the Worker (see [Deploying to Cloudflare](#deploying-to-cloudflare)) |
+| `npm run upload` | Build for Cloudflare and upload a new Worker version without deploying |
+| `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules) |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | Vitest unit tests; the live RLS integration test is skipped unless configured |
+| `npm run check` | Lint, type-check, and tests |
+
+To run the row-level security test against a **test** Supabase project, set the `SUPABASE_TEST_*` variables listed at the top of [`tests/integration/rls.test.ts`](tests/integration/rls.test.ts).
+
+## API
+
+All private endpoints require the Supabase session cookie and scope data to the signed-in user. Errors use `{ "error": { "code", "message", "requestId" } }`.
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /api/chat` | `{ action: "send", conversationId?, message, webSearch }` or `{ action: "retry", conversationId, webSearch }`. Streams `application/x-ndjson` events: `start`, `search`, `delta`, `done`, `error`. Returns 401, 403, 404, 409, 413, 415, 429, or 503 before streaming when appropriate. |
+| `GET /api/conversations` | The user's conversations, most recent first |
+| `GET /api/conversations/:id` | One conversation with its messages (404 for missing or someone else's) |
+| `DELETE /api/conversations/:id` | Permanently delete a conversation and its messages |
+| `GET /api/health` | Liveness and configured integrations (booleans only) |
+| `GET /auth/confirm` | Landing page for email verification and password-recovery links |
 
 ## Structure
 
-| Path | Intended purpose |
+| Path | Contents |
 | --- | --- |
-| `src/app/` | Frontend routes and Vercel API entry points |
-| `src/components/` | Shared UI and layout components |
-| `src/features/` | Authentication, chat, and settings features |
-| `src/server/` | Private backend services and provider integrations |
-| `src/lib/`, `src/types/` | Shared utilities and contracts |
-| `public/` | Static assets |
-| `tests/` | Future unit, integration, and end-to-end tests |
-| `docs/` | Requirements, architecture, and decision records |
+| `src/app/` | Pages (landing, `(auth)`, `(workspace)`), API routes, `auth/confirm` |
+| `wrangler.jsonc`, `open-next.config.ts` | Cloudflare Worker and OpenNext adapter configuration |
+| `src/proxy.ts` | Session refresh and page redirects (Next.js 16 "proxy", formerly middleware) |
+| `src/features/` | Auth forms and server actions, chat workspace UI and stream client |
+| `src/components/` | Shared layout components |
+| `src/server/` | Server-only code: config, auth session, Supabase repositories, assistant orchestration, Nebius/Tavily adapters, HTTP helpers |
+| `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
+| `supabase/migrations/` | Database schema, RLS policies, and the quota function |
+| `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
+| `docs/` | PRD, architecture, decision records |
 
-Empty directories use `.gitkeep` files so Git retains the skeleton.
+## Deploying to Cloudflare
 
-## Configuration plan
+The app runs as one Cloudflare Worker built with the [OpenNext Cloudflare adapter](https://opennext.js.org/cloudflare). Configuration: [`wrangler.jsonc`](wrangler.jsonc) (Worker name `p-dot`, static assets, Node.js compatibility) and [`open-next.config.ts`](open-next.config.ts). Decision record: [0004](docs/decisions/0004-cloudflare-workers-deployment.md).
 
-`.env.example` lists the intended AI provider settings without credentials. Authentication and database settings will be added after those providers are selected. Never commit real secrets or expose Nebius/Tavily keys through client-visible environment variables.
+Build and deploy from **Linux, macOS, WSL, or Cloudflare's build service**. OpenNext warns that native Windows is not fully supported, and `.open-next/` can be locked by a running `next dev`/preview on Windows.
 
-## Next step
+1. **Log in** (once): `npx wrangler login`.
+2. **Build-time variables.** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are inlined into the bundle at build time, so they must be in the build environment: your shell or `.env.local` for `npm run deploy`, or "Build variables" in Workers Builds. Use your **hosted** Supabase project's values, not the local ones.
+3. **Runtime secrets and variables.** Server-only values are read when the Worker runs. Set the secrets, entering each value when prompted:
 
-Review the PRD and select the authentication/database provider and Nebius model. Once implementation is requested, initialize the framework and document the actual install, development, validation, and deployment commands here. There is currently nothing to install or run.
+   ```bash
+   npx wrangler secret put NEBIUS_API_KEY
+   npx wrangler secret put TAVILY_API_KEY
+   ```
+
+   Set the non-secret values (`NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `SITE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`) as Worker variables in the Cloudflare dashboard (Workers & Pages → p-dot → Settings → Variables). Set `SITE_URL` to the deployed origin; without it, auth emails link to `http://localhost:3000`. If you deploy from the CLI and manage variables in the dashboard, pass `-- --keep-vars` so deploys do not remove them.
+4. **Deploy**:
+
+   ```bash
+   npm run deploy
+   ```
+
+   The Worker URL is `https://p-dot.<your-account>.workers.dev` unless you attach a custom domain.
+5. **Allow the origin in Supabase** (Authentication → URL Configuration): set the Site URL to the deployed origin and add `https://<your-origin>/**` to the redirect URLs, plus the email-template links from [Setup](#setup).
+6. Set budgets on the Nebius and Tavily accounts before giving anyone access, then check `https://<your-origin>/api/health`.
+
+To run the built Worker locally in the Workers runtime, use `npm run preview` (same Windows caveat; stop `next dev` first). `npm run upload` uploads a new version without deploying it.
+
+Notes:
+- **Next.js version:** pinned to 16.3.8. Next 16.4.1 loads a `preview-props.json` manifest that OpenNext 1.20.11 does not inline, so every page returned a 500 in the Workers runtime. Re-test before upgrading Next or the adapter.
+- **`src/proxy.ts`** runs on Next's Node.js middleware runtime, which OpenNext marks **experimental** on Cloudflare. The build prints a warning. It worked in local Workers-runtime tests (session redirects), but watch it after deploys. Authorization is also enforced in every page and API route, so a proxy failure does not expose private data.
+- **Limits:** Workers cap compressed bundle size (3 MiB on Free, 10 MiB on Paid) and CPU time per request. Time spent waiting on Nebius or Tavily does not count as CPU time. Check the plan limits against the built bundle.
+- Every route is rendered per request; no R2/KV cache is configured.
+
+## Verification status
+
+Done and passing locally: lint, type-check, 111 unit tests (request validation, auth and ownership boundaries at the route level, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules), production build, and a dev-server smoke test with placeholder Supabase settings (signed-out redirects, 401/403 responses, auth-outage messaging, security headers).
+
+Not yet done: running against a real Supabase project (the RLS integration test is skipped), real Nebius and Tavily calls, a signed-in browser walkthrough of the chat UI, end-to-end tests, and a Cloudflare deployment. Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
