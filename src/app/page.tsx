@@ -13,37 +13,132 @@ async function isSignedIn(): Promise<boolean> {
   }
 }
 
+// Illustrative example only (not real data): how P-Dot is designed to work on a task.
+const EXAMPLE_STEPS = [
+  { title: "Understood the goal", detail: "Prepare for Friday, book a haircut for Saturday morning.", state: "done" },
+  { title: "Checked your calendar", tool: "Calendar", detail: "Two meetings Friday. Saturday 11:00 is free.", state: "done" },
+  { title: "Read your inbox and drafted a reply", tool: "Gmail", detail: "One email needs an answer. Draft saved, not sent.", state: "done" },
+  { title: "Ready to call the salon", state: "approval" },
+  { title: "Then send your brief", tool: "Telegram", detail: "Summary and to-do list to your own chat.", state: "next" },
+] as const;
+
 export default async function LandingPage() {
   const signedIn = await isSignedIn();
 
   return (
-    <main className="landing">
-      <p className="brand">P-Dot</p>
-      <h1>Your personal assistant for everyday questions, research, writing, and planning.</h1>
-      <p className="lead">
-        Ask anything, turn on web search when you need current sources, and come back to your private
-        conversation history any time.
-      </p>
-      <div className="actions">
-        {signedIn ? (
-          <Link className="button button-primary" href="/chat">
-            Open your workspace
-          </Link>
-        ) : (
-          <>
-            <Link className="button button-primary" href="/signup">
-              Create an account
+    <div className="landing">
+      <header className="landing-header">
+        <Link href="/" className="brand">
+          P-Dot
+        </Link>
+        <nav className="actions" aria-label="Account">
+          {signedIn ? (
+            <Link className="button button-primary" href="/chat">
+              Open your workspace
             </Link>
-            <Link className="button" href="/login">
-              Sign in
+          ) : (
+            <>
+              <Link className="button" href="/login">
+                Sign in
+              </Link>
+              <Link className="button button-primary" href="/signup">
+                Create an account
+              </Link>
+            </>
+          )}
+        </nav>
+      </header>
+
+      <main className="landing-body">
+        <section className="landing-copy">
+          <p className="pill">Your personal assistant bot</p>
+          <h1>
+            Don&apos;t just chat.
+            <br />
+            Get it done.
+          </h1>
+          <p className="lead">
+            P-Dot reads your day, plans the steps, uses your tools and checks with you before it acts. Chat is just where
+            you start.
+          </p>
+          <div className="actions">
+            {signedIn ? (
+              <Link className="button button-primary button-large" href="/chat">
+                Open your workspace
+              </Link>
+            ) : (
+              <>
+                <Link className="button button-primary button-large" href="/signup">
+                  Get started free
+                </Link>
+                <Link className="button button-large" href="/login">
+                  I have an account
+                </Link>
+              </>
+            )}
+          </div>
+          <div className="connect-row">
+            <span className="connect-label">Connect your tools</span>
+            {["Gmail", "Calendar", "GitHub", "Telegram"].map((name) => (
+              <span key={name} className="chip chip-neutral">
+                {name}
+              </span>
+            ))}
+            <Link className="button button-primary button-small" href="/connectors">
+              Connect
             </Link>
-          </>
-        )}
-      </div>
-      <p className="muted small">
-        P-Dot answers inside the conversation only. It does not send messages, change your accounts, or take
-        actions on your behalf.
-      </p>
-    </main>
+          </div>
+          <p className="muted small landing-note">
+            <strong>Powered by NVIDIA Nemotron, deployed through Nebius.</strong> It runs on your own Nebius account with
+            an open model, so you choose the model, hold the keys and own your data. Connectors are still being built.
+          </p>
+        </section>
+
+        <section className="agent-card" aria-label="Example of an agent run">
+          <div className="agent-card-head">
+            <div>
+              <p className="small muted agent-label">Task</p>
+              <p className="agent-task">Get me ready for Friday and book a haircut</p>
+            </div>
+            <span className="chip chip-warning">1 step needs you</span>
+          </div>
+          <ol className="agent-steps">
+            {EXAMPLE_STEPS.map((step, index) => (
+              <li key={step.title} className={`agent-step agent-step-${step.state}`}>
+                <span className="agent-bullet" aria-hidden="true">
+                  {index + 1}
+                </span>
+                <div className="agent-step-body">
+                  <p className="agent-step-title">{step.title}</p>
+                  {"tool" in step && (
+                    <p className="agent-step-detail">
+                      <span className="chip chip-neutral">{step.tool}</span> {step.detail}
+                    </p>
+                  )}
+                  {step.state === "done" && !("tool" in step) && <p className="agent-step-detail">{step.detail}</p>}
+                  {step.state === "approval" && (
+                    <div className="agent-approval">
+                      <p className="small">Book Saturday 11:00 by phone. P-Dot only calls after you approve.</p>
+                      <div className="actions">
+                        <span className="button button-primary button-small" aria-hidden="true">
+                          Approve
+                        </span>
+                        <span className="button button-small" aria-hidden="true">
+                          Skip
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+          <p className="small muted agent-foot">
+            Illustrative example of the planned design; automations and connectors are not available yet. AI can make
+            mistakes, so P-Dot will show each step and check with you first.
+          </p>
+        </section>
+      </main>
+    </div>
   );
 }

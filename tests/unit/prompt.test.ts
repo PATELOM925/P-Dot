@@ -68,6 +68,7 @@ describe("buildPromptMessages", () => {
       webSearch: "used",
       results,
       now,
+      mode: "personal",
     });
 
     const system = messages[0]!;
@@ -92,6 +93,7 @@ describe("buildPromptMessages", () => {
       webSearch: "off",
       results: [],
       now,
+      mode: "personal",
     });
     expect(messages).toHaveLength(2);
     expect(messages[1]).toEqual({ role: "user", content: "hi" });
@@ -104,13 +106,25 @@ describe("buildPromptMessages", () => {
       webSearch: "failed",
       results: [],
       now,
+      mode: "personal",
     });
     expect(messages[0]!.content).toContain("the search failed");
     expect(messages[1]!.content).toBe("hi");
   });
 
   it("includes the current date", () => {
-    const messages = buildPromptMessages({ history: [{ role: "user", content: "hi" }], webSearch: "off", results: [], now });
+    const messages = buildPromptMessages({ history: [{ role: "user", content: "hi" }], webSearch: "off", results: [], now, mode: "personal" });
     expect(messages[0]!.content).toContain("2026-10-14");
+  });
+
+  it("scopes the assistant to the conversation's mode", () => {
+    const base = { history: [{ role: "user" as const, content: "hi" }], webSearch: "off" as const, results: [], now };
+    const work = buildPromptMessages({ ...base, mode: "work" })[0]!.content;
+    const personal = buildPromptMessages({ ...base, mode: "personal" })[0]!.content;
+    expect(work).toContain("Work mode");
+    expect(work).toContain("belongs in Personal mode");
+    expect(personal).toContain("Personal mode");
+    expect(personal).toContain("belongs in Work mode");
+    expect(work).not.toContain("This conversation is in Personal mode");
   });
 });

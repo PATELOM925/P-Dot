@@ -3,7 +3,8 @@ import type { QuotaGate } from "@/server/db/quota";
 import type { AssistantDeps } from "@/server/assistant/service";
 import type { ChatMessage, CompletionChunk } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
-import type { ConversationSummary, MessageDTO } from "@/types/api";
+import type { ConversationSummary, MessageDTO, Mode, TaskDTO } from "@/types/api";
+import type { TaskRepository } from "@/server/db/tasks";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
@@ -40,21 +41,28 @@ export class MemoryRepository implements ConversationRepository {
 
   async getConversation(userId: string, id: string) {
     const found = this.conversations.find((c) => c.id === id && c.userId === userId);
-    return found ? { id: found.id, title: found.title, updatedAt: found.updatedAt } : null;
+    return found ? { id: found.id, title: found.title, mode: found.mode, updatedAt: found.updatedAt } : null;
   }
 
-  async listConversations(userId: string, limit: number) {
+  async listConversations(userId: string, limit: number, mode?: Mode) {
     return this.conversations
-      .filter((c) => c.userId === userId)
+      .filter((c) => c.userId === userId && (!mode || c.mode === mode))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, limit)
-      .map(({ id, title, updatedAt }) => ({ id, title, updatedAt }));
+      .map(({ id, title, mode: m, updatedAt }) => ({ id, title, mode: m, updatedAt }));
   }
 
-  async createConversation(userId: string, title: string) {
-    const conversation = { id: this.nextId(), title, updatedAt: this.timestamp(), userId };
+  async createConversation(userId: string, title: string, mode: Mode = "personal") {
+    const conversation = { id: this.nextId(), title, mode, updatedAt: this.timestamp(), userId };
     this.conversations.push(conversation);
-    return { id: conversation.id, title, updatedAt: conversation.updatedAt };
+    return { id: conversation.id, title, mode, updatedAt: conversation.updatedAt };
+  }
+
+  async renameConversation(userId: string, id: string, title: string) {
+    const found = this.conversations.find((c) => c.id === id && c.userId === userId);
+    if (!found) return null;
+    found.title = title;
+    return { id: found.id, title: found.title, mode: found.mode, updatedAt: found.updatedAt };
   }
 
   async deleteConversation(userId: string, id: string) {
@@ -89,6 +97,51 @@ export class MemoryRepository implements ConversationRepository {
     this.messages.push(stored);
     owner.updatedAt = stored.createdAt;
     return toDto(stored);
+  }
+}
+
+/** In-memory task store with the same per-user scoping as RLS. */
+export class MemoryTasks implements TaskRepository {
+  tasks: (TaskDTO & { userId: string })[] = [];
+  private counter = 0;
+
+  private dto({ userId: _userId, ...task }: TaskDTO & { userId: string }): TaskDTO {
+    void _userId;
+    return task;
+  }
+
+  async listTasks(userId: string, mode: Mode, limit: number) {
+    return this.tasks
+      .filter((t) => t.userId === userId && t.mode === mode)
+      .slice(0, limit)
+      .map((t) => this.dto(t));
+  }
+
+  async createTask(userId: string, mode: Mode, title: string) {
+    this.counter += 1;
+    const task = {
+      id: `10000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`,
+      mode,
+      title,
+      done: false,
+      createdAt: new Date(Date.UTC(2026, 9, 16, 9, 0, this.counter)).toISOString(),
+      userId,
+    };
+    this.tasks.push(task);
+    return this.dto(task);
+  }
+
+  async updateTask(userId: string, id: string, changes: { title?: string; done?: boolean }) {
+    const task = this.tasks.find((t) => t.id === id && t.userId === userId);
+    if (!task) return null;
+    Object.assign(task, changes);
+    return this.dto(task);
+  }
+
+  async deleteTask(userId: string, id: string) {
+    const before = this.tasks.length;
+    this.tasks = this.tasks.filter((t) => !(t.id === id && t.userId === userId));
+    return this.tasks.length < before;
   }
 }
 

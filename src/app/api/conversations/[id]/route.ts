@@ -1,8 +1,10 @@
 import { z } from "zod";
-import { CONVERSATION_MESSAGE_LIMIT } from "@/lib/limits";
+import { CONVERSATION_MESSAGE_LIMIT, MAX_CHAT_BODY_BYTES } from "@/lib/limits";
+import { renameConversationSchema } from "@/lib/schemas";
 import type { ConversationDetail } from "@/types/api";
 import { createConversationRepository } from "@/server/db/conversations";
-import { jsonResponse, notFound } from "@/server/http/responses";
+import { readJsonBody } from "@/server/http/request";
+import { errorResponse, jsonResponse, notFound } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
 
 interface Context {
@@ -23,9 +25,38 @@ export async function GET(request: Request, context: Context): Promise<Response>
     if (!conversation) return notFound(requestId);
 
     const messages = await repo.listRecentMessages(auth.userId, conversation.id, CONVERSATION_MESSAGE_LIMIT);
-    const detail: ConversationDetail = { id: conversation.id, title: conversation.title, messages };
+    const detail: ConversationDetail = {
+      id: conversation.id,
+      title: conversation.title,
+      mode: conversation.mode,
+      messages,
+    };
     return jsonResponse(detail, requestId);
   });
+}
+
+/** PATCH /api/conversations/:id — rename a conversation. Body: { title }. */
+export async function PATCH(request: Request, context: Context): Promise<Response> {
+  return withAuthenticatedRoute(
+    request,
+    { route: "conversations.rename", sameOrigin: true },
+    async ({ auth, requestId }) => {
+      const id = idSchema.safeParse((await context.params).id);
+      if (!id.success) return notFound(requestId);
+
+      const body = await readJsonBody(request, MAX_CHAT_BODY_BYTES);
+      if (!body.ok) return errorResponse(body.status, body.code, body.message, requestId);
+      const parsed = renameConversationSchema.safeParse(body.value);
+      if (!parsed.success) {
+        return errorResponse(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request.", requestId);
+      }
+
+      const repo = createConversationRepository(auth.supabase);
+      const renamed = await repo.renameConversation(auth.userId, id.data, parsed.data.title);
+      if (!renamed) return notFound(requestId);
+      return jsonResponse(renamed, requestId);
+    },
+  );
 }
 
 /** DELETE /api/conversations/:id — permanently removes the conversation and its messages. */

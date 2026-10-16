@@ -2,6 +2,9 @@
 
 export type MessageRole = "user" | "assistant";
 
+/** Which side of life a conversation or task belongs to. */
+export type Mode = "personal" | "work";
+
 /** Outcome of web search for an assistant reply. */
 export type WebSearchStatus = "off" | "used" | "no_results" | "failed";
 
@@ -22,12 +25,22 @@ export interface MessageDTO {
 export interface ConversationSummary {
   id: string;
   title: string;
+  mode: Mode;
   updatedAt: string;
+}
+
+export interface TaskDTO {
+  id: string;
+  mode: Mode;
+  title: string;
+  done: boolean;
+  createdAt: string;
 }
 
 export interface ConversationDetail {
   id: string;
   title: string;
+  mode: Mode;
   messages: MessageDTO[];
 }
 
@@ -56,7 +69,7 @@ export interface ApiErrorBody {
 
 /** Request body for POST /api/chat. */
 export type ChatRequest =
-  | { action: "send"; conversationId?: string; message: string; webSearch: boolean }
+  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean }
   | { action: "retry"; conversationId: string; webSearch: boolean };
 
 /**

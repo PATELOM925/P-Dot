@@ -98,7 +98,9 @@ export async function prepareChatTurn(
   let conversation: ConversationSummary;
   let userMessage: MessageDTO;
   if (request.action === "send") {
-    conversation = existing ?? (await deps.repo.createConversation(userId, titleFromMessage(request.message)));
+    conversation =
+      existing ??
+      (await deps.repo.createConversation(userId, titleFromMessage(request.message), request.mode ?? "personal"));
     userMessage = await deps.repo.insertMessage(userId, {
       conversationId: conversation.id,
       role: "user",
@@ -195,6 +197,7 @@ export async function* streamChatTurn(
     webSearch,
     results,
     now: deps.now(),
+    mode: turn.conversation.mode,
   });
 
   let content = "";

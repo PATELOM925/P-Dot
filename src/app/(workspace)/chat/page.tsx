@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ChatWorkspace } from "@/features/chat/ChatWorkspace";
+import { getMode } from "@/server/mode";
 
 export const metadata: Metadata = { title: "Chat · P-Dot" };
 
@@ -9,5 +10,7 @@ interface ChatPageProps {
 
 export default async function ChatPage({ searchParams }: ChatPageProps) {
   const { c } = await searchParams;
-  return <ChatWorkspace initialConversationId={typeof c === "string" ? c : null} />;
+  const mode = await getMode();
+  // Keyed by mode so switching Personal/Work starts a fresh workspace for that side.
+  return <ChatWorkspace key={mode} mode={mode} initialConversationId={typeof c === "string" ? c : null} />;
 }

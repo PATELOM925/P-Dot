@@ -5,6 +5,7 @@ import { toSafeHttpUrl } from "@/lib/safe-url";
 import type {
   ConversationSummary,
   MessageDTO,
+  Mode,
   MessageRole,
   SourceRef,
   WebSearchStatus,
@@ -33,8 +34,11 @@ export interface NewMessage {
  */
 export interface ConversationRepository {
   getConversation(userId: string, conversationId: string): Promise<ConversationSummary | null>;
-  listConversations(userId: string, limit: number): Promise<ConversationSummary[]>;
-  createConversation(userId: string, title: string): Promise<ConversationSummary>;
+  /** Newest first; `mode` limits the list to one side (personal or work). */
+  listConversations(userId: string, limit: number, mode?: Mode): Promise<ConversationSummary[]>;
+  createConversation(userId: string, title: string, mode: Mode): Promise<ConversationSummary>;
+  /** Returns null when no conversation with that ID belongs to the user. */
+  renameConversation(userId: string, conversationId: string, title: string): Promise<ConversationSummary | null>;
   /** Returns false when no conversation with that ID belongs to the user. */
   deleteConversation(userId: string, conversationId: string): Promise<boolean>;
   /** The most recent `limit` messages, oldest first. */
@@ -45,6 +49,7 @@ export interface ConversationRepository {
 const conversationRow = z.object({
   id: z.string(),
   title: z.string(),
+  mode: z.enum(["personal", "work"]),
   updated_at: z.string(),
 });
 
@@ -59,12 +64,12 @@ const messageRow = z.object({
   created_at: z.string(),
 });
 
-const CONVERSATION_COLUMNS = "id, title, updated_at";
+const CONVERSATION_COLUMNS = "id, title, mode, updated_at";
 const MESSAGE_COLUMNS = "id, role, content, web_search, sources, created_at";
 
 function toConversation(row: unknown): ConversationSummary {
   const parsed = conversationRow.parse(row);
-  return { id: parsed.id, title: parsed.title, updatedAt: parsed.updated_at };
+  return { id: parsed.id, title: parsed.title, mode: parsed.mode, updatedAt: parsed.updated_at };
 }
 
 function toSources(values: unknown[]): SourceRef[] {
@@ -102,25 +107,37 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
       return data ? toConversation(data) : null;
     },
 
-    async listConversations(userId, limit) {
-      const { data, error } = await supabase
+    async listConversations(userId, limit, mode) {
+      let query = supabase
         .from("conversations")
         .select(CONVERSATION_COLUMNS)
-        .eq("user_id", userId)
-        .order("updated_at", { ascending: false })
-        .limit(limit);
+        .eq("user_id", userId);
+      if (mode) query = query.eq("mode", mode);
+      const { data, error } = await query.order("updated_at", { ascending: false }).limit(limit);
       if (error) throw new RepositoryError("listConversations");
       return (data ?? []).map(toConversation);
     },
 
-    async createConversation(userId, title) {
+    async createConversation(userId, title, mode) {
       const { data, error } = await supabase
         .from("conversations")
-        .insert({ user_id: userId, title })
+        .insert({ user_id: userId, title, mode })
         .select(CONVERSATION_COLUMNS)
         .single();
       if (error || !data) throw new RepositoryError("createConversation");
       return toConversation(data);
+    },
+
+    async renameConversation(userId, conversationId, title) {
+      const { data, error } = await supabase
+        .from("conversations")
+        .update({ title })
+        .eq("id", conversationId)
+        .eq("user_id", userId)
+        .select(CONVERSATION_COLUMNS)
+        .maybeSingle();
+      if (error) throw new RepositoryError("renameConversation");
+      return data ? toConversation(data) : null;
     },
 
     async deleteConversation(userId, conversationId) {

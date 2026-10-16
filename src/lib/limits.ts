@@ -26,5 +26,12 @@ export const SEARCH_QUERY_CHARS = 400;
 /** Messages returned when reopening a conversation (no pagination in the MVP). */
 export const CONVERSATION_MESSAGE_LIMIT = 200;
 
+/** Longest conversation title or task title. */
+export const MAX_TITLE_CHARS = 120;
+export const MAX_TASK_CHARS = 200;
+
+/** Tasks returned per mode. */
+export const TASK_LIST_LIMIT = 200;
+
 /** Conversations returned by the history list. */
 export const CONVERSATION_LIST_LIMIT = 50;

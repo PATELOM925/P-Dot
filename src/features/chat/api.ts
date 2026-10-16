@@ -4,6 +4,7 @@ import type {
   ChatRequest,
   ConversationDetail,
   ConversationSummary,
+  Mode,
 } from "@/types/api";
 
 export class ApiError extends Error {
@@ -39,9 +40,18 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
-export async function fetchConversations(): Promise<ConversationSummary[]> {
-  const response = await request("/api/conversations");
+export async function fetchConversations(mode: Mode): Promise<ConversationSummary[]> {
+  const response = await request(`/api/conversations?mode=${mode}`);
   return ((await response.json()) as { conversations: ConversationSummary[] }).conversations;
+}
+
+export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {
+  const response = await request(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  return (await response.json()) as ConversationSummary;
 }
 
 export async function fetchConversation(id: string): Promise<ConversationDetail> {

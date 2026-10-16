@@ -42,7 +42,7 @@ describe.skipIf(!configured)("row-level security (live Supabase)", () => {
     a = await signIn(env.SUPABASE_TEST_USER_A_EMAIL!, env.SUPABASE_TEST_USER_A_PASSWORD!);
     b = await signIn(env.SUPABASE_TEST_USER_B_EMAIL!, env.SUPABASE_TEST_USER_B_PASSWORD!);
     const repoA = createConversationRepository(a.client);
-    const conversation = await repoA.createConversation(a.userId, "RLS test (safe to delete)");
+    const conversation = await repoA.createConversation(a.userId, "RLS test (safe to delete)", "personal");
     conversationId = conversation.id;
     await repoA.insertMessage(a.userId, { conversationId, role: "user", content: "private" });
   });
@@ -72,8 +72,9 @@ describe.skipIf(!configured)("row-level security (live Supabase)", () => {
   it("does not let user B delete or modify user A's conversation", async () => {
     const deleted = await b.client.from("conversations").delete({ count: "exact" }).eq("id", conversationId);
     expect(deleted.count ?? 0).toBe(0);
-    const updated = await b.client.from("conversations").update({ title: "pwned" }).eq("id", conversationId);
-    expect(updated.error).not.toBeNull();
+    // Titles are updatable by their owner now; RLS must make this a no-op for anyone else.
+    const updated = await b.client.from("conversations").update({ title: "pwned" }).eq("id", conversationId).select("id");
+    expect(updated.data ?? []).toEqual([]);
     const stillThere = await createConversationRepository(a.client).getConversation(a.userId, conversationId);
     expect(stillThere?.title).toBe("RLS test (safe to delete)");
   });
@@ -84,5 +85,39 @@ describe.skipIf(!configured)("row-level security (live Supabase)", () => {
     expect(first.data?.[0]?.allowed).toBe(true);
     const direct = await a.client.from("usage_windows").update({ request_count: 0 }).eq("user_id", a.userId);
     expect(direct.error).not.toBeNull();
+  });
+
+  it("lets a user rename only their own conversation, and change nothing else", async () => {
+    const repoA = createConversationRepository(a.client);
+    const renamed = await repoA.renameConversation(a.userId, conversationId, "Renamed by owner");
+    expect(renamed?.title).toBe("Renamed by owner");
+
+    const byOther = await createConversationRepository(b.client).renameConversation(b.userId, conversationId, "pwned");
+    expect(byOther).toBeNull();
+
+    const otherColumns = await a.client.from("conversations").update({ mode: "work" }).eq("id", conversationId);
+    expect(otherColumns.error).not.toBeNull();
+  });
+
+  it("keeps tasks private to their owner", async () => {
+    const created = await a.client
+      .from("tasks")
+      .insert({ user_id: a.userId, mode: "work", title: "RLS task (safe to delete)" })
+      .select("id")
+      .single();
+    expect(created.error).toBeNull();
+    const taskId = created.data!.id as string;
+
+    const seen = await b.client.from("tasks").select("id").eq("id", taskId);
+    expect(seen.data).toEqual([]);
+    const changed = await b.client.from("tasks").update({ done: true }).eq("id", taskId).select("id");
+    expect(changed.data).toEqual([]);
+    const removed = await b.client.from("tasks").delete({ count: "exact" }).eq("id", taskId);
+    expect(removed.count ?? 0).toBe(0);
+    const impersonated = await b.client.from("tasks").insert({ user_id: a.userId, mode: "work", title: "x" });
+    expect(impersonated.error).not.toBeNull();
+
+    const cleanup = await a.client.from("tasks").delete({ count: "exact" }).eq("id", taskId);
+    expect(cleanup.count).toBe(1);
   });
 });

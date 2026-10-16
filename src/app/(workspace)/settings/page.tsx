@@ -42,6 +42,15 @@ export default async function SettingsPage() {
             context.
           </li>
           <li>
+            <strong>Voice dictation:</strong> the microphone button uses your browser&apos;s built-in speech
+            recognition to turn speech into English text. Your browser vendor&apos;s speech service may process the
+            audio; P-Dot&apos;s servers only receive the text you choose to send.
+          </li>
+          <li>
+            <strong>Personal and Work modes:</strong> each conversation and to-do item belongs to one mode, and the
+            assistant stays within that mode&apos;s topics.
+          </li>
+          <li>
             <strong>Storage (Supabase):</strong> your account and conversations are stored in a Supabase
             database, visible only to your account.
           </li>

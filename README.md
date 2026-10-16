@@ -2,7 +2,23 @@
 
 A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Status: MVP implementation in progress.** The backend (auth, chat streaming, web search, history, usage limits) and a minimal frontend are written and unit-tested with mocked providers. They have **not** yet been run against a real Supabase project, Nebius, or Tavily, and nothing is deployed. See [Verification status](#verification-status).
+**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, and browser dictation. The Workflows and Connectors pages are previews only (nothing can be connected or automated yet). Unit tests use mocked providers; the database rules were tested against a local Supabase, but Nebius and Tavily have **not** been called for real, and nothing is deployed. See [What works today](#what-works-today) and [Verification status](#verification-status).
+
+## What works today
+
+| Area | Status |
+| --- | --- |
+| Sign up, sign in, email confirmation, password reset | Works (tested with local Supabase) |
+| Chat with streamed replies, retry, stop | Works once Nebius is configured |
+| Web search toggle (Tavily) from the "+" menu | Works once a Tavily key is set; off by default |
+| Conversation list, **rename**, delete | Works |
+| **Personal / Work mode** toggle | Works: each conversation and task belongs to one mode, lists are filtered by mode, and the assistant is instructed to stay within that mode's topics |
+| **Today** page: to-do list per mode | Works (add, tick, delete) |
+| **Microphone** button: speech to English text | Works in browsers with speech recognition (Chrome, Edge, Safari); dictates into the message box, you press send |
+| Daily brief, approvals, **Workflows**, **Connectors** | Preview pages only. They show the planned design, say "not available yet", and run nothing |
+| Landing page agent example | Illustrative example, not real data |
+
+The design for all of this is in the "P-Dot Frontend Design" canvas; planned-but-unbuilt parts are tracked in [decision 0005](docs/decisions/0005-assistant-hub-proposal.md).
 
 ## Stack
 
@@ -107,7 +123,12 @@ Open `http://localhost:3000` (not `127.0.0.1`, so cookies and email links share 
 | Forgot password | Email in the fake inbox; the link opens `/reset-password`; after saving you are signed in |
 | Send a message without Nebius settings | "This service is not configured yet." and nothing is saved |
 | Send a message with Nebius settings | Reply streams in; the conversation appears in the sidebar |
-| Studio → Table Editor | `conversations`, `messages`, `usage_windows` hold your rows |
+| Studio → Table Editor | `conversations`, `messages`, `usage_windows`, `tasks` hold your rows |
+| Click **Work** in the header, then start a chat | The sidebar shows only Work conversations; asking a personal question (dinner, gifts) gets a reply that it belongs in Personal mode |
+| Hover a conversation: pencil, then Enter | Renamed in the sidebar; the new name is stored |
+| **Today** → add a task, tick it, delete it | Persists after a reload; Work and Personal lists are separate |
+| Microphone button, allow the browser prompt, speak | English text appears in the message box (Chrome/Edge/Safari; button is disabled elsewhere) |
+| **Workflows** and **Connectors** pages | Show "not available yet"; Connect buttons are disabled |
 | Second user in a private window | Sees none of the first user's conversations |
 | Delete a conversation | Gone from the sidebar and from Studio |
 | Exceed `CHAT_REQUESTS_PER_WINDOW` (set it to 2 to try) | 429 "You have reached your request limit" |
@@ -164,8 +185,13 @@ All private endpoints require the Supabase session cookie and scope data to the 
 
 | Method and path | Purpose |
 | --- | --- |
-| `POST /api/chat` | `{ action: "send", conversationId?, message, webSearch }` or `{ action: "retry", conversationId, webSearch }`. Streams `application/x-ndjson` events: `start`, `search`, `delta`, `done`, `error`. Returns 401, 403, 404, 409, 413, 415, 429, or 503 before streaming when appropriate. |
-| `GET /api/conversations` | The user's conversations, most recent first |
+| `POST /api/chat` | `{ action: "send", conversationId?, mode?, message, webSearch }` (`mode` applies to new conversations) or `{ action: "retry", conversationId, webSearch }`. Streams `application/x-ndjson` events: `start`, `search`, `delta`, `done`, `error`. Returns 401, 403, 404, 409, 413, 415, 429, or 503 before streaming when appropriate. |
+| `GET /api/conversations[?mode=personal\|work]` | The user's conversations, most recent first, optionally for one mode |
+| `PATCH /api/conversations/:id` | Rename: `{ title }` (404 for someone else's) |
+| `GET /api/tasks?mode=` | The user's to-do items for a mode |
+| `POST /api/tasks` | Add a task: `{ mode, title }` |
+| `PATCH /api/tasks/:id` | Change `{ title?, done? }` |
+| `DELETE /api/tasks/:id` | Delete a task |
 | `GET /api/conversations/:id` | One conversation with its messages (404 for missing or someone else's) |
 | `DELETE /api/conversations/:id` | Permanently delete a conversation and its messages |
 | `GET /api/health` | Liveness and configured integrations (booleans only) |
@@ -175,14 +201,14 @@ All private endpoints require the Supabase session cookie and scope data to the 
 
 | Path | Contents |
 | --- | --- |
-| `src/app/` | Pages (landing, `(auth)`, `(workspace)`), API routes, `auth/confirm` |
+| `src/app/` | Pages (landing, `(auth)`, `(workspace)`: today, chat, workflows, connectors, settings), API routes, `auth/confirm` |
 | `wrangler.jsonc`, `open-next.config.ts` | Cloudflare Worker and OpenNext adapter configuration |
 | `src/proxy.ts` | Session refresh and page redirects (Next.js 16 "proxy", formerly middleware) |
-| `src/features/` | Auth forms and server actions, chat workspace UI and stream client |
+| `src/features/` | Auth forms and server actions, chat workspace (rename, dictation), to-do list, mode switch |
 | `src/components/` | Shared layout components |
 | `src/server/` | Server-only code: config, auth session, Supabase repositories, assistant orchestration, Nebius/Tavily adapters, HTTP helpers |
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
-| `supabase/migrations/` | Database schema, RLS policies, and the quota function |
+| `supabase/migrations/` | Database schema, RLS policies, the quota function, and the modes/rename/tasks migration |
 | `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
 | `docs/` | PRD, architecture, decision records |
 
@@ -222,6 +248,6 @@ Notes:
 
 ## Verification status
 
-Done and passing locally: lint, type-check, 111 unit tests (request validation, auth and ownership boundaries at the route level, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules), production build, and a dev-server smoke test with placeholder Supabase settings (signed-out redirects, 401/403 responses, auth-outage messaging, security headers).
+Done and passing locally: lint, type-check, 131 unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules), production build, and the 6 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
 
-Not yet done: running against a real Supabase project (the RLS integration test is skipped), real Nebius and Tavily calls, a signed-in browser walkthrough of the chat UI, end-to-end tests, and a Cloudflare deployment. Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
+Not yet done: real Nebius and Tavily calls, a signed-in browser walkthrough of the new screens (the redesigned pages were not clicked through by the developer), dictation in real browsers, end-to-end tests, and a Cloudflare deployment. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).

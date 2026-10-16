@@ -3,10 +3,18 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
-import type { ChatRequest, ConversationSummary, SourceRef, WebSearchStatus } from "@/types/api";
-import { ApiError, deleteConversation, fetchConversation, fetchConversations, postChat } from "./api";
+import type { ChatRequest, ConversationSummary, Mode, SourceRef, WebSearchStatus } from "@/types/api";
+import {
+  ApiError,
+  deleteConversation,
+  fetchConversation,
+  fetchConversations,
+  postChat,
+  renameConversation,
+} from "./api";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
 import { readChatStream } from "./stream";
+import { useDictation } from "./useDictation";
 
 interface StreamingReply {
   text: string;
@@ -25,7 +33,18 @@ function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-export function ChatWorkspace({ initialConversationId }: { initialConversationId: string | null }) {
+const EMPTY_HINTS: Record<Mode, string> = {
+  personal: "Ask about meals, gifts, family plans, errands or everyday choices.",
+  work: "Ask about meetings, email, code, tasks, deadlines or work writing.",
+};
+
+export function ChatWorkspace({
+  initialConversationId,
+  mode,
+}: {
+  initialConversationId: string | null;
+  mode: Mode;
+}) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
   const [activeId, setActiveId] = useState<string | null>(initialConversationId);
@@ -40,6 +59,14 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [savingRename, setSavingRename] = useState(false);
+
+  const dictation = useDictation(
+    useCallback((text: string) => setDraft((current) => (current.trim() ? `${current.trimEnd()} ${text}` : text)), []),
+  );
 
   const router = useRouter();
   const abortRef = useRef<AbortController | null>(null);
@@ -85,7 +112,7 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
 
   useEffect(() => {
     let cancelled = false;
-    fetchConversations()
+    fetchConversations(mode)
       .then((list) => {
         if (cancelled) return;
         setConversations(list);
@@ -98,7 +125,7 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
     return () => {
       cancelled = true;
     };
-  }, [initialConversationId, loadMessages, redirectIfUnauthorized]);
+  }, [initialConversationId, loadMessages, mode, redirectIfUnauthorized]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -136,7 +163,7 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
 
     const body: ChatRequest =
       action === "send"
-        ? { action, message: text, webSearch, ...(activeId ? { conversationId: activeId } : {}) }
+        ? { action, message: text, webSearch, ...(activeId ? { conversationId: activeId } : { mode }) }
         : { action, conversationId: activeId!, webSearch };
 
     const controller = new AbortController();
@@ -229,6 +256,29 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
     }
   }
 
+  function startRename(conversation: ConversationSummary) {
+    setConfirmDeleteId(null);
+    setRenamingId(conversation.id);
+    setRenameValue(conversation.title);
+  }
+
+  async function saveRename(id: string) {
+    const title = renameValue.trim();
+    if (!title || savingRename) return;
+    setSavingRename(true);
+    try {
+      const renamed = await renameConversation(id, title);
+      setConversations((list) => list.map((c) => (c.id === id ? { ...c, title: renamed.title } : c)));
+      setRenamingId(null);
+      setStatus("Conversation renamed.");
+    } catch (err) {
+      if (redirectIfUnauthorized(err)) return;
+      setError({ message: err instanceof Error ? err.message : "Could not rename the conversation." });
+    } finally {
+      setSavingRename(false);
+    }
+  }
+
   async function confirmDelete(id: string) {
     setDeletingId(id);
     try {
@@ -271,7 +321,39 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
         <ul className="conversation-list">
           {conversations.map((conversation) => (
             <li key={conversation.id} className={conversation.id === activeId ? "is-active" : undefined}>
-              {confirmDeleteId === conversation.id ? (
+              {renamingId === conversation.id ? (
+                <form
+                  className="rename-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveRename(conversation.id);
+                  }}
+                >
+                  <label htmlFor={`rename-${conversation.id}`} className="visually-hidden">
+                    Conversation name
+                  </label>
+                  <input
+                    id={`rename-${conversation.id}`}
+                    type="text"
+                    value={renameValue}
+                    maxLength={120}
+                    autoFocus
+                    onChange={(event) => setRenameValue(event.target.value)}
+                    onKeyDown={(event) => event.key === "Escape" && setRenamingId(null)}
+                  />
+                  <button
+                    type="submit"
+                    className="icon-button"
+                    aria-label="Save name"
+                    disabled={savingRename || !renameValue.trim()}
+                  >
+                    ✓
+                  </button>
+                  <button type="button" className="icon-button" aria-label="Cancel rename" onClick={() => setRenamingId(null)}>
+                    ×
+                  </button>
+                </form>
+              ) : confirmDeleteId === conversation.id ? (
                 <div className="confirm-delete" role="group" aria-label={`Delete “${conversation.title}”?`}>
                   <span className="small">Delete this conversation permanently?</span>
                   <div className="actions">
@@ -306,11 +388,27 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
                   <button
                     type="button"
                     className="icon-button"
-                    onClick={() => setConfirmDeleteId(conversation.id)}
+                    onClick={() => startRename(conversation)}
+                    aria-label={`Rename “${conversation.title}”`}
+                    title="Rename conversation"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M4 20h4L19 9l-4-4L4 16v4z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button icon-button-danger"
+                    onClick={() => {
+                      setRenamingId(null);
+                      setConfirmDeleteId(conversation.id);
+                    }}
                     aria-label={`Delete “${conversation.title}”`}
                     title="Delete conversation"
                   >
-                    ×
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+                    </svg>
                   </button>
                 </>
               )}
@@ -336,7 +434,7 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
           {loadingMessages && <p className="muted">Loading conversation…</p>}
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
-              <p>Ask a question, research a topic, draft something, or plan your day.</p>
+              <p>{EMPTY_HINTS[mode]}</p>
               <p className="muted small">Turn on web search when you want current sources.</p>
             </div>
           )}
@@ -377,45 +475,112 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
             void submit("send");
           }}
         >
-          <label htmlFor="composer-input" className="visually-hidden">
-            Message
-          </label>
-          <textarea
-            id="composer-input"
-            ref={inputRef}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                void submit("send");
-              }
-            }}
-            rows={3}
-            maxLength={MAX_MESSAGE_CHARS}
-            placeholder="Ask P-Dot anything…"
-            aria-describedby="composer-hint"
-          />
-          <div className="composer-bar">
-            <label className="toggle">
-              <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />
-              Search the web
+          <div className="composer-box">
+            <label htmlFor="composer-input" className="visually-hidden">
+              Message
             </label>
-            <span id="composer-hint" className="hint">
-              {draft.length > MAX_MESSAGE_CHARS * 0.9
-                ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`
-                : "Enter to send · Shift+Enter for a new line"}
-            </span>
-            {sending ? (
-              <button type="button" className="button" onClick={() => abortRef.current?.abort()}>
-                Stop
+            <textarea
+              id="composer-input"
+              ref={inputRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  void submit("send");
+                }
+              }}
+              rows={2}
+              maxLength={MAX_MESSAGE_CHARS}
+              placeholder="Ask P-Dot anything…"
+              aria-describedby="composer-hint"
+            />
+            <div className="composer-bar">
+              <div className="tools-anchor">
+                {toolsOpen && (
+                  <div
+                    id="composer-tools"
+                    className="tools-menu"
+                    onKeyDown={(event) => event.key === "Escape" && setToolsOpen(false)}
+                  >
+                    <label className="tool-option">
+                      <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />
+                      <span>
+                        <strong>Search the web</strong>
+                        <span className="hint">Powered by Tavily. Off unless you turn it on.</span>
+                      </span>
+                    </label>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="round-button"
+                  aria-label="Add tools"
+                  aria-expanded={toolsOpen}
+                  aria-controls="composer-tools"
+                  onClick={() => setToolsOpen((open) => !open)}
+                >
+                  +
+                </button>
+              </div>
+              {webSearch && (
+                <button
+                  type="button"
+                  className="chip chip-button"
+                  onClick={() => setWebSearch(false)}
+                  aria-label="Web search with Tavily is on. Turn off."
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
+                  </svg>
+                  Web search · Tavily ×
+                </button>
+              )}
+              <span id="composer-hint" className="hint composer-hint">
+                {draft.length > MAX_MESSAGE_CHARS * 0.9
+                  ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`
+                  : "Enter to send · Shift+Enter for a new line"}
+              </span>
+              <button
+                type="button"
+                className={`round-button${dictation.listening ? " is-listening" : ""}`}
+                aria-label={dictation.listening ? "Stop dictating" : "Dictate a message (speech to English text)"}
+                aria-pressed={dictation.listening}
+                title={
+                  dictation.supported
+                    ? "Speak and P-Dot writes it as English text"
+                    : "Dictation is not supported in this browser"
+                }
+                disabled={!dictation.supported}
+                onClick={dictation.toggle}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="12" rx="3" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+                </svg>
               </button>
-            ) : (
-              <button type="submit" className="button button-primary" disabled={!draft.trim()}>
-                Send
-              </button>
-            )}
+              {sending ? (
+                <button type="button" className="round-button round-button-solid" aria-label="Stop" onClick={() => abortRef.current?.abort()}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                </button>
+              ) : (
+                <button type="submit" className="round-button round-button-solid" aria-label="Send message" disabled={!draft.trim()}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 19V5M5 12l7-7 7 7" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
+          {dictation.error && (
+            <p className="alert alert-warning small" role="alert">
+              {dictation.error}
+            </p>
+          )}
+          <p className="disclaimer">P-Dot is an AI and can make mistakes, so please double-check anything important.</p>
         </form>
 
         <p className="visually-hidden" role="status" aria-live="polite">
