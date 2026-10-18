@@ -15,7 +15,8 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
-    complete: (messages, signal) => streamChatCompletion(config.nebius, messages, { signal }),
+    complete: (messages, signal, options) =>
+      streamChatCompletion(config.nebius, messages, { signal, ...options }),
     now: () => new Date(),
     log: logEvent,
   };

@@ -1,6 +1,6 @@
 import type { ConversationRepository, NewMessage } from "@/server/db/conversations";
 import type { QuotaGate } from "@/server/db/quota";
-import type { AssistantDeps } from "@/server/assistant/service";
+import type { AssistantDeps, CompleteOptions } from "@/server/assistant/service";
 import type { ChatMessage, CompletionChunk } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import type { ConversationSummary, MessageDTO } from "@/types/api";
@@ -105,7 +105,13 @@ export interface FakeDepsOptions {
   repo?: MemoryRepository;
   quota?: FakeQuota;
   search?: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
-  reply?: string[] | ((messages: ChatMessage[], signal: AbortSignal) => AsyncIterable<CompletionChunk>);
+  reply?:
+    | string[]
+    | ((
+        messages: ChatMessage[],
+        signal: AbortSignal,
+        options?: CompleteOptions,
+      ) => AsyncIterable<CompletionChunk>);
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
@@ -124,9 +130,9 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
             searches.push(query);
             return options.search ? options.search(query, signal) : [];
           },
-    complete: (messages, signal) => {
+    complete: (messages, signal, completeOptions) => {
       prompts.push(messages);
-      if (typeof reply === "function") return reply(messages, signal);
+      if (typeof reply === "function") return reply(messages, signal, completeOptions);
       return (async function* () {
         for (const text of reply) yield { type: "text" as const, text };
         yield { type: "finish" as const, finishReason: "stop", usage: { promptTokens: 10, completionTokens: 2 } };

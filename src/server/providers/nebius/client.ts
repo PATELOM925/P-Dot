@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import type { ToolDefinition, ToolCall } from "@/server/assistant/tools";
 import {
   createAbortScope,
   discardBody,
@@ -14,8 +15,11 @@ import { readSseData, SseFormatError } from "./sse";
 // https://api.tokenfactory.nebius.com/docs
 
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 export interface NebiusSettings {
@@ -32,6 +36,7 @@ export interface TokenUsage {
 
 export type CompletionChunk =
   | { type: "text"; text: string }
+  | { type: "tool_calls"; calls: ToolCall[] }
   | { type: "finish"; finishReason: string | null; usage: TokenUsage | null };
 
 export interface StreamOptions {
@@ -41,6 +46,10 @@ export interface StreamOptions {
   totalTimeoutMs?: number;
   /** Maximum gap between streamed chunks (including time to first byte). */
   idleTimeoutMs?: number;
+  /** Available function calling tools for the model. */
+  tools?: ToolDefinition[];
+  /** Control tool selection: 'auto', 'none', 'required', or a specific function. */
+  toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 }
 
 const chunkSchema = z.object({
@@ -48,7 +57,26 @@ const chunkSchema = z.object({
     .array(
       z.object({
         // `reasoning_content` and other delta fields are intentionally ignored.
-        delta: z.object({ content: z.string().nullish() }).nullish(),
+        delta: z
+          .object({
+            content: z.string().nullish(),
+            tool_calls: z
+              .array(
+                z.object({
+                  index: z.number().nullish(),
+                  id: z.string().nullish(),
+                  type: z.string().nullish(),
+                  function: z
+                    .object({
+                      name: z.string().nullish(),
+                      arguments: z.string().nullish(),
+                    })
+                    .nullish(),
+                }),
+              )
+              .nullish(),
+          })
+          .nullish(),
         finish_reason: z.string().nullish(),
       }),
     )
@@ -79,9 +107,9 @@ function networkError(scope: AbortScope, parent?: AbortSignal): ProviderError {
 }
 
 /**
- * Streams a chat completion. Yields text chunks, then a single `finish` chunk.
- * Throws ProviderError on HTTP errors, in-stream errors, timeouts, malformed
- * data, or a stream that ends without completing.
+ * Streams a chat completion. Yields text chunks, any completed tool calls,
+ * and then a single `finish` chunk. Throws ProviderError on HTTP errors,
+ * in-stream errors, timeouts, malformed data, or a stream that ends prematurely.
  */
 export async function* streamChatCompletion(
   settings: NebiusSettings,
@@ -97,6 +125,21 @@ export async function* streamChatCompletion(
 
   try {
     let response: Response;
+    const bodyPayload: Record<string, unknown> = {
+      model: settings.model,
+      messages,
+      max_tokens: settings.maxOutputTokens,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+
+    if (options.tools && options.tools.length > 0) {
+      bodyPayload.tools = options.tools;
+      if (options.toolChoice) {
+        bodyPayload.tool_choice = options.toolChoice;
+      }
+    }
+
     try {
       response = await fetchImpl(`${settings.baseUrl}/chat/completions`, {
         method: "POST",
@@ -105,13 +148,7 @@ export async function* streamChatCompletion(
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify({
-          model: settings.model,
-          messages,
-          max_tokens: settings.maxOutputTokens,
-          stream: true,
-          stream_options: { include_usage: true },
-        }),
+        body: JSON.stringify(bodyPayload),
         signal: scope.signal,
       });
     } catch {
@@ -128,6 +165,7 @@ export async function* streamChatCompletion(
     let completed = false;
     let finishReason: string | null = null;
     let usage: TokenUsage | null = null;
+    const toolCallsAcc: Map<number, { id: string; name: string; arguments: string }> = new Map();
 
     try {
       for await (const data of readSseData(response.body, scope.signal)) {
@@ -153,6 +191,18 @@ export async function* streamChatCompletion(
         for (const choice of chunk.choices ?? []) {
           const text = choice.delta?.content;
           if (text) yield { type: "text", text };
+
+          if (choice.delta?.tool_calls) {
+            for (const tc of choice.delta.tool_calls) {
+              const idx = tc.index ?? toolCallsAcc.size;
+              const existing = toolCallsAcc.get(idx) ?? { id: "", name: "", arguments: "" };
+              if (tc.id) existing.id = tc.id;
+              if (tc.function?.name) existing.name += tc.function.name;
+              if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+              toolCallsAcc.set(idx, existing);
+            }
+          }
+
           if (choice.finish_reason) finishReason = choice.finish_reason;
         }
       }
@@ -166,6 +216,19 @@ export async function* streamChatCompletion(
     if (!completed && finishReason === null) {
       throw networkError(scope, options.signal);
     }
+
+    if (toolCallsAcc.size > 0) {
+      const completedCalls: ToolCall[] = Array.from(toolCallsAcc.values()).map((tc) => ({
+        id: tc.id || `call_${Math.random().toString(36).slice(2, 9)}`,
+        type: "function",
+        function: {
+          name: tc.name,
+          arguments: tc.arguments,
+        },
+      }));
+      yield { type: "tool_calls", calls: completedCalls };
+    }
+
     yield { type: "finish", finishReason, usage };
   } finally {
     scope.dispose();

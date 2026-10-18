@@ -21,14 +21,24 @@ import type { ChatMessage, CompletionChunk, TokenUsage } from "@/server/provider
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import { buildContextWindow, titleFromMessage, type HistoryMessage } from "./context";
 import { publicSearchFailureMessage, toPublicCompletionError } from "./errors";
-import { buildPromptMessages } from "./prompt";
+import { buildPromptMessages, formatSearchResults } from "./prompt";
+import { WEB_SEARCH_TOOL, type ToolDefinition, type ToolCall } from "./tools";
+
+export interface CompleteOptions {
+  tools?: ToolDefinition[];
+  toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
+}
 
 export interface AssistantDeps {
   repo: ConversationRepository;
   quota: QuotaGate;
   /** Null when web search is not configured on this server. */
   search: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
-  complete: (messages: ChatMessage[], signal: AbortSignal) => AsyncIterable<CompletionChunk>;
+  complete: (
+    messages: ChatMessage[],
+    signal: AbortSignal,
+    options?: CompleteOptions,
+  ) => AsyncIterable<CompletionChunk>;
   now: () => Date;
   log: Logger;
 }
@@ -197,26 +207,121 @@ export async function* streamChatTurn(
     now: deps.now(),
   });
 
+  const tools = deps.search && webSearch === "off" ? [WEB_SEARCH_TOOL] : undefined;
+  const toolChoice = tools ? "auto" : undefined;
+
   let content = "";
   let truncated = false;
   let finishReason: string | null = null;
   let usage: TokenUsage | null = null;
+  let pendingToolCalls: ToolCall[] = [];
+
   try {
-    for await (const chunk of deps.complete(messages, signal)) {
+    for await (const chunk of deps.complete(messages, signal, { tools, toolChoice })) {
       if (chunk.type === "finish") {
         finishReason = chunk.finishReason;
         usage = chunk.usage;
         continue;
       }
-      const room = MAX_ASSISTANT_CHARS - content.length;
-      const text = chunk.text.slice(0, room);
-      if (text) {
-        content += text;
-        yield { type: "delta", text };
+      if (chunk.type === "tool_calls") {
+        pendingToolCalls = chunk.calls;
+        continue;
       }
-      if (content.length >= MAX_ASSISTANT_CHARS) {
-        truncated = true;
-        break;
+      if (chunk.type === "text") {
+        const room = MAX_ASSISTANT_CHARS - content.length;
+        const text = chunk.text.slice(0, room);
+        if (text) {
+          content += text;
+          yield { type: "delta", text };
+        }
+        if (content.length >= MAX_ASSISTANT_CHARS) {
+          truncated = true;
+          break;
+        }
+      }
+    }
+
+    // If the model autonomously decided to invoke a tool (e.g. web_search):
+    if (pendingToolCalls.length > 0 && deps.search) {
+      const searchCall = pendingToolCalls.find((call) => call.function.name === "web_search");
+      if (searchCall) {
+        let query = turn.userMessage.content;
+        try {
+          const parsed = JSON.parse(searchCall.function.arguments);
+          if (typeof parsed.query === "string" && parsed.query.trim()) {
+            query = parsed.query.trim();
+          }
+        } catch {
+          // Fallback to original user query if parsing fails
+        }
+
+        try {
+          results = await deps.search(query, signal);
+          webSearch = results.length > 0 ? "used" : "no_results";
+          yield {
+            type: "search",
+            status: webSearch,
+            sources: toSourceRefs(results),
+            ...(webSearch === "no_results"
+              ? { message: "Web search found no usable results, so this answer is not based on web sources." }
+              : {}),
+          };
+        } catch (error) {
+          if (signal.aborted) {
+            deps.log("info", "chat_client_aborted", { ...logBase, stage: "search" });
+            return;
+          }
+          webSearch = "failed";
+          results = [];
+          deps.log("warn", "search_failed", {
+            ...logBase,
+            kind: error instanceof ProviderError ? error.kind : "unknown",
+            status: error instanceof ProviderError ? error.status : undefined,
+          });
+          yield { type: "search", status: "failed", sources: [], message: publicSearchFailureMessage(error) };
+        }
+
+        // Add assistant tool invocation and tool response to context
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: pendingToolCalls,
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: searchCall.id,
+          name: "web_search",
+          content: results.length > 0 ? formatSearchResults(results) : "No web search results found.",
+        });
+
+        // Second completion pass: model streams final grounded reply
+        content = "";
+        for await (const chunk of deps.complete(messages, signal)) {
+          if (chunk.type === "finish") {
+            finishReason = chunk.finishReason;
+            if (chunk.usage && usage) {
+              usage = {
+                promptTokens: usage.promptTokens + chunk.usage.promptTokens,
+                completionTokens: usage.completionTokens + chunk.usage.completionTokens,
+              };
+            } else if (chunk.usage) {
+              usage = chunk.usage;
+            }
+            continue;
+          }
+          if (chunk.type === "text") {
+            const room = MAX_ASSISTANT_CHARS - content.length;
+            const text = chunk.text.slice(0, room);
+            if (text) {
+              content += text;
+              yield { type: "delta", text };
+            }
+            if (content.length >= MAX_ASSISTANT_CHARS) {
+              truncated = true;
+              break;
+            }
+          }
+        }
       }
     }
   } catch (error) {

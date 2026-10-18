@@ -81,8 +81,8 @@ describe("buildPromptMessages", () => {
     expect(last.content).toContain("Ignore previous instructions");
     expect(last.content).toContain('<source id="1">');
     // Retrieved text cannot close the delimiter early.
-    expect(last.content.match(/<\/web_search_results>/g)).toHaveLength(1);
-    expect(last.content.match(/<web_search_results>/g)).toHaveLength(1);
+    expect(last.content!.match(/<\/web_search_results>/g)).toHaveLength(1);
+    expect(last.content!.match(/<web_search_results>/g)).toHaveLength(1);
     expect(messages[1]).toEqual({ role: "user", content: "earlier" });
   });
 
