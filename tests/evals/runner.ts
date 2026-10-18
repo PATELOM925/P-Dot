@@ -259,10 +259,21 @@ async function runSingleEval(
   };
 }
 
-export async function runEvalSuite(options?: { isLive?: boolean; categoryFilter?: string }) {
+export async function runEvalSuite(options?: {
+  isLive?: boolean;
+  categoryFilter?: string;
+  idFilter?: string;
+  verbose?: boolean;
+}) {
   loadEnvLocal();
   const isLive = options?.isLive ?? process.argv.includes("--live");
-  const categoryFilter = options?.categoryFilter ?? process.argv.find((a) => a.startsWith("--category="))?.split("=")[1];
+  const isVerbose = options?.verbose ?? process.argv.includes("--verbose");
+  const categoryFilter =
+    options?.categoryFilter ??
+    process.argv.find((a) => a.startsWith("--category="))?.split("=")[1];
+  const idFilter =
+    options?.idFilter ??
+    process.argv.find((a) => a.startsWith("--id="))?.split("=")[1];
 
   console.log("\n=======================================================");
   console.log(`  P-DOT AI-02 EVALUATION SUITE (${isLive ? "LIVE NEBIUS API" : "DETERMINISTIC MOCK MODE"})`);
@@ -291,9 +302,13 @@ export async function runEvalSuite(options?: { isLive?: boolean; categoryFilter?
     }
   }
 
-  const cases = categoryFilter
-    ? EVAL_DATASET.filter((c) => c.category === categoryFilter)
-    : EVAL_DATASET;
+  let cases = EVAL_DATASET;
+  if (categoryFilter) {
+    cases = cases.filter((c) => c.category === categoryFilter);
+  }
+  if (idFilter) {
+    cases = cases.filter((c) => c.id === idFilter);
+  }
 
   const results: EvalResult[] = [];
   const categoryStats: Record<EvalCategory, { total: number; passed: number }> = {
@@ -325,6 +340,11 @@ export async function runEvalSuite(options?: { isLive?: boolean; categoryFilter?
       for (const fail of result.failures) {
         console.log(`    ↳ \x1b[33m${fail}\x1b[0m`);
       }
+    }
+
+    if (isVerbose) {
+      const preview = result.output.trim().replace(/\n+/g, " ").slice(0, 160);
+      console.log(`    \x1b[36m↳ Output: "${preview}${result.output.length > 160 ? "…" : ""}"\x1b[0m`);
     }
 
     totalPromptTokens += result.promptTokens;
@@ -385,6 +405,25 @@ ${results
   .map(
     (r) =>
       `| \`${r.evalCase.id}\` | ${r.evalCase.category} | ${r.evalCase.description} | ${r.evalCase.expectedTool} | ${r.toolCalled ?? "none"} | ${r.passed ? "✅ PASS" : "❌ FAIL"} | ${r.failures.join("; ") || "-"} |`,
+  )
+  .join("\n")}
+
+## Detailed Prompt Outputs
+
+${results
+  .map(
+    (r) => `
+<details>
+<summary><strong>[${r.passed ? "PASS" : "FAIL"}] ${r.evalCase.id}</strong>: ${r.evalCase.description}</summary>
+
+- **Prompt**: ${r.evalCase.userPrompt}
+- **Tool Called**: \`${r.toolCalled ?? "none"}\` (Expected: \`${r.evalCase.expectedTool}\`)
+- **Latency**: ${r.latencyMs}ms | **Tokens**: ${r.promptTokens + r.completionTokens} | **Cost**: $${r.estimatedCostUsd.toFixed(6)}
+${r.failures.length > 0 ? `- **Failures**:\n${r.failures.map((f) => `  - ${f}`).join("\n")}\n` : ""}
+**Model Output**:
+> ${r.output.trim().replace(/\n/g, "\n> ")}
+
+</details>`,
   )
   .join("\n")}
 `;
