@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { MAX_MESSAGE_CHARS, MAX_TASK_CHARS, MAX_TITLE_CHARS } from "./limits";
+import { EFFORTS } from "./routing";
 import type { ChatRequest } from "@/types/api";
 
 const conversationId = z.uuid();
 
 export const modeSchema = z.enum(["personal", "work"]);
+
+/** "auto" lets the router choose; "deep" asks for the heavy tier. */
+const effortSchema = z.enum(EFFORTS).optional();
 
 // `.strict()` rejects unknown keys, so a client cannot smuggle in fields such
 // as a user ID. Identity always comes from the verified session.
@@ -19,6 +23,7 @@ const sendSchema = z
       .min(1, "Message cannot be empty.")
       .max(MAX_MESSAGE_CHARS, `Message must be at most ${MAX_MESSAGE_CHARS} characters.`),
     webSearch: z.boolean(),
+    effort: effortSchema,
   })
   .strict();
 
@@ -27,6 +32,7 @@ const retrySchema = z
     action: z.literal("retry"),
     conversationId,
     webSearch: z.boolean(),
+    effort: effortSchema,
   })
   .strict();
 

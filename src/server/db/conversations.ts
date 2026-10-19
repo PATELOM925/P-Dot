@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { isModelTier, isRouteReason, type MessageRoute } from "@/lib/routing";
 import { toSafeHttpUrl } from "@/lib/safe-url";
 import type {
   ConversationSummary,
@@ -25,6 +26,8 @@ export interface NewMessage {
   content: string;
   webSearch?: WebSearchStatus;
   sources?: SourceRef[];
+  /** Assistant replies only: which model answered and why. */
+  route?: MessageRoute;
 }
 
 /**
@@ -61,11 +64,17 @@ const messageRow = z.object({
   content: z.string(),
   web_search: z.enum(["off", "used", "no_results", "failed"]),
   sources: z.array(z.unknown()),
+  // Null for user messages and for replies saved before model routing.
+  model: z.string().nullish(),
+  model_tier: z.string().nullish(),
+  route_reason: z.string().nullish(),
+  model_fallback: z.boolean().nullish(),
   created_at: z.string(),
 });
 
 const CONVERSATION_COLUMNS = "id, title, mode, updated_at";
-const MESSAGE_COLUMNS = "id, role, content, web_search, sources, created_at";
+const MESSAGE_COLUMNS =
+  "id, role, content, web_search, sources, model, model_tier, route_reason, model_fallback, created_at";
 
 function toConversation(row: unknown): ConversationSummary {
   const parsed = conversationRow.parse(row);
@@ -82,6 +91,13 @@ function toSources(values: unknown[]): SourceRef[] {
   return sources;
 }
 
+/** The route of an assistant reply, or null when any part is missing or unknown. */
+function toRoute(row: z.infer<typeof messageRow>): MessageRoute | null {
+  if (row.role !== "assistant" || !row.model) return null;
+  if (!isModelTier(row.model_tier) || !isRouteReason(row.route_reason)) return null;
+  return { model: row.model, tier: row.model_tier, reason: row.route_reason, fallback: row.model_fallback === true };
+}
+
 function toMessage(row: unknown): MessageDTO {
   const parsed = messageRow.parse(row);
   return {
@@ -90,6 +106,7 @@ function toMessage(row: unknown): MessageDTO {
     content: parsed.content,
     webSearch: parsed.web_search,
     sources: toSources(parsed.sources),
+    route: toRoute(parsed),
     createdAt: parsed.created_at,
   };
 }
@@ -172,6 +189,14 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
           content: message.content,
           web_search: message.webSearch ?? "off",
           sources: message.sources ?? [],
+          ...(message.route
+            ? {
+                model: message.route.model,
+                model_tier: message.route.tier,
+                route_reason: message.route.reason,
+                model_fallback: message.route.fallback,
+              }
+            : {}),
         })
         .select(MESSAGE_COLUMNS)
         .single();

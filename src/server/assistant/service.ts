@@ -18,11 +18,21 @@ import type { QuotaGate } from "@/server/db/quota";
 import type { SpendGuard } from "@/server/db/spend";
 import type { Logger } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
-import type { ChatMessage, CompletionChunk, TokenUsage } from "@/server/providers/nebius/client";
+import type { ModelProvider, TokenUsage } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
+import type { CircuitBreaker } from "./breaker";
 import { buildContextWindow, titleFromMessage, type HistoryMessage } from "./context";
 import { publicSearchFailureMessage, toPublicCompletionError } from "./errors";
+import {
+  BudgetExhaustedError,
+  EmptyReplyError,
+  executeRouted,
+  newRouteReport,
+  type AttemptBudget,
+  type RouteReport,
+} from "./executor";
 import { buildPromptMessages } from "./prompt";
+import { routeRequest, type RouteDecision } from "./router";
 import {
   budgetRefusal,
   nebiusHoldMicroUsd,
@@ -31,17 +41,23 @@ import {
   SEARCH_RESULTS_MAX_BYTES,
   TAVILY_BASIC_SEARCH_CREDITS,
 } from "./spend";
+import type { RoutingConfig } from "./tiers";
 
 export interface AssistantDeps {
   repo: ConversationRepository;
   quota: QuotaGate;
   /** Global spend caps for paid providers, shared by all users. */
   spend: SpendGuard;
-  /** The Nebius model and output limit, used to price each call. */
-  model: { id: string; maxOutputTokens: number };
+  /** Model tiers: chains, limits and timing. Each attempt is priced for its model. */
+  routing: RoutingConfig;
   /** Null when web search is not configured on this server. */
   search: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
-  complete: (messages: ChatMessage[], signal: AbortSignal) => AsyncIterable<CompletionChunk>;
+  /** The model provider used by the executor for every attempt. */
+  provider: ModelProvider;
+  /** Soft per-model circuit breaker (isolate memory, best effort). */
+  breaker: CircuitBreaker;
+  /** Random number from 0 to 1 for backoff jitter (tests replace it). */
+  random?: () => number;
   now: () => Date;
   log: Logger;
   /** Keeps work (the spend settle) running after the client disconnects. */
@@ -64,6 +80,9 @@ export interface PreparedTurn {
   webSearch: boolean;
   /** True when search was requested but the Tavily budget refused it. */
   searchBudgetExhausted: boolean;
+  /** The tier for this reply and why the router chose it. */
+  route: RouteDecision;
+  /** Held before streaming. It pays for the first attempt, on any model of the tier. */
   nebiusHold: NebiusHold;
 }
 
@@ -126,17 +145,26 @@ export async function prepareChatTurn(
   const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
   if (request.action === "send") pendingHistory.push({ role: "user", content: request.message });
   const searchWanted = request.webSearch && deps.search !== null;
-  const heldMicroUsd = nebiusHoldMicroUsd(
-    deps.model.id,
-    buildPromptMessages({
-      history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
-      webSearch: request.webSearch ? "failed" : "off",
-      results: [],
-      now: deps.now(),
-      mode,
-    }),
-    deps.model.maxOutputTokens,
-    searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0,
+  const route = routeRequest({
+    message: pendingHistory.at(-1)?.content ?? "",
+    historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
+    webSearch: request.webSearch,
+    effort: request.effort ?? "auto",
+  });
+  const plan = deps.routing[route.tier];
+  const promptBound = buildPromptMessages({
+    history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
+    webSearch: request.webSearch ? "failed" : "off",
+    results: [],
+    now: deps.now(),
+    mode,
+  });
+  // The first attempt can run on any model of the tier (the breaker can skip
+  // the first one), so hold for the most expensive one.
+  const heldMicroUsd = Math.max(
+    ...plan.models.map((model) =>
+      nebiusHoldMicroUsd(model, promptBound, plan.maxOutputTokens, searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0),
+    ),
   );
   const nebius = await deps.spend.reserve("nebius", heldMicroUsd);
   if (!nebius.allowed) {
@@ -185,6 +213,7 @@ export async function prepareChatTurn(
         history: recent.map(({ role, content }) => ({ role, content })),
         webSearch: request.webSearch,
         searchBudgetExhausted,
+        route,
         nebiusHold,
       },
     };
@@ -218,7 +247,7 @@ function toSourceRefs(results: WebSearchResult[]): SourceRef[] {
 /**
  * Runs retrieval (if requested) and inference, streaming events to the client.
  * The assistant reply is persisted only when it completes. Never throws:
- * failures become a final `error` event. Always settles the Nebius hold, also
+ * failures become a final `error` event. Every Nebius hold is settled, also
  * when the client stops or disconnects.
  */
 export async function* streamChatTurn(
@@ -226,14 +255,19 @@ export async function* streamChatTurn(
   turn: PreparedTurn,
   signal: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {
-  const usage: { value: TokenUsage | null } = { value: null };
-  try {
-    yield* runChatTurn(deps, turn, signal, usage);
-  } finally {
-    const amount = nebiusSettleMicroUsd(deps.model.id, turn.nebiusHold.heldMicroUsd, usage.value);
-    const settling = settleQuietly(deps, turn.requestId, "nebius", turn.nebiusHold.reservationId, amount);
+  const settles: Promise<void>[] = [];
+  const holds = { prepaid: turn.nebiusHold as NebiusHold | null };
+  const settle = (hold: NebiusHold, amount: number) => {
+    const settling = settleQuietly(deps, turn.requestId, "nebius", hold.reservationId, amount);
     deps.waitUntil(settling);
-    await settling;
+    settles.push(settling);
+  };
+  try {
+    yield* runChatTurn(deps, turn, signal, holds, settle);
+  } finally {
+    // No attempt used the first hold (for example Stop during search): no call was made.
+    if (holds.prepaid) settle(holds.prepaid, 0);
+    await Promise.all(settles);
   }
 }
 
@@ -241,7 +275,8 @@ async function* runChatTurn(
   deps: AssistantDeps,
   turn: PreparedTurn,
   signal: AbortSignal,
-  usageOut: { value: TokenUsage | null },
+  holds: { prepaid: NebiusHold | null },
+  settle: (hold: NebiusHold, amount: number) => void,
 ): AsyncGenerator<ChatStreamEvent> {
   const startedAt = Date.now();
   const logBase = { requestId: turn.requestId, route: "chat" };
@@ -251,6 +286,7 @@ async function* runChatTurn(
     requestId: turn.requestId,
     conversation: turn.conversation,
     userMessage: turn.userMessage,
+    route: turn.route,
   };
 
   // 1. Optional web retrieval. Search is never called unless requested.
@@ -297,7 +333,7 @@ async function* runChatTurn(
     }
   }
 
-  // 2. Inference over a bounded context window.
+  // 2. Inference over a bounded context window, on the routed tier.
   const messages = buildPromptMessages({
     history: buildContextWindow(turn.history, HISTORY_CHAR_BUDGET),
     webSearch,
@@ -305,17 +341,53 @@ async function* runChatTurn(
     now: deps.now(),
     mode: turn.conversation.mode,
   });
+  const plan = deps.routing[turn.route.tier];
+  const report = newRouteReport(plan.tier);
+  const budget: AttemptBudget = {
+    async reserve(model) {
+      // The hold made before streaming pays for the first attempt.
+      if (holds.prepaid) {
+        const hold = holds.prepaid;
+        holds.prepaid = null;
+        return { allowed: true, hold };
+      }
+      const heldMicroUsd = nebiusHoldMicroUsd(model, messages, plan.maxOutputTokens);
+      const reservation = await deps.spend.reserve("nebius", heldMicroUsd);
+      if (!reservation.allowed) {
+        deps.log("warn", "spend_limit_reached", {
+          ...logBase,
+          provider: "nebius",
+          limit: reservation.limit,
+          stage: "attempt",
+        });
+        return { allowed: false, limit: reservation.limit };
+      }
+      return { allowed: true, hold: { reservationId: reservation.id, heldMicroUsd } };
+    },
+    settle(hold, model, outcome) {
+      // Without valid usage the full hold stays counted; 0 only when no call was sent.
+      settle(hold, outcome.sent ? nebiusSettleMicroUsd(model, hold.heldMicroUsd, outcome.usage) : 0);
+    },
+  };
 
   let content = "";
   let truncated = false;
   let finishReason: string | null = null;
   let usage: TokenUsage | null = null;
   try {
-    for await (const chunk of deps.complete(messages, signal)) {
+    for await (const chunk of executeRouted({
+      plan,
+      messages,
+      provider: deps.provider,
+      budget,
+      breaker: deps.breaker,
+      signal,
+      report,
+      random: deps.random,
+    })) {
       if (chunk.type === "finish") {
         finishReason = chunk.finishReason;
         usage = chunk.usage;
-        usageOut.value = chunk.usage;
         continue;
       }
       const room = MAX_ASSISTANT_CHARS - content.length;
@@ -330,8 +402,23 @@ async function* runChatTurn(
       }
     }
   } catch (error) {
+    logRoute(deps, logBase, turn.route, report);
     if (signal.aborted) {
       deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
+      return;
+    }
+    if (error instanceof BudgetExhaustedError) {
+      yield { type: "error", code: "budget_exhausted", message: budgetRefusal(error.limit, deps.now()).message, retryable: false };
+      return;
+    }
+    if (error instanceof EmptyReplyError) {
+      deps.log("error", "completion_empty", { ...logBase, finishReason });
+      yield {
+        type: "error",
+        code: "provider_unavailable",
+        message: "The assistant returned an empty reply. Please retry.",
+        retryable: true,
+      };
       return;
     }
     const publicError = toPublicCompletionError(error);
@@ -344,12 +431,13 @@ async function* runChatTurn(
     yield { type: "error", ...publicError };
     return;
   }
+  logRoute(deps, logBase, turn.route, report);
 
   if (signal.aborted) {
     deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
     return;
   }
-  if (content.trim().length === 0) {
+  if (content.trim().length === 0 || !report.model) {
     deps.log("error", "completion_empty", { ...logBase, finishReason });
     yield {
       type: "error",
@@ -360,7 +448,7 @@ async function* runChatTurn(
     return;
   }
 
-  // 3. Persist the completed reply with its search outcome and sources.
+  // 3. Persist the completed reply with its search outcome, sources and route.
   let saved: MessageDTO;
   try {
     saved = await deps.repo.insertMessage(turn.userId, {
@@ -369,6 +457,7 @@ async function* runChatTurn(
       content,
       webSearch,
       sources: webSearch === "used" ? toSourceRefs(results) : [],
+      route: { model: report.model, tier: plan.tier, reason: turn.route.reason, fallback: report.fallback },
     });
   } catch {
     deps.log("error", "assistant_message_save_failed", logBase);
@@ -387,10 +476,34 @@ async function* runChatTurn(
     webSearch,
     sourceCount: webSearch === "used" ? results.length : 0,
     finishReason,
+    model: report.model,
+    tier: plan.tier,
     promptTokens: usage?.promptTokens,
     completionTokens: usage?.completionTokens,
-    heldMicroUsd: turn.nebiusHold.heldMicroUsd,
-    costMicroUsd: nebiusSettleMicroUsd(deps.model.id, turn.nebiusHold.heldMicroUsd, usage),
   });
   yield { type: "done", message: saved, truncated: truncated || finishReason === "length" };
+}
+
+/** One metadata-only log line for each routed reply. No prompt or reply text. */
+function logRoute(
+  deps: AssistantDeps,
+  logBase: { requestId: string; route: string },
+  route: RouteDecision,
+  report: RouteReport,
+): void {
+  deps.log(report.outcome === "ok" || report.outcome === "stopped" ? "info" : "warn", "model_route", {
+    ...logBase,
+    tier: report.tier,
+    reason: route.reason,
+    modelsTried: report.modelsTried.join(">"),
+    attempts: report.attempts,
+    hedgeFired: report.hedgeFired,
+    hedgeWon: report.hedgeWon,
+    breakerSkips: report.breakerSkips,
+    model: report.model,
+    fallback: report.fallback,
+    firstTokenMs: report.firstTokenMs,
+    totalMs: report.totalMs,
+    outcome: report.outcome,
+  });
 }

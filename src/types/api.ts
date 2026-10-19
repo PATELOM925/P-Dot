@@ -1,4 +1,7 @@
 // Contracts shared by the browser and the API routes. No secrets or server-only types here.
+import type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
+
+export type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
 
 export type MessageRole = "user" | "assistant";
 
@@ -19,6 +22,8 @@ export interface MessageDTO {
   content: string;
   webSearch: WebSearchStatus;
   sources: SourceRef[];
+  /** Which model answered and why. Null for user messages and replies saved before routing. */
+  route: MessageRoute | null;
   createdAt: string;
 }
 
@@ -70,8 +75,8 @@ export interface ApiErrorBody {
 
 /** Request body for POST /api/chat. */
 export type ChatRequest =
-  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean }
-  | { action: "retry"; conversationId: string; webSearch: boolean };
+  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean; effort?: Effort }
+  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort };
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once
@@ -84,6 +89,8 @@ export type ChatStreamEvent =
       requestId: string;
       conversation: ConversationSummary;
       userMessage: MessageDTO;
+      /** The tier chosen for this reply. The model is known only at `done`. */
+      route: { tier: ModelTier; reason: RouteReason };
     }
   | {
       type: "search";

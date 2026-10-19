@@ -192,6 +192,7 @@ export function ChatWorkspace({
           content: text,
           webSearch: "off",
           sources: [],
+          route: null,
           createdAt: new Date().toISOString(),
           pending: true,
         },
