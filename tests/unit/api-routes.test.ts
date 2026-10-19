@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import { readChatStream } from "@/features/chat/stream";
-import { FakeQuota, MemoryRepository, TEST_SPEND_CAPS, fakeDeps } from "../support/fakes";
+import { FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps } from "../support/fakes";
 import { collect } from "../support/streams";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
@@ -137,6 +137,32 @@ describe("POST /api/chat", () => {
     const response = await chatRoute.POST(chatRequest({ action: "send", message: "hi", webSearch: false }));
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBeTruthy();
+  });
+
+  it("returns budget_exhausted before streaming when the daily spend cap is reached", async () => {
+    signInAs(ALICE);
+    const spend = new FakeSpend();
+    spend.refuse.nebius = "day";
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo, spend }).deps);
+    const response = await chatRoute.POST(chatRequest({ action: "send", message: "hi", webSearch: false }));
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBeTruthy();
+    const body = await response.json();
+    expect(body.error).toMatchObject({
+      code: "budget_exhausted",
+      message: "P-Dot has reached its daily usage limit. Try again tomorrow.",
+    });
+    expect(repo.messages).toHaveLength(0);
+  });
+
+  it("returns 500, not a reply, when the spend cap cannot be checked", async () => {
+    signInAs(ALICE);
+    const spend = new FakeSpend();
+    spend.failReserve = true;
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo, spend }).deps);
+    const response = await chatRoute.POST(chatRequest({ action: "send", message: "hi", webSearch: false }));
+    expect(response.status).toBe(500);
+    expect(repo.messages).toHaveLength(0);
   });
 });
 

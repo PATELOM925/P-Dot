@@ -53,6 +53,7 @@ export type ApiErrorCode =
   | "not_found"
   | "conflict"
   | "rate_limited"
+  | "budget_exhausted"
   | "not_configured"
   | "provider_unavailable"
   | "provider_timeout"

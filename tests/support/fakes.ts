@@ -1,6 +1,6 @@
 import type { ConversationRepository, NewMessage } from "@/server/db/conversations";
 import type { QuotaGate } from "@/server/db/quota";
-import type { SpendCaps, SpendProvider } from "@/server/db/spend";
+import type { SpendCaps, SpendGuard, SpendLimit, SpendProvider, SpendReservation } from "@/server/db/spend";
 import type { AssistantDeps } from "@/server/assistant/service";
 import type { ChatMessage, CompletionChunk } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
@@ -152,6 +152,39 @@ export const TEST_SPEND_CAPS: Record<SpendProvider, SpendCaps> = {
   tavily: { day: 40, period: 800, userDay: 10 },
 };
 
+/**
+ * In-memory spend guard with the database's rules: a reservation holds its
+ * amount, and settle can give back part of it once.
+ */
+export class FakeSpend implements SpendGuard {
+  reservations: { id: string; provider: SpendProvider; held: number; settled: number | null }[] = [];
+  refuse: Partial<Record<SpendProvider, SpendLimit>> = {};
+  failReserve = false;
+
+  async reserve(provider: SpendProvider, amount: number): Promise<SpendReservation> {
+    if (this.failReserve) throw new Error("reserve failed");
+    const limit = this.refuse[provider];
+    if (limit) return { allowed: false, limit };
+    const id = `res-${this.reservations.length + 1}`;
+    this.reservations.push({ id, provider, held: amount, settled: null });
+    return { allowed: true, id };
+  }
+
+  async settle(id: string, amount: number) {
+    const reservation = this.reservations.find((r) => r.id === id);
+    if (!reservation || reservation.settled !== null) throw new Error("nothing to settle");
+    if (amount < 0 || amount > reservation.held) throw new Error("invalid amount");
+    reservation.settled = amount;
+  }
+
+  /** What stays counted for a provider: settled amounts, or the hold if not settled. */
+  counted(provider: SpendProvider): number {
+    return this.reservations
+      .filter((r) => r.provider === provider)
+      .reduce((sum, r) => sum + (r.settled ?? r.held), 0);
+  }
+}
+
 export class FakeQuota implements QuotaGate {
   calls = 0;
   constructor(private readonly allow = true) {}
@@ -164,6 +197,8 @@ export class FakeQuota implements QuotaGate {
 export interface FakeDepsOptions {
   repo?: MemoryRepository;
   quota?: FakeQuota;
+  spend?: FakeSpend;
+  model?: string;
   search?: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
   reply?: string[] | ((messages: ChatMessage[], signal: AbortSignal) => AsyncIterable<CompletionChunk>);
 }
@@ -172,11 +207,14 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
   const prompts: ChatMessage[][] = [];
   const searches: string[] = [];
   const logs: { level: string; event: string; fields: Record<string, unknown> }[] = [];
+  const waited: Promise<unknown>[] = [];
   const reply = options.reply ?? ["Hello", " there."];
 
   const deps: AssistantDeps = {
     repo: options.repo ?? new MemoryRepository(),
     quota: options.quota ?? new FakeQuota(),
+    spend: options.spend ?? new FakeSpend(),
+    model: { id: options.model ?? "nvidia/nemotron-3-super-120b-a12b", maxOutputTokens: 1024 },
     search:
       options.search === null
         ? null
@@ -196,6 +234,9 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
     log: (level, event, fields = {}) => {
       logs.push({ level, event, fields });
     },
+    waitUntil: (work) => {
+      waited.push(work);
+    },
   };
-  return { deps, prompts, searches, logs };
+  return { deps, prompts, searches, logs, waited };
 }

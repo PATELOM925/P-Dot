@@ -15,6 +15,7 @@ import type {
 } from "@/types/api";
 import type { ConversationRepository } from "@/server/db/conversations";
 import type { QuotaGate } from "@/server/db/quota";
+import type { SpendGuard } from "@/server/db/spend";
 import type { Logger } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
 import type { ChatMessage, CompletionChunk, TokenUsage } from "@/server/providers/nebius/client";
@@ -22,15 +23,35 @@ import type { WebSearchResult } from "@/server/providers/tavily/client";
 import { buildContextWindow, titleFromMessage, type HistoryMessage } from "./context";
 import { publicSearchFailureMessage, toPublicCompletionError } from "./errors";
 import { buildPromptMessages } from "./prompt";
+import {
+  budgetRefusal,
+  nebiusHoldMicroUsd,
+  nebiusSettleMicroUsd,
+  SEARCH_BUDGET_MESSAGE,
+  SEARCH_RESULTS_MAX_BYTES,
+  TAVILY_BASIC_SEARCH_CREDITS,
+} from "./spend";
 
 export interface AssistantDeps {
   repo: ConversationRepository;
   quota: QuotaGate;
+  /** Global spend caps for paid providers, shared by all users. */
+  spend: SpendGuard;
+  /** The Nebius model and output limit, used to price each call. */
+  model: { id: string; maxOutputTokens: number };
   /** Null when web search is not configured on this server. */
   search: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
   complete: (messages: ChatMessage[], signal: AbortSignal) => AsyncIterable<CompletionChunk>;
   now: () => Date;
   log: Logger;
+  /** Keeps work (the spend settle) running after the client disconnects. */
+  waitUntil: (work: Promise<unknown>) => void;
+}
+
+/** A Nebius hold made before the stream starts and settled when it ends. */
+export interface NebiusHold {
+  reservationId: string;
+  heldMicroUsd: number;
 }
 
 export interface PreparedTurn {
@@ -41,6 +62,9 @@ export interface PreparedTurn {
   /** Chronological history ending with `userMessage`. */
   history: HistoryMessage[];
   webSearch: boolean;
+  /** True when search was requested but the Tavily budget refused it. */
+  searchBudgetExhausted: boolean;
+  nebiusHold: NebiusHold;
 }
 
 export type PrepareResult =
@@ -55,7 +79,8 @@ export type PrepareResult =
 
 /**
  * Everything that must succeed before the response stream starts: ownership
- * check, retry precondition, usage quota, and saving the user's message.
+ * check, retry precondition, usage quota, global spend caps, and saving the
+ * user's message.
  * `userId` must come from the verified session, never from the request body.
  */
 export async function prepareChatTurn(
@@ -95,35 +120,95 @@ export async function prepareChatTurn(
     };
   }
 
-  let conversation: ConversationSummary;
-  let userMessage: MessageDTO;
-  if (request.action === "send") {
-    conversation =
-      existing ??
-      (await deps.repo.createConversation(userId, titleFromMessage(request.message), request.mode ?? "personal"));
-    userMessage = await deps.repo.insertMessage(userId, {
-      conversationId: conversation.id,
-      role: "user",
-      content: request.message,
-    });
-    recent = [...recent, userMessage];
-  } else {
-    // Retry: both were verified above.
-    conversation = existing!;
-    userMessage = recent.at(-1)!;
+  // Global spend caps, after the per-user quota and before any paid call.
+  // The hold is the worst case for the prompt this turn will send.
+  const mode = existing?.mode ?? (request.action === "send" ? (request.mode ?? "personal") : "personal");
+  const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
+  if (request.action === "send") pendingHistory.push({ role: "user", content: request.message });
+  const searchWanted = request.webSearch && deps.search !== null;
+  const heldMicroUsd = nebiusHoldMicroUsd(
+    deps.model.id,
+    buildPromptMessages({
+      history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
+      webSearch: request.webSearch ? "failed" : "off",
+      results: [],
+      now: deps.now(),
+      mode,
+    }),
+    deps.model.maxOutputTokens,
+    searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0,
+  );
+  const nebius = await deps.spend.reserve("nebius", heldMicroUsd);
+  if (!nebius.allowed) {
+    deps.log("warn", "spend_limit_reached", { requestId, route: "chat", provider: "nebius", limit: nebius.limit });
+    return { ok: false, ...budgetRefusal(nebius.limit, deps.now()) };
   }
+  const nebiusHold: NebiusHold = { reservationId: nebius.id, heldMicroUsd };
 
-  return {
-    ok: true,
-    turn: {
-      requestId,
-      userId,
-      conversation: { ...conversation, updatedAt: userMessage.createdAt },
-      userMessage,
-      history: recent.map(({ role, content }) => ({ role, content })),
-      webSearch: request.webSearch,
-    },
-  };
+  let tavilyReservation: string | null = null;
+  try {
+    let searchBudgetExhausted = false;
+    if (searchWanted) {
+      const tavily = await deps.spend.reserve("tavily", TAVILY_BASIC_SEARCH_CREDITS);
+      if (tavily.allowed) {
+        tavilyReservation = tavily.id;
+      } else {
+        searchBudgetExhausted = true;
+        deps.log("warn", "spend_limit_reached", { requestId, route: "chat", provider: "tavily", limit: tavily.limit });
+      }
+    }
+
+    let conversation: ConversationSummary;
+    let userMessage: MessageDTO;
+    if (request.action === "send") {
+      conversation =
+        existing ?? (await deps.repo.createConversation(userId, titleFromMessage(request.message), mode));
+      userMessage = await deps.repo.insertMessage(userId, {
+        conversationId: conversation.id,
+        role: "user",
+        content: request.message,
+      });
+      recent = [...recent, userMessage];
+    } else {
+      // Retry: both were verified above.
+      conversation = existing!;
+      userMessage = recent.at(-1)!;
+    }
+
+    return {
+      ok: true,
+      turn: {
+        requestId,
+        userId,
+        conversation: { ...conversation, updatedAt: userMessage.createdAt },
+        userMessage,
+        history: recent.map(({ role, content }) => ({ role, content })),
+        webSearch: request.webSearch,
+        searchBudgetExhausted,
+        nebiusHold,
+      },
+    };
+  } catch (error) {
+    // No paid call will happen: give the holds back (best effort; a hold that
+    // is not given back stays counted, which is the safe side).
+    await settleQuietly(deps, requestId, "nebius", nebiusHold.reservationId, 0);
+    if (tavilyReservation) await settleQuietly(deps, requestId, "tavily", tavilyReservation, 0);
+    throw error;
+  }
+}
+
+async function settleQuietly(
+  deps: AssistantDeps,
+  requestId: string,
+  provider: "nebius" | "tavily",
+  reservationId: string,
+  amount: number,
+): Promise<void> {
+  try {
+    await deps.spend.settle(reservationId, amount);
+  } catch {
+    deps.log("warn", "spend_settle_failed", { requestId, route: "chat", provider });
+  }
 }
 
 function toSourceRefs(results: WebSearchResult[]): SourceRef[] {
@@ -133,12 +218,30 @@ function toSourceRefs(results: WebSearchResult[]): SourceRef[] {
 /**
  * Runs retrieval (if requested) and inference, streaming events to the client.
  * The assistant reply is persisted only when it completes. Never throws:
- * failures become a final `error` event.
+ * failures become a final `error` event. Always settles the Nebius hold, also
+ * when the client stops or disconnects.
  */
 export async function* streamChatTurn(
   deps: AssistantDeps,
   turn: PreparedTurn,
   signal: AbortSignal,
+): AsyncGenerator<ChatStreamEvent> {
+  const usage: { value: TokenUsage | null } = { value: null };
+  try {
+    yield* runChatTurn(deps, turn, signal, usage);
+  } finally {
+    const amount = nebiusSettleMicroUsd(deps.model.id, turn.nebiusHold.heldMicroUsd, usage.value);
+    const settling = settleQuietly(deps, turn.requestId, "nebius", turn.nebiusHold.reservationId, amount);
+    deps.waitUntil(settling);
+    await settling;
+  }
+}
+
+async function* runChatTurn(
+  deps: AssistantDeps,
+  turn: PreparedTurn,
+  signal: AbortSignal,
+  usageOut: { value: TokenUsage | null },
 ): AsyncGenerator<ChatStreamEvent> {
   const startedAt = Date.now();
   const logBase = { requestId: turn.requestId, route: "chat" };
@@ -154,7 +257,10 @@ export async function* streamChatTurn(
   let webSearch: WebSearchStatus = "off";
   let results: WebSearchResult[] = [];
   if (turn.webSearch) {
-    if (!deps.search) {
+    if (turn.searchBudgetExhausted) {
+      webSearch = "failed";
+      yield { type: "search", status: "failed", sources: [], message: SEARCH_BUDGET_MESSAGE };
+    } else if (!deps.search) {
       webSearch = "failed";
       yield {
         type: "search",
@@ -209,6 +315,7 @@ export async function* streamChatTurn(
       if (chunk.type === "finish") {
         finishReason = chunk.finishReason;
         usage = chunk.usage;
+        usageOut.value = chunk.usage;
         continue;
       }
       const room = MAX_ASSISTANT_CHARS - content.length;
@@ -282,6 +389,8 @@ export async function* streamChatTurn(
     finishReason,
     promptTokens: usage?.promptTokens,
     completionTokens: usage?.completionTokens,
+    heldMicroUsd: turn.nebiusHold.heldMicroUsd,
+    costMicroUsd: nebiusSettleMicroUsd(deps.model.id, turn.nebiusHold.heldMicroUsd, usage),
   });
   yield { type: "done", message: saved, truncated: truncated || finishReason === "length" };
 }
