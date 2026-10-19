@@ -90,7 +90,7 @@ The attempt cap and the deadline limit how many holds one reply can make.
 
 ### Before the migration is applied
 
-A merge to `main` applies the migration and deploys the Worker at about the same time, so the new code can run first. When the database says that a route column does not exist (Postgres `42703` or PostgREST `PGRST204`, naming only `model`, `model_tier`, `route_reason` or `model_fallback`), the repository repeats the statement with the old columns. Replies then have `route: null`, and nothing else changes. A missing column fails the statement before any row is written, so the repeated insert cannot make a duplicate. Each request makes a new repository, so the fallback ends as soon as the migration is applied. Other database errors still fail closed.
+A merge to `main` applies the migration and deploys the Worker at about the same time, so the new code can run first. When the database says that a route column does not exist (Postgres `42703` or PostgREST `PGRST204`, with the exact message for the `messages` table and one of `model`, `model_tier`, `route_reason` or `model_fallback`; any other table, column or text does not match), the repository repeats the statement with the old columns. Replies then have `route: null`, and nothing else changes. A missing column fails the statement before any row is written, so the repeated insert cannot make a duplicate. Each request makes a new repository, so the fallback ends as soon as the migration is applied. Other database errors still fail closed.
 
 ### What the user sees
 

@@ -155,15 +155,44 @@ describe("messages before and after the routing migration", () => {
     await expect(repo.listRecentMessages(ALICE, CONVERSATION, 10)).rejects.toBeInstanceOf(RepositoryError);
   });
 
-  it("knows which errors mean a missing routing column", () => {
-    expect(isMissingRouteColumn({ code: "42703", message: "column messages.model does not exist" })).toBe(true);
-    expect(isMissingRouteColumn({ code: "42703", message: "column messages.model_tier does not exist" })).toBe(true);
-    expect(
-      isMissingRouteColumn({ code: "PGRST204", message: "Could not find the 'route_reason' column of 'messages' in the schema cache" }),
-    ).toBe(true);
-    expect(isMissingRouteColumn({ code: "42703", message: "column messages.sources does not exist" })).toBe(false);
-    expect(isMissingRouteColumn({ code: "42703", message: "column messages.models does not exist" })).toBe(false);
-    expect(isMissingRouteColumn({ code: "23514", message: "violates check constraint on model" })).toBe(false);
+  it.each(["model", "model_tier", "route_reason", "model_fallback"])(
+    "knows that a missing %s column of messages is a routing column (42703 and PGRST204)",
+    (column) => {
+      expect(isMissingRouteColumn({ code: "42703", message: `column messages.${column} does not exist` })).toBe(true);
+      expect(isMissingRouteColumn({ code: "42703", message: `column public.messages.${column} does not exist` })).toBe(true);
+      expect(
+        isMissingRouteColumn({ code: "42703", message: `column "${column}" of relation "messages" does not exist` }),
+      ).toBe(true);
+      expect(
+        isMissingRouteColumn({
+          code: "PGRST204",
+          message: `Could not find the '${column}' column of 'messages' in the schema cache`,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    // Review round 2: other tables must not match.
+    ["42703", "column audit.model does not exist"],
+    ["42703", "column model.sources does not exist"],
+    ["PGRST204", "Could not find the 'model' column of 'audit' in the schema cache"],
+    // Other columns, near misses and extra text.
+    ["42703", "column messages.sources does not exist"],
+    ["42703", "column messages.models does not exist"],
+    ["42703", 'column "model" does not exist'],
+    ["42703", 'column "model" of relation "audit" does not exist'],
+    ["42703", "column messages.model does not exist (and more)"],
+    ["PGRST204", "Could not find the 'models' column of 'messages' in the schema cache"],
+    ["23514", "column messages.model does not exist"],
+    ["", "column messages.model does not exist"],
+  ])("does not treat %s %j as a missing routing column", (code, message) => {
+    expect(isMissingRouteColumn({ code, message })).toBe(false);
+  });
+
+  it("does not treat a missing error, code or message as a missing routing column", () => {
     expect(isMissingRouteColumn(null)).toBe(false);
+    expect(isMissingRouteColumn({ message: "column messages.model does not exist" })).toBe(false);
+    expect(isMissingRouteColumn({ code: "42703" })).toBe(false);
   });
 });

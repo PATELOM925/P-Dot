@@ -77,15 +77,36 @@ const LEGACY_MESSAGE_COLUMNS = "id, role, content, web_search, sources, created_
 const MESSAGE_COLUMNS =
   "id, role, content, web_search, sources, model, model_tier, route_reason, model_fallback, created_at";
 
+const ROUTE_COLUMNS = new Set(["model", "model_tier", "route_reason", "model_fallback"]);
+
 /**
- * True when a database error says that a model routing column does not exist
- * yet: Postgres 42703 ("column messages.model does not exist") or PostgREST
- * PGRST204 ("Could not find the 'model' column ..."). This happens when new
- * code runs before the additive routing migration. Other errors return false.
+ * The exact error messages for a missing column of `public.messages`. Each one
+ * captures the column name. Any other text (another table, extra words) does
+ * not match.
+ */
+const MISSING_COLUMN_MESSAGES: Record<string, RegExp[]> = {
+  // Postgres, as PostgREST returns it for a select, and for a direct insert.
+  "42703": [
+    /^column (?:public\.)?messages\.([a-z_]+) does not exist$/,
+    /^column "([a-z_]+)" of relation "messages" does not exist$/,
+  ],
+  // PostgREST schema cache, for an insert.
+  PGRST204: [/^Could not find the '([a-z_]+)' column of 'messages' in the schema cache$/],
+};
+
+/**
+ * True only when a database error says that one of the four model routing
+ * columns of `messages` does not exist yet. This happens when new code runs
+ * before the additive routing migration. Every other error returns false.
  */
 export function isMissingRouteColumn(error: { code?: string; message?: string } | null): boolean {
-  if (!error || (error.code !== "42703" && error.code !== "PGRST204")) return false;
-  return /\b(model|model_tier|route_reason|model_fallback)\b/.test(error.message ?? "");
+  const patterns = error?.code ? MISSING_COLUMN_MESSAGES[error.code] : undefined;
+  if (!patterns) return false;
+  const message = (error?.message ?? "").trim();
+  return patterns.some((pattern) => {
+    const column = pattern.exec(message)?.[1];
+    return column !== undefined && ROUTE_COLUMNS.has(column);
+  });
 }
 
 function toConversation(row: unknown): ConversationSummary {
