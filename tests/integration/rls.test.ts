@@ -79,6 +79,28 @@ describe.skipIf(!configured)("row-level security (live Supabase)", () => {
     expect(stillThere?.title).toBe("RLS test (safe to delete)");
   });
 
+  it("stores the route of a reply privately and only on assistant messages", async () => {
+    const repoA = createConversationRepository(a.client);
+    const route = { model: "nvidia/nemotron-3-super-120b-a12b", tier: "standard" as const, reason: "analysis" as const, fallback: true };
+    const saved = await repoA.insertMessage(a.userId, { conversationId, role: "assistant", content: "routed reply", route });
+    expect(saved.route).toEqual(route);
+    const [userMessage] = await repoA.listRecentMessages(a.userId, conversationId, 1_000);
+    expect(userMessage!.route).toBeNull();
+
+    const seen = await b.client.from("messages").select("model").eq("id", saved.id);
+    expect(seen.data).toEqual([]);
+    const onUserMessage = await a.client
+      .from("messages")
+      .insert({ conversation_id: conversationId, user_id: a.userId, role: "user", content: "x", model: "m/x" });
+    expect(onUserMessage.error).not.toBeNull();
+    const badTier = await a.client
+      .from("messages")
+      .insert({ conversation_id: conversationId, user_id: a.userId, role: "assistant", content: "x", model_tier: "warp" });
+    expect(badTier.error).not.toBeNull();
+    const changed = await a.client.from("messages").update({ model: "m/y" }).eq("id", saved.id);
+    expect(changed.error).not.toBeNull();
+  });
+
   it("enforces the usage quota per user", async () => {
     const first = await a.client.rpc("consume_chat_quota", { p_limit: 1_000_000, p_window_seconds: 60 });
     expect(first.error).toBeNull();
