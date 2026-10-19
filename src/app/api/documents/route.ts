@@ -12,7 +12,7 @@ import { errorResponse, jsonResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
 import { ProviderError } from "@/server/providers/errors";
 
-/** GET /api/documents?mode=personal|work — the signed-in user's documents for one mode. */
+/** GET /api/documents?mode=personal|work. Lists the signed-in user's documents for one mode. */
 export async function GET(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "documents.list" }, async ({ auth, requestId }) => {
     const mode = modeSchema.safeParse(new URL(request.url).searchParams.get("mode"));
@@ -28,7 +28,7 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 /**
- * POST /api/documents — upload plain text or Markdown. Body: { mode, title, mediaType, text }.
+ * POST /api/documents uploads plain text or Markdown. Body: { mode, title, mediaType, text }.
  * The text is split into chunks, embedded and stored. The document is "ready"
  * only when every step worked; otherwise it is "failed".
  */

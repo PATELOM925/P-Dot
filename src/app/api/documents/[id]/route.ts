@@ -13,7 +13,7 @@ const idSchema = z.uuid();
 const documentNotFound = (requestId: string) =>
   errorResponse(404, "not_found", "Document not found.", requestId);
 
-/** DELETE /api/documents/:id — remove a document and all its chunks. */
+/** DELETE /api/documents/:id. Removes a document and all its chunks. */
 export async function DELETE(request: Request, context: Context): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "documents.delete", sameOrigin: true }, async ({ auth, requestId }) => {
     const id = idSchema.safeParse((await context.params).id);
