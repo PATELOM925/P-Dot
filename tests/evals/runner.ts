@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { EVAL_DATASET, type EvalCase, type EvalCategory } from "./dataset";
-import { buildPromptMessages } from "@/server/assistant/prompt";
+import { buildPromptMessages, formatSearchResults } from "@/server/assistant/prompt";
 import { WEB_SEARCH_TOOL, type ToolCall } from "@/server/assistant/tools";
 import { streamChatCompletion, type ChatMessage, type NebiusSettings } from "@/server/providers/nebius/client";
 import { searchWeb } from "@/server/providers/tavily/client";
@@ -120,9 +120,7 @@ async function runSingleEval(
               name: "web_search",
               content:
                 results.length > 0
-                  ? results
-                      .map((r, i) => `<source id="${i + 1}">\nTitle: ${r.title}\nURL: ${r.url}\nExcerpt: ${r.excerpt}\n</source>`)
-                      .join("\n")
+                  ? formatSearchResults(results)
                   : "No search results found.",
             },
           ];

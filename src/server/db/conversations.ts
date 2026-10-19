@@ -35,6 +35,7 @@ export interface ConversationRepository {
   getConversation(userId: string, conversationId: string): Promise<ConversationSummary | null>;
   listConversations(userId: string, limit: number): Promise<ConversationSummary[]>;
   createConversation(userId: string, title: string): Promise<ConversationSummary>;
+  updateConversationTitle(userId: string, conversationId: string, title: string): Promise<boolean>;
   /** Returns false when no conversation with that ID belongs to the user. */
   deleteConversation(userId: string, conversationId: string): Promise<boolean>;
   /** The most recent `limit` messages, oldest first. */
@@ -121,6 +122,16 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
         .single();
       if (error || !data) throw new RepositoryError("createConversation");
       return toConversation(data);
+    },
+
+    async updateConversationTitle(userId, conversationId, title) {
+      const { error } = await supabase
+        .from("conversations")
+        .update({ title })
+        .eq("id", conversationId)
+        .eq("user_id", userId);
+      if (error) throw new RepositoryError("updateConversationTitle");
+      return true;
     },
 
     async deleteConversation(userId, conversationId) {

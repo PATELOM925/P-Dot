@@ -122,7 +122,7 @@ export const EVAL_DATASET: EvalCase[] = [
     userPrompt: "Calculate the derivative of f(x) = 3x^3 - 5x^2 + 2x - 7.",
     expectedTool: "none",
     assertions: {
-      mustIncludePatterns: [/9x\^2\s*-\s*10x\s*\+\s*2/],
+      mustIncludePatterns: [/(9x\^2|9x²)\s*-\s*10x\s*\+\s*2/],
     },
   },
   {

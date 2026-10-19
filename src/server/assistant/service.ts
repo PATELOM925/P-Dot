@@ -19,7 +19,7 @@ import type { Logger } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
 import type { ChatMessage, CompletionChunk, TokenUsage } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
-import { buildContextWindow, titleFromMessage, type HistoryMessage } from "./context";
+import { buildCompactedContextWindow, generateSmartTitle, titleFromMessage, type HistoryMessage } from "./context";
 import { publicSearchFailureMessage, toPublicCompletionError } from "./errors";
 import { buildPromptMessages, formatSearchResults } from "./prompt";
 import { WEB_SEARCH_TOOL, type ToolDefinition, type ToolCall } from "./tools";
@@ -36,7 +36,7 @@ export interface AssistantDeps {
   search: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
   complete: (
     messages: ChatMessage[],
-    signal: AbortSignal,
+    signal?: AbortSignal,
     options?: CompleteOptions,
   ) => AsyncIterable<CompletionChunk>;
   now: () => Date;
@@ -199,9 +199,9 @@ export async function* streamChatTurn(
     }
   }
 
-  // 2. Inference over a bounded context window.
+  // 2. Inference over a bounded context window with compaction support.
   const messages = buildPromptMessages({
-    history: buildContextWindow(turn.history, HISTORY_CHAR_BUDGET),
+    history: buildCompactedContextWindow(turn.history, HISTORY_CHAR_BUDGET),
     webSearch,
     results,
     now: deps.now(),
@@ -374,6 +374,17 @@ export async function* streamChatTurn(
       retryable: true,
     };
     return;
+  }
+
+  // Refine conversation title with smart title generator for the first turn
+  if (turn.history.length <= 1) {
+    generateSmartTitle(deps.complete, turn.userMessage.content)
+      .then((smartTitle) => {
+        if (smartTitle && smartTitle !== turn.conversation.title) {
+          deps.repo.updateConversationTitle(turn.userId, turn.conversation.id, smartTitle).catch(() => {});
+        }
+      })
+      .catch(() => {});
   }
 
   deps.log("info", "chat_completed", {

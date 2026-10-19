@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildContextWindow, titleFromMessage } from "@/server/assistant/context";
+import {
+  buildCompactedContextWindow,
+  buildContextWindow,
+  generateRollingSummary,
+  generateSmartTitle,
+  titleFromMessage,
+} from "@/server/assistant/context";
 import { buildPromptMessages } from "@/server/assistant/prompt";
 
 const now = new Date(Date.UTC(2026, 9, 14));
@@ -42,10 +48,81 @@ describe("buildContextWindow", () => {
   });
 });
 
+describe("buildCompactedContextWindow", () => {
+  it("injects rolling summary block into the first message when provided", () => {
+    const history = [
+      { role: "user" as const, content: "What is my project goal?" },
+    ];
+    const window = buildCompactedContextWindow(history, {
+      charBudget: 1000,
+      summary: "User is building a Cloudflare personal assistant called P-Dot.",
+    });
+    expect(window).toHaveLength(1);
+    expect(window[0]!.content).toContain("<conversation_summary>");
+    expect(window[0]!.content).toContain("Earlier context summary:\nUser is building a Cloudflare personal assistant called P-Dot.");
+    expect(window[0]!.content).toContain("What is my project goal?");
+  });
+
+  it("behaves identical to buildContextWindow when no summary is provided", () => {
+    const history = [
+      { role: "user" as const, content: "hello" },
+    ];
+    expect(buildCompactedContextWindow(history, 1000)).toEqual(buildContextWindow(history, 1000));
+  });
+});
+
 describe("titleFromMessage", () => {
   it("collapses whitespace and truncates", () => {
     expect(titleFromMessage("  plan   my\nweek  ")).toBe("plan my week");
     expect(titleFromMessage("x".repeat(100))).toHaveLength(60);
+  });
+});
+
+describe("generateSmartTitle", () => {
+  it("generates a clean title when complete succeeds", async () => {
+    async function* fakeComplete() {
+      yield { type: "text" as const, text: "Cloudflare Workers Deployment" };
+      yield { type: "finish" as const, finishReason: "stop", usage: null };
+    }
+    const title = await generateSmartTitle(
+      fakeComplete,
+      "How do I deploy Next.js 16 to Cloudflare Workers with OpenNext?",
+    );
+    expect(title).toBe("Cloudflare Workers Deployment");
+  });
+
+  it("falls back to titleFromMessage on short messages or error", async () => {
+    async function* failingComplete() {
+      throw new Error("API rate limited");
+      yield { type: "text" as const, text: "" };
+    }
+    const title = await generateSmartTitle(
+      failingComplete,
+      "How do I deploy Next.js 16 to Cloudflare Workers with OpenNext?",
+    );
+    expect(title).toBe("How do I deploy Next.js 16 to Cloudflare Workers with OpenN…");
+  });
+});
+
+describe("generateRollingSummary", () => {
+  it("summarizes older messages into bullet points", async () => {
+    async function* fakeSummary() {
+      yield { type: "text" as const, text: "- User is vegan\n- Target is Next.js 16" };
+      yield { type: "finish" as const, finishReason: "stop", usage: null };
+    }
+    const summary = await generateRollingSummary(fakeSummary, [
+      { role: "user", content: "I am a vegan developer." },
+      { role: "assistant", content: "Acknowledged." },
+    ]);
+    expect(summary).toBe("- User is vegan\n- Target is Next.js 16");
+  });
+
+  it("returns null for empty older messages", async () => {
+    async function* fakeSummary() {
+      yield { type: "text" as const, text: "anything" };
+    }
+    const summary = await generateRollingSummary(fakeSummary, []);
+    expect(summary).toBeNull();
   });
 });
 

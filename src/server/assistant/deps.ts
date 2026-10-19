@@ -15,8 +15,35 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
-    complete: (messages, signal, options) =>
-      streamChatCompletion(config.nebius, messages, { signal, ...options }),
+    complete: async function* (messages, signal, options) {
+      const primarySettings = config.nebius;
+      const fallbackModel = config.nebius.fallbackModel;
+      let hasYielded = false;
+
+      try {
+        for await (const chunk of streamChatCompletion(primarySettings, messages, { signal, ...options })) {
+          hasYielded = true;
+          yield chunk;
+        }
+      } catch (error) {
+        if (
+          !hasYielded &&
+          fallbackModel &&
+          fallbackModel !== primarySettings.model &&
+          !signal?.aborted
+        ) {
+          logEvent("warn", "model_fallback_triggered", {
+            primaryModel: primarySettings.model,
+            fallbackModel,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          const fallbackSettings = { ...primarySettings, model: fallbackModel };
+          yield* streamChatCompletion(fallbackSettings, messages, { signal, ...options });
+          return;
+        }
+        throw error;
+      }
+    },
     now: () => new Date(),
     log: logEvent,
   };

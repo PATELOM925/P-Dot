@@ -74,19 +74,18 @@ This document aligns Person A (Frontend), Person B (Backend/Database/Infra), and
   - Implemented model-driven autonomous tool dispatch in `src/server/assistant/service.ts`.
   - Verified with 114 unit tests passing.
 
+- [x] **AI-02: 50-Prompt Evaluation Test Suite**
+  - Built automated eval runner in `tests/evals/runner.ts` covering 50 real-world benchmark cases.
+  - Validated tool precision, citation grounding, adversarial prompt injection defense, multi-turn contexts, and cost budgeting.
+  - Achieved $0.009 cost for 50 queries with baseline report in `tests/evals/reports/latest-eval-report.md`.
+- [x] **AI-03: Multi-Model Tiering, Dynamic Fallbacks & Smart Context Compaction**
+  - Configured secondary fallback model (`NEBIUS_FALLBACK_MODEL`, default `Qwen/Qwen3-30B-A3B-Instruct-2507`).
+  - Implemented pre-stream failover in `src/server/assistant/deps.ts` if primary model returns 503, 429, or network error.
+  - Tuned `BASE_SYSTEM_PROMPT` and `formatSearchResults` in `src/server/assistant/prompt.ts` with explicit `[1]` citation rules and conciseness guidelines.
+  - Implemented `buildCompactedContextWindow` and `generateRollingSummary` in `src/server/assistant/context.ts` to preserve context across long chats.
+  - Implemented `generateSmartTitle` and `updateConversationTitle` in `src/server/db/conversations.ts` for clean 3-5 word topic titles.
+
 ### Upcoming Steps:
-- [ ] **AI-02: 50-Prompt Evaluation Test Suite (IMMEDIATE NEXT STEP)**
-  - Build automated eval runner to validate real-world performance of Nemotron 30B.
-  - 50 prompts covering:
-    - Real-time queries requiring search vs. general knowledge.
-    - Hallucination and citation accuracy (`[1]`, `[2]`).
-    - Adversarial attacks, jailbreaks, delimiter escape (`</web_search_results>`).
-    - Token economy checks.
-- [ ] **AI-03: Multi-Model Tiering, Dynamic Fallbacks & Smart Context Compaction**
-  - Configure secondary fallback model (e.g. `Qwen/Qwen3-30B-A3B-Instruct-2507` or `Nemotron-3_5-Lightning`).
-  - Implement automatic failover if primary Nebius model returns 503, 429, or timeouts.
-  - **AI-03b: Smart Rolling Summary (Context Compaction)**: When conversation history exceeds 20 messages / 16k chars, run a lightweight background summarizer to compress older turns into a rolling context summary so the bot preserves key decisions without blowing token budgets.
-  - **AI-03c: Smart Topic Title Generation**: Replace naive 60-character truncation in `titleFromMessage()` with a fast 1-token-efficient model call to generate a concise 3-5 word topic title after the first turn.
 - [ ] **AI-04 (Part 2): Multi-Step Tool Loop & Action Proposing Tools**
   - Upgrade tool loop from 1-hop to multi-hop (up to 3 iterations).
   - Add `propose_action` tool (`create_reminder`, `add_task`) so the model can trigger frontend action cards.

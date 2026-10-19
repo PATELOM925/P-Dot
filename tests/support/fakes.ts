@@ -57,6 +57,14 @@ export class MemoryRepository implements ConversationRepository {
     return { id: conversation.id, title, updatedAt: conversation.updatedAt };
   }
 
+  async updateConversationTitle(userId: string, id: string, title: string) {
+    const found = this.conversations.find((c) => c.id === id && c.userId === userId);
+    if (!found) return false;
+    found.title = title;
+    found.updatedAt = this.timestamp();
+    return true;
+  }
+
   async deleteConversation(userId: string, id: string) {
     const before = this.conversations.length;
     this.conversations = this.conversations.filter((c) => !(c.id === id && c.userId === userId));
@@ -132,7 +140,7 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
           },
     complete: (messages, signal, completeOptions) => {
       prompts.push(messages);
-      if (typeof reply === "function") return reply(messages, signal, completeOptions);
+      if (typeof reply === "function") return reply(messages, signal ?? new AbortController().signal, completeOptions);
       return (async function* () {
         for (const text of reply) yield { type: "text" as const, text };
         yield { type: "finish" as const, finishReason: "stop", usage: { promptTokens: 10, completionTokens: 2 } };
