@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "p-dot",
+  "name": "pdot",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
@@ -11,9 +11,30 @@
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
-      "service": "p-dot"
+      "service": "pdot"
     }
   ],
+  // Production is served only on the custom domain; its workers.dev address is off.
+  "routes": [{ "pattern": "pdot.iampatelom.com", "custom_domain": true }],
+  "workers_dev": false,
+  // Pull request Previews and version links use workers.dev. See docs/DEPLOYMENT.md.
+  "preview_urls": true,
+  // Non-secret runtime settings. Secrets (NEBIUS_API_KEY, TAVILY_API_KEY)
+  // are set with `npx wrangler secret put` and never stored here.
+  "vars": {
+    "SITE_URL": "https://pdot.iampatelom.com"
+  },
+  // Keep variables set in the dashboard when a deploy runs. Prefer adding settings here,
+  // in both vars and previews.vars (a unit test checks that the names match).
+  "keep_vars": true,
+  // Settings for `wrangler preview` (pull request branches). The block is required.
+  // Previews do not inherit top-level vars or bindings. They use their own secrets
+  // (Preview base config), not the production secrets.
+  "previews": {
+    "vars": {
+      "SITE_URL": "https://pdot.iampatelom.com"
+    }
+  },
   "observability": {
     "enabled": true
   }
