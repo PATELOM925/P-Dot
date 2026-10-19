@@ -55,7 +55,7 @@ If `npm run check` fails, the build stops and nothing is deployed.
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Build time. Put into the browser bundle. Public. | Workers Builds build variables, or `.env.local` for a manual deploy |
 | `SITE_URL` | Runtime variable | `wrangler.jsonc` (`https://pdot.iampatelom.com`) |
-| `NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS` | Runtime variables | Dashboard: Workers & Pages → `pdot` → Settings → Variables and Secrets. `keep_vars: true` in `wrangler.jsonc` keeps them when a deploy runs. |
+| `NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS` | Runtime variables. The code has defaults for all except `NEBIUS_MODEL`, which chat needs. | `wrangler.jsonc`, in **both** `vars` (production) and `previews.vars` (Previews), changed through a pull request. Previews do not get top-level `vars` or dashboard variables. `tests/unit/wrangler-config.test.ts` fails if the two lists have different names. Dashboard variables (Workers & Pages → `pdot` → Settings → Variables and Secrets) are kept on deploy by `keep_vars: true`, but they apply to production only. |
 | `NEBIUS_API_KEY`, `TAVILY_API_KEY` | Runtime secrets | `npx wrangler secret put NAME` (owner only) |
 
 Rules:
@@ -72,7 +72,7 @@ Rules:
 - The `preview_urls: true` setting takes effect at the first production deploy after it is merged. Previews have no link before then.
 - A Preview uses the **production Supabase database**. If you sign up or chat in a Preview, the data is real. Use a test account. Never run a migration from a branch.
 - Email links (confirm sign-up, reset password) always go to `SITE_URL`, which is the production address.
-- The `WORKER_SELF_REFERENCE` service binding in a Preview calls the **production** Worker, not the Preview. OpenNext uses it only for cache work, and this app has no cache, so it has no effect today. Do not add a cache without a fix for this.
+- Previews do not get the top-level `WORKER_SELF_REFERENCE` service binding, and the `previews` block does not add it. (If it were added there, it would call the production Worker.) OpenNext uses this binding only for cache work, and this app has no cache, so it has no effect today. Do not add a cache without a fix for this.
 - Version links (`<version>-pdot.<account subdomain>.workers.dev`) also open each uploaded production version. They need the same sign-in as the live site.
 - Workers Previews are in open beta. The Cloudflare documentation does not give a price for them. The owner checks the Workers plan page before turning on branch builds. Check that the first pull request after setup gets a working Preview link. If it does not, record what happened in this file.
 - Preview logs do not appear in `wrangler tail`.
@@ -94,9 +94,18 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    npx wrangler secret put TAVILY_API_KEY
    ```
 
-   Then set `NEBIUS_MODEL` as a variable in the dashboard. Set a spending limit on both provider accounts first.
-3. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Use the email templates from the README "Setup" section.
-4. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP.
+   Set a spending limit on both provider accounts first.
+3. **Choose the model.** Open a pull request that adds `NEBIUS_MODEL` (and any changed limit, for example `CHAT_REQUESTS_PER_WINDOW`) to both `vars` and `previews.vars` in `wrangler.jsonc`. The model ID is not a secret.
+4. **Preview secrets (optional).** To let Previews call Nebius and Tavily, set them in the Preview base config. Use a separate key with a low spending limit if the provider allows it:
+
+   ```bash
+   npx wrangler preview base-config secret put NEBIUS_API_KEY
+   npx wrangler preview base-config secret put TAVILY_API_KEY
+   ```
+
+   Changes to base secrets apply only to Previews created after the change.
+5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Use the email templates from the README "Setup" section.
+6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP.
 
 ## Manual deploy (owner only, fallback)
 

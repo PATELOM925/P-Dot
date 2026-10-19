@@ -24,10 +24,12 @@
   "vars": {
     "SITE_URL": "https://pdot.iampatelom.com"
   },
-  // Keep variables set in the dashboard (for example NEBIUS_MODEL) when a deploy runs.
+  // Keep variables set in the dashboard when a deploy runs. Prefer adding settings here,
+  // in both vars and previews.vars (a unit test checks that the names match).
   "keep_vars": true,
   // Settings for `wrangler preview` (pull request branches). The block is required.
-  // Previews use their own secrets (Preview base config), not the production secrets.
+  // Previews do not inherit top-level vars or bindings. They use their own secrets
+  // (Preview base config), not the production secrets.
   "previews": {
     "vars": {
       "SITE_URL": "https://pdot.iampatelom.com"
