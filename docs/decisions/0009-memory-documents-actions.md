@@ -67,3 +67,18 @@ Every change through these routes also writes one `action_log` row.
 ## Not in this change
 
 Scheduled reminder delivery and push notifications, the tool loop that creates proposals, using memories and documents in the chat prompt, and the frontend screens. They build on these shapes.
+
+## Frontend (2026-10-19)
+
+The screens now use these routes: approval cards in chat and on Today (approve, edit then approve, cancel), the Memory page (memories and documents: add, keep, edit, move, delete), "What was sent" under each reply, the action log page, reminders on Workflows, and live counts on Connectors. The pages say plainly that replies do not use memories or documents yet and that the assistant does not propose actions yet. The server saves a reply's context record just after it sends `done`, so "What was sent" offers "Check again" for a reply under a minute old instead of treating a 404 as final. Push delivery and device pairing are in [0010](0010-pwa-and-device-pairing.md).
+
+In chat, each suggestion appears under the reply of the turn it came from: action proposals waiting for approval as cards, earlier decisions as short lines, and memories P-Dot suggested as "Remember this?" cards (Keep, Edit then keep, Don't keep). The Today tab shows how many proposals are waiting, in both modes.
+
+### What the screens expect from the AI layer
+
+Checked with proposals and memories inserted directly into a local database, since nothing creates them yet.
+
+- **Proposals.** Set `conversation_id`, and create the proposal while handling the turn (after its user message is saved). Chat places a proposal under the reply of the last user message saved before it, using the database times. Save it before sending `done`: the chat reloads proposals, and the Today count, when `done` arrives, and not again until the next reply or conversation switch. Write the summary as one plain sentence; the card shows it as P-Dot's words and lists the details from the payload, which is what runs. A `message_id` column on proposals would make the placement exact instead of time-based.
+- **Suggested memories.** Use `status: "proposed"`, `source: "assistant"` and `source_message_id` set to the reply (or the user message) the fact came from. Chat shows them under that turn's reply; the Memory page lists them under "Suggested by P-Dot". Keep means `PATCH` to `active`, Edit then keep sends the new text and `active` together, Don't keep deletes the row. Save them before `done`, like proposals. A `save_memory` proposal also works; it appears as an approval card instead.
+- **Memories used in a reply.** Put the IDs actually sent in the context record (`memoryIds`, `documentChunkIds`; `service.ts` passes empty lists today). "What was sent" shows their current text. A small count on `MessageDTO` (memories and documents used) would let a reply show "Used 2 memories" without opening the panel; the screens do not depend on it.
+- **Copy to update when this lands:** the notice on the Memory page, the Built in note and the Documents card on Connectors, the Memory and Documents lines in Settings → How your data is used, and the note on the landing page. Each says the step is not built yet.
