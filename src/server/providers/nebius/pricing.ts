@@ -19,22 +19,27 @@ const PRICES: Readonly<Record<string, ModelPrice>> = {
   "Qwen/Qwen3-Embedding-8B": { inputNanoUsdPerToken: 10, outputNanoUsdPerToken: 0 },
 };
 
-/** Used for a model that is not in the table: the most expensive known price. */
-export const FALLBACK_PRICE: ModelPrice = Object.values(PRICES).reduce((max, price) => ({
-  inputNanoUsdPerToken: Math.max(max.inputNanoUsdPerToken, price.inputNanoUsdPerToken),
-  outputNanoUsdPerToken: Math.max(max.outputNanoUsdPerToken, price.outputNanoUsdPerToken),
-}));
-
-export function priceForModel(model: string): { price: ModelPrice; known: boolean } {
-  const price = Object.hasOwn(PRICES, model) ? PRICES[model] : undefined;
-  return price ? { price, known: true } : { price: FALLBACK_PRICE, known: false };
+/**
+ * The price of a model, or null when the model is not in the table. There is
+ * no fallback price: some Nebius models cost much more than any model here,
+ * so a model without a price must not be used.
+ */
+export function priceForModel(model: string): ModelPrice | null {
+  return Object.hasOwn(PRICES, model) ? (PRICES[model] ?? null) : null;
 }
 
-/** Cost in micro-dollars, rounded up. Completion tokens include any reasoning tokens. */
+/** True when both token counts are non-negative safe integers. */
+export function isValidUsage(usage: TokenUsage): boolean {
+  return [usage.promptTokens, usage.completionTokens].every((n) => Number.isSafeInteger(n) && n >= 0);
+}
+
+/**
+ * Cost in micro-dollars, rounded up. Completion tokens include any reasoning
+ * tokens. Throws on invalid usage: callers must treat that as missing usage.
+ */
 export function costMicroUsd(price: ModelPrice, usage: TokenUsage): number {
-  const nano =
-    Math.max(0, usage.promptTokens) * price.inputNanoUsdPerToken +
-    Math.max(0, usage.completionTokens) * price.outputNanoUsdPerToken;
+  if (!isValidUsage(usage)) throw new RangeError("Invalid token usage");
+  const nano = usage.promptTokens * price.inputNanoUsdPerToken + usage.completionTokens * price.outputNanoUsdPerToken;
   return Math.ceil(nano / 1000);
 }
 

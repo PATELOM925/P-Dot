@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MAX_ASSISTANT_CHARS } from "@/lib/limits";
+import { ConfigError } from "@/lib/supabase-config";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import {
   budgetRefusal,
@@ -10,10 +11,11 @@ import {
 } from "@/server/assistant/spend";
 import { toNdjsonStream } from "@/server/http/ndjson";
 import { ProviderError } from "@/server/providers/errors";
+import { streamChatCompletion } from "@/server/providers/nebius/client";
 import { costMicroUsd, priceForModel } from "@/server/providers/nebius/pricing";
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
 import { FakeQuota, FakeSpend, MemoryRepository, fakeDeps } from "../support/fakes";
-import { collect } from "../support/streams";
+import { collect, deltaChunk, sseEvent, streamFrom } from "../support/streams";
 
 const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SUPER = "nvidia/nemotron-3-super-120b-a12b";
@@ -32,13 +34,16 @@ describe("spend math", () => {
     const messages = [{ role: "user" as const, content: "x".repeat(1000) }];
     // (1000 bytes + 16 + 64) * 300 nano + 1024 * 900 nano = 324,000 + 921,600 nano = 1,245.6 micro.
     expect(nebiusHoldMicroUsd(SUPER, messages, 1024)).toBe(1246);
-    // An unknown model uses the most expensive price.
-    expect(nebiusHoldMicroUsd("new/model", messages, 1024)).toBe(Math.ceil((1080 * 1000 + 1024 * 3000) / 1000));
+  });
+
+  it("refuses to price a model that is not in the table", () => {
+    const messages = [{ role: "user" as const, content: "hi" }];
+    expect(() => nebiusHoldMicroUsd("moonshotai/Kimi-K3", messages, 1024)).toThrow(ConfigError);
   });
 
   it("never holds more than the database accepts", () => {
     const huge = [{ role: "user" as const, content: "x".repeat(400_000) }];
-    expect(nebiusHoldMicroUsd("new/model", huge, 8192)).toBe(MAX_NEBIUS_HOLD_MICRO_USD);
+    expect(nebiusHoldMicroUsd("nvidia/Nemotron-3-Ultra-550b-a55b", huge, 8192)).toBe(MAX_NEBIUS_HOLD_MICRO_USD);
   });
 
   it("settles the real cost with usage, and the full hold without it", () => {
@@ -46,6 +51,12 @@ describe("spend math", () => {
     expect(nebiusSettleMicroUsd(SUPER, 5000, null)).toBe(5000);
     // Never more than the hold.
     expect(nebiusSettleMicroUsd(SUPER, 10, { promptTokens: 1_000_000, completionTokens: 0 })).toBe(10);
+  });
+
+  it("keeps the full hold for invalid usage, never a refund to zero", () => {
+    expect(nebiusSettleMicroUsd(SUPER, 5000, { promptTokens: -1_000_000, completionTokens: -1_000_000 })).toBe(5000);
+    expect(nebiusSettleMicroUsd(SUPER, 5000, { promptTokens: 1.5, completionTokens: 2 })).toBe(5000);
+    expect(nebiusSettleMicroUsd(SUPER, 5000, { promptTokens: Number.NaN, completionTokens: 2 })).toBe(5000);
   });
 
   it("maps each cap to a clear public error", () => {
@@ -81,7 +92,7 @@ describe("chat flow with the spend guard", () => {
     // The hold covers the prompt that was really sent.
     expect(nebius!.held).toBeGreaterThanOrEqual(nebiusHoldMicroUsd(SUPER, prompts[0]!, 1024));
     // The fake reply reports 10 prompt and 2 completion tokens.
-    const cost = costMicroUsd(priceForModel(SUPER).price, { promptTokens: 10, completionTokens: 2 });
+    const cost = costMicroUsd(priceForModel(SUPER)!, { promptTokens: 10, completionTokens: 2 });
     expect(nebius!.settled).toBe(cost);
     expect(waited).toHaveLength(1);
   });
@@ -265,14 +276,53 @@ describe("chat flow with the spend guard", () => {
     expect(logs.find((l) => l.event === "spend_limit_reached")?.fields).toMatchObject({ provider: "tavily" });
   });
 
-  it("prices an unknown model at the most expensive rate", async () => {
-    const known = new FakeSpend();
-    await runTurn(fakeDeps({ spend: known }).deps, send());
-    const unknown = new FakeSpend();
-    await runTurn(fakeDeps({ spend: unknown, model: "someone/new-model" }).deps, send());
-    expect(unknown.reservations[0]!.held).toBeGreaterThan(known.reservations[0]!.held);
-    expect(unknown.reservations[0]!.settled).toBe(
-      costMicroUsd(priceForModel("nvidia/Nemotron-3-Ultra-550b-a55b").price, { promptTokens: 10, completionTokens: 2 }),
+  it("refuses a model without a price before any write, hold or provider call", async () => {
+    const repo = new MemoryRepository();
+    const spend = new FakeSpend();
+    const { deps, prompts, searches } = fakeDeps({ repo, spend, model: "moonshotai/Kimi-K3", search: async () => [] });
+
+    const error = await runTurn(deps, send(true)).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).missing).toEqual(["NEBIUS_MODEL"]);
+    expect(String((error as Error).message)).not.toContain("Kimi");
+    expect(spend.reservations).toHaveLength(0);
+    expect(repo.messages).toHaveLength(0);
+    expect(prompts).toHaveLength(0);
+    expect(searches).toHaveLength(0);
+  });
+
+  // Regression: negative usage from the provider used to be clamped to zero,
+  // which gave back the whole hold. Now it counts as missing usage.
+  it.each([
+    ["negative", { prompt_tokens: -5_000, completion_tokens: -5_000 }],
+    ["fractional", { prompt_tokens: 10.5, completion_tokens: 2 }],
+    ["text", { prompt_tokens: "10", completion_tokens: "2" }],
+    ["too large", { prompt_tokens: 2 ** 60, completion_tokens: 2 }],
+  ])("keeps the full hold when the stream sends %s usage", async (_label, badUsage) => {
+    const spend = new FakeSpend();
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          streamFrom([
+            sseEvent(deltaChunk("Hello.")),
+            sseEvent({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }),
+            sseEvent({ choices: [], usage: badUsage }),
+            sseEvent("[DONE]"),
+          ]),
+          { status: 200 },
+        ),
     );
+    const settings = { apiKey: "k", baseUrl: "https://nebius.test/v1", model: SUPER, maxOutputTokens: 1024 };
+    const { deps } = fakeDeps({
+      spend,
+      reply: (messages, signal) => streamChatCompletion(settings, messages, { fetchImpl, signal }),
+    });
+
+    const { events } = await runTurn(deps, send());
+
+    expect(events.at(-1)).toMatchObject({ type: "done", message: { content: "Hello." } });
+    expect(spend.reservations[0]!.held).toBeGreaterThan(0);
+    expect(spend.reservations[0]!.settled).toBe(spend.reservations[0]!.held);
   });
 });

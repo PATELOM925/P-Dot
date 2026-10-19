@@ -1,9 +1,16 @@
 import "server-only";
 import { SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
+import { ConfigError } from "@/lib/supabase-config";
 import type { ApiErrorCode } from "@/types/api";
 import type { SpendLimit } from "@/server/db/spend";
 import type { ChatMessage, TokenUsage } from "@/server/providers/nebius/client";
-import { costMicroUsd, inputTokenBound, priceForModel } from "@/server/providers/nebius/pricing";
+import {
+  costMicroUsd,
+  inputTokenBound,
+  isValidUsage,
+  priceForModel,
+  type ModelPrice,
+} from "@/server/providers/nebius/pricing";
 
 /** The largest hold the database accepts for one Nebius call ($0.25). */
 export const MAX_NEBIUS_HOLD_MICRO_USD = 250_000;
@@ -18,10 +25,17 @@ export const TAVILY_BASIC_SEARCH_CREDITS = 1;
  */
 export const SEARCH_RESULTS_MAX_BYTES = SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + 2_048 + 128) + 512;
 
+/** The model's price. A model without a price is a configuration error: it is never called. */
+function requirePrice(model: string): ModelPrice {
+  const price = priceForModel(model);
+  if (!price) throw new ConfigError(["NEBIUS_MODEL"]);
+  return price;
+}
+
 /**
  * Worst-case cost of one Nebius call, in micro-dollars: every input byte as a
- * token, plus the full output token limit, at the model's price (or the most
- * expensive price for an unknown model).
+ * token, plus the full output token limit, at the model's price. Throws a
+ * ConfigError for a model that has no price, before any provider call.
  */
 export function nebiusHoldMicroUsd(
   model: string,
@@ -29,8 +43,7 @@ export function nebiusHoldMicroUsd(
   maxOutputTokens: number,
   extraInputBytes = 0,
 ): number {
-  const { price } = priceForModel(model);
-  const cost = costMicroUsd(price, {
+  const cost = costMicroUsd(requirePrice(model), {
     promptTokens: inputTokenBound(messages, extraInputBytes),
     completionTokens: maxOutputTokens,
   });
@@ -38,13 +51,15 @@ export function nebiusHoldMicroUsd(
 }
 
 /**
- * The amount to settle for a Nebius call. With usage, the real cost. Without
- * usage (error, stop, disconnect), the full hold: a safe estimate, never zero.
- * Never more than the hold, because settle can only give back.
+ * The amount to settle for a Nebius call. With valid usage, the real cost.
+ * Without usage (error, stop, disconnect) or with invalid usage, the full
+ * hold: a safe estimate, never zero. Never more than the hold, because settle
+ * can only give back.
  */
 export function nebiusSettleMicroUsd(model: string, heldMicroUsd: number, usage: TokenUsage | null): number {
-  if (!usage) return heldMicroUsd;
-  return Math.min(heldMicroUsd, costMicroUsd(priceForModel(model).price, usage));
+  const price = priceForModel(model);
+  if (!usage || !price || !isValidUsage(usage)) return heldMicroUsd;
+  return Math.min(heldMicroUsd, costMicroUsd(price, usage));
 }
 
 export interface BudgetRefusal {

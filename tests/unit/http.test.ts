@@ -71,10 +71,21 @@ describe("getAssistantConfig", () => {
     }
   });
 
+  it("refuses a model that has no price, naming the variable but not the value", () => {
+    try {
+      getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_MODEL: "moonshotai/Kimi-K3", NODE_ENV: "test" });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).missing).toEqual(["NEBIUS_MODEL"]);
+      expect(String((error as Error).message)).not.toContain("Kimi");
+    }
+  });
+
   it("applies defaults and treats a blank Tavily key as search disabled", () => {
     const config = getAssistantConfig({
       NEBIUS_API_KEY: "secret",
-      NEBIUS_MODEL: "org/model",
+      NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b",
       NEBIUS_BASE_URL: "https://api.tokenfactory.nebius.com/v1/",
       TAVILY_API_KEY: " ",
       NODE_ENV: "test",
@@ -82,7 +93,7 @@ describe("getAssistantConfig", () => {
     expect(config.nebius).toEqual({
       apiKey: "secret",
       baseUrl: "https://api.tokenfactory.nebius.com/v1",
-      model: "org/model",
+      model: "nvidia/nemotron-3-super-120b-a12b",
       maxOutputTokens: 1024,
     });
     expect(config.tavily).toBeNull();
@@ -96,7 +107,7 @@ describe("getAssistantConfig", () => {
   it("reads spend caps in dollars and credits", () => {
     const config = getAssistantConfig({
       NEBIUS_API_KEY: "k",
-      NEBIUS_MODEL: "m",
+      NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b",
       NEBIUS_DAILY_CAP_USD: "2.5",
       NEBIUS_TOTAL_CAP_USD: "15",
       NEBIUS_USER_DAILY_CAP_USD: "0.1",
@@ -114,7 +125,7 @@ describe("getAssistantConfig", () => {
   it("never lets the per-user cap pass the cap for all users", () => {
     const config = getAssistantConfig({
       NEBIUS_API_KEY: "k",
-      NEBIUS_MODEL: "m",
+      NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b",
       NEBIUS_DAILY_CAP_USD: "0.1",
       TAVILY_DAILY_CREDITS: "3",
       NODE_ENV: "test",
@@ -134,7 +145,7 @@ describe("getAssistantConfig", () => {
     ["NEBIUS_TOTAL_CAP_USD", "abc"],
   ])("rejects %s=%s and names only the variable", (name, value) => {
     try {
-      getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_MODEL: "m", [name]: value, NODE_ENV: "test" });
+      getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b", [name]: value, NODE_ENV: "test" });
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(ConfigError);
@@ -144,7 +155,7 @@ describe("getAssistantConfig", () => {
 
   it("rejects out-of-range limits", () => {
     expect(() =>
-      getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_MODEL: "m", CHAT_WINDOW_SECONDS: "5", NODE_ENV: "test" }),
+      getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b", CHAT_WINDOW_SECONDS: "5", NODE_ENV: "test" }),
     ).toThrow(ConfigError);
   });
 });

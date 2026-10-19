@@ -55,9 +55,8 @@ const chunkSchema = z.object({
       }),
     )
     .nullish(),
-  usage: z
-    .object({ prompt_tokens: z.number(), completion_tokens: z.number() })
-    .nullish(),
+  // Checked separately (usageSchema): bad usage must not fail the reply.
+  usage: z.unknown().optional(),
   error: z
     .object({
       code: z.union([z.string(), z.number()]).nullish(),
@@ -65,6 +64,11 @@ const chunkSchema = z.object({
     })
     .nullish(),
 });
+
+// Token counts must be non-negative safe integers. Anything else is treated
+// as missing usage, so the spend guard keeps the full hold.
+const tokenCount = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+const usageSchema = z.object({ prompt_tokens: tokenCount, completion_tokens: tokenCount });
 
 function streamErrorKind(error: { code?: string | number | null; type?: string | null }): ProviderErrorKind {
   if (typeof error.code === "number") return kindFromStatus(error.code);
@@ -152,11 +156,11 @@ export async function* streamChatCompletion(
           throw new ProviderError("nebius", "bad_response");
         }
         if (chunk.error) throw new ProviderError("nebius", streamErrorKind(chunk.error));
-        if (chunk.usage) {
-          usage = {
-            promptTokens: chunk.usage.prompt_tokens,
-            completionTokens: chunk.usage.completion_tokens,
-          };
+        if (chunk.usage !== undefined && chunk.usage !== null) {
+          const parsed = usageSchema.safeParse(chunk.usage);
+          usage = parsed.success
+            ? { promptTokens: parsed.data.prompt_tokens, completionTokens: parsed.data.completion_tokens }
+            : null;
         }
         for (const choice of chunk.choices ?? []) {
           const text = choice.delta?.content ? think.push(choice.delta.content) : "";

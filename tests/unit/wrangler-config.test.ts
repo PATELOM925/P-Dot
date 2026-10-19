@@ -48,7 +48,7 @@ describe("wrangler.jsonc", () => {
 
   it("uses a model with a known price and spend caps that the config accepts", () => {
     const model = config.vars?.NEBIUS_MODEL ?? "";
-    expect(priceForModel(model).known).toBe(true);
+    expect(priceForModel(model)).not.toBeNull();
     for (const vars of [config.vars, config.previews?.vars]) {
       const parsed = getAssistantConfig({ ...vars, NEBIUS_API_KEY: "k", NODE_ENV: "test" });
       expect(parsed.spend).toEqual({

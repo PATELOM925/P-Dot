@@ -90,6 +90,29 @@ describe("streamChatCompletion", () => {
     ]);
   });
 
+  it.each([
+    ["negative", { prompt_tokens: -1, completion_tokens: 3 }],
+    ["fractional", { prompt_tokens: 1.5, completion_tokens: 3 }],
+    ["not a number", { prompt_tokens: "12", completion_tokens: 3 }],
+    ["unsafe integer", { prompt_tokens: Number.MAX_SAFE_INTEGER + 1, completion_tokens: 3 }],
+    ["missing field", { prompt_tokens: 12 }],
+    ["not an object", 42],
+  ])("treats %s usage as missing usage, not as an error", async (_label, usage) => {
+    const fetchImpl = fetchReturning(
+      sseResponse([
+        sseEvent(deltaChunk("Hi")),
+        sseEvent({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }),
+        sseEvent({ choices: [], usage }),
+        sseEvent("[DONE]"),
+      ]),
+    );
+    const chunks = await collect(streamChatCompletion(settings, messages, { fetchImpl }));
+    expect(chunks).toEqual([
+      { type: "text", text: "Hi" },
+      { type: "finish", finishReason: "stop", usage: null },
+    ]);
+  });
+
   it("reports missing usage as null", async () => {
     const fetchImpl = fetchReturning(
       sseResponse([

@@ -2,6 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { ConfigError } from "@/lib/supabase-config";
 import type { SpendCaps, SpendProvider } from "@/server/db/spend";
+import { priceForModel } from "@/server/providers/nebius/pricing";
 
 // Server-only configuration. Values are read per call (not at import time) so
 // `next build` works without secrets and misconfiguration fails the request
@@ -36,7 +37,12 @@ const credits = (max: number, fallback: number) => z.coerce.number().int().min(1
 const assistantEnvSchema = z.object({
   NEBIUS_API_KEY: z.string().trim().min(1),
   NEBIUS_BASE_URL: z.url().default("https://api.tokenfactory.nebius.com/v1"),
-  NEBIUS_MODEL: z.string().trim().min(1),
+  // Only a model with an entry in the price table can be used (spend guard).
+  NEBIUS_MODEL: z
+    .string()
+    .trim()
+    .min(1)
+    .refine((model) => priceForModel(model) !== null),
   NEBIUS_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(8192).default(1024),
   TAVILY_API_KEY: z.string().trim().optional(),
   CHAT_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).max(10_000).default(30),

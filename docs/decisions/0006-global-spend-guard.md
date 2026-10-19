@@ -23,12 +23,12 @@ All users together share caps on paid calls. The caps are in Postgres, so they w
 | Tavily | All users, each UTC calendar month | 800 credits | `TAVILY_MONTHLY_CREDITS` |
 | Tavily | One user, each UTC day | 10 credits (at most 20) | `TAVILY_USER_DAILY_CREDITS` |
 
-All Nebius models count together. A basic Tavily search costs 1 credit. The app uses only basic search.
+All Nebius models count together. Only models with a price in the table can be used. A basic Tavily search costs 1 credit. The app uses only basic search.
 
 ### How a request is counted
 
 1. The per-user quota (`consume_chat_quota`) runs first.
-2. **Hold.** The server calls `reserve_provider_spend` with a worst-case cost. For Nebius, this is every UTF-8 byte of the prompt as one input token (a tokenizer never makes more tokens than bytes), plus space for search results when search is on, plus `NEBIUS_MAX_OUTPUT_TOKENS` output tokens. The price comes from the table in `pricing.ts`. A model that is not in the table gets the most expensive price. The function adds the hold to the counters only if no cap would be passed. Row locks make this safe when requests arrive at the same time.
+2. **Hold.** The server calls `reserve_provider_spend` with a worst-case cost. For Nebius, this is every UTF-8 byte of the prompt as one input token (a tokenizer never makes more tokens than bytes), plus space for search results when search is on, plus `NEBIUS_MAX_OUTPUT_TOKENS` output tokens. The price comes from the table in `pricing.ts`. A model that is not in the table cannot be used: there is no fallback price, because some Nebius models (for example `moonshotai/Kimi-K3` at $3 / $15 per million tokens) cost more than every model in the table. Chat then returns "This service is not configured yet." before any database or provider call. The function adds the hold to the counters only if no cap would be passed. Row locks make this safe when requests arrive at the same time.
 3. If a Nebius cap refuses, the API returns `budget_exhausted` before it streams: HTTP 429 with `Retry-After` for a daily cap, HTTP 503 for the total cap. Nothing is saved and no provider is called.
 4. If only the Tavily cap refuses, the reply is still made without search. The user sees "Web search was not used because P-Dot has reached its search limit for now…", and the model is told that search failed, so it does not claim web sources.
 5. **Settle.** When the stream ends, the server calls `settle_provider_spend` with the real cost from the `usage` chunk (`stream_options.include_usage`). The difference goes back to the counters. If usage does not arrive (provider error, Stop, disconnect, reply cut at the character limit), the full hold stays counted. The settle runs in `waitUntil`, so a disconnect does not cancel it. Tavily holds are not given back: a search that was sent counts.
@@ -66,7 +66,8 @@ The app has no service-role key, so the server calls these functions with the us
 ## What this does not do
 
 - It does not read the real balance from Nebius or Tavily. The counters are an estimate from the price table. Check the provider dashboards too, and set provider-side limits where they exist.
-- The price table must be updated when Nebius changes prices or the model changes to one that is not in the table (the fallback price is safe but makes the caps reach sooner).
+- The price table must be updated when Nebius changes prices. To use a new model, add its price first.
+- Token counts in the usage chunk must be non-negative whole numbers. Other values count as missing usage, so the full hold stays counted.
 - No admin page. Changes go through config or SQL.
 
 ## Real checks (2026-10-19)

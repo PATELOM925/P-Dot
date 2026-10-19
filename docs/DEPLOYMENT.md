@@ -95,7 +95,7 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    ```
 
    Set a spending limit on both provider accounts first.
-3. **Model and spend caps.** `wrangler.jsonc` sets `NEBIUS_MODEL` (`nvidia/nemotron-3-super-120b-a12b`) and the global spend caps in both `vars` and `previews.vars`. To change one, open a pull request. If the new model is not in the price table in `src/server/providers/nebius/pricing.ts`, add its price, or it is charged at the most expensive price. See [decision 0006](decisions/0006-global-spend-guard.md).
+3. **Model and spend caps.** `wrangler.jsonc` sets `NEBIUS_MODEL` (`nvidia/nemotron-3-super-120b-a12b`) and the global spend caps in both `vars` and `previews.vars`. To change one, open a pull request. A model must have a price in `src/server/providers/nebius/pricing.ts`. If it does not, chat says "This service is not configured yet." and no provider is called. Add the price in the same pull request. See [decision 0006](decisions/0006-global-spend-guard.md).
 4. **Preview secrets (optional).** To let Previews call Nebius and Tavily, set them in the Preview base config. Use a separate key with a low spending limit if the provider allows it:
 
    ```bash
