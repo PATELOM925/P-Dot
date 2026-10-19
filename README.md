@@ -98,7 +98,7 @@ SITE_URL=http://localhost:3000
 
 # Needed only for chat replies; auth and history work without them
 NEBIUS_API_KEY=<your Nebius key>
-NEBIUS_MODEL=<model ID from your Nebius account>
+# Optional: the model chains for each tier have defaults (see .env.example).
 TAVILY_API_KEY=
 ```
 
@@ -155,7 +155,7 @@ $env:SUPABASE_TEST_USER_B_PASSWORD="<user B password>"
 npm test
 ```
 
-The 9 tests in `tests/integration/rls.test.ts` should then run instead of being skipped. They also reserve and give back a few micro-dollars through the spend guard functions.
+The 10 tests in `tests/integration/rls.test.ts` should then run instead of being skipped. One checks the model route columns on messages. They also reserve and give back a few micro-dollars through the spend guard functions.
 
 ### Housekeeping
 
@@ -188,7 +188,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 
 | Method and path | Purpose |
 | --- | --- |
-| `POST /api/chat` | `{ action: "send", conversationId?, mode?, message, webSearch }` (`mode` applies to new conversations) or `{ action: "retry", conversationId, webSearch }`. Streams `application/x-ndjson` events: `start`, `search`, `delta`, `done`, `error`. Returns 401, 403, 404, 409, 413, 415, 429, or 503 before streaming when appropriate. A global spend cap returns `budget_exhausted` (429 for a daily cap, 503 for the total cap). |
+| `POST /api/chat` | `{ action: "send", conversationId?, mode?, message, webSearch, effort? }` (`mode` applies to new conversations) or `{ action: "retry", conversationId, webSearch, effort? }`. `effort` is `"auto"` (default: the router picks a model tier) or `"deep"` (always the heavy tier). Streams `application/x-ndjson` events: `start` (with `route: { tier, reason }`), `search`, `delta`, `done` (its message has `route: { model, tier, reason, fallback }`), `error` (`budget_exhausted` if the spend guard refuses a fallback). Messages in `GET /api/conversations/:id` have the same `route` field, or `null` for user messages and older replies. Returns 401, 403, 404, 409, 413, 415, 429, or 503 before streaming when appropriate. A global spend cap returns `budget_exhausted` (429 for a daily cap, 503 for the total cap). |
 | `GET /api/conversations[?mode=personal\|work]` | The user's conversations, most recent first, optionally for one mode |
 | `PATCH /api/conversations/:id` | Rename: `{ title }` (404 for someone else's) |
 | `GET /api/tasks?mode=` | The user's to-do items for a mode |
@@ -237,7 +237,9 @@ Deployed and checked on 2026-10-19: `/api/health` (auth configured, inference no
 
 Spend guard SQL (2026-10-19): the migration was run on an in-memory Postgres (PGlite) with stand-ins for the Supabase roles and `auth.uid()`. Checked: hold and settle, settle once, no settle by another user, no negative or above-hold settle, parameter bounds, day, total and per-user caps, no direct table access for `anon` or `authenticated`. Not checked there: many requests at the same time (row locks).
 
-Real provider checks (2026-10-19): 4 small Nebius calls to `nvidia/nemotron-3-super-120b-a12b` (`max_tokens` at most 300) and the free Tavily usage endpoint. No Tavily search was made.
+Real provider checks (2026-10-19): 4 small Nebius calls to `nvidia/nemotron-3-super-120b-a12b` (`max_tokens` at most 300) and the free Tavily usage endpoint. No Tavily search was made. For model routing, about 28 more small calls (`max_tokens` at most 400, under $0.01 in total): the reasoning budget (`thinking_token_budget`) on Super, Ultra and Nano, each tier through the executor, and a 404 for an unknown model ID that moved to the next model. Numbers are in [decision 0007](docs/decisions/0007-model-routing.md).
+
+Model routing was tested with a fake streaming provider and fake timers: router examples, retries with `Retry-After`, no retry on 400 and 401, 404 to the next model, first-token timeout, the hedge (winner, loser stopped and settled, at most one, never on heavy), the breaker, the deadline, budget refusal, Stop during a hedge, no switch after the first token, and the saved route. The new migration was run on an in-memory Postgres (PGlite) on top of existing rows.
 
 Not yet done: a real Tavily search, a full chat through the live app, a signed-in browser walkthrough (local or production), dictation in real browsers, end-to-end tests, Workers Builds (automatic deploys and previews), and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
 
