@@ -10,6 +10,8 @@ MVP implementation was authorized on 2026-10-14. The backend and a minimal front
 - Each pull request gets an adversarial review posted as pull request comments. Fix or answer every comment in new commits before merge.
 - A merge to `main` deploys production through Cloudflare Workers Builds (once the owner connects it). Pull request branches get preview links that use the production database.
 - Read `docs/DEPLOYMENT.md` before you change deployment settings, environment variables, `wrangler.jsonc`, `open-next.config.ts` or the deploy scripts. It lists the commands agents must not run.
+- Read `docs/PROVIDER-RELIABILITY.md` before you change provider calls, model routing, retries, timeouts, the spend guard, usage parsing or a migration on `messages`. Add any new lesson there, with its source.
+- Add an entry to `CHANGELOG.md` under "Unreleased" in every pull request: what changed, the problem it solves, how it was resolved, and the pull request link.
 
 ## Product and source of truth
 

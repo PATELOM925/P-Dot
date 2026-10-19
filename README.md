@@ -213,7 +213,8 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
 | `supabase/migrations/` | Database schema, RLS policies, the quota function, the modes/rename/tasks migration, and the global spend guard |
 | `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
-| `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), decision records |
+| `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
+| `CHANGELOG.md` | What changed, the problem, and how it was resolved, for each pull request |
 | `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle |
 | `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the brand blue) |
 
