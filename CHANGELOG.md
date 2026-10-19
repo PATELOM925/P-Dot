@@ -8,19 +8,12 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 
 ## Unreleased
 
-### Changed
-- **"Think harder" applies to one message only.**
-  - Problem: the switch stayed on until the user turned it off, so a forgotten switch kept using the most expensive model (Ultra).
-  - Resolution: the switch goes back to "Auto" when the server accepts the message. Owner decision, 2026-10-19.
-  - PR: routing follow-ups ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4)).
-- **Decision 0007 (model routing) is accepted.** Web search raises an otherwise fast message to the standard tier (Nemotron 3 Super), because summarizing sources needs the better model. "Think harder" and the stronger reasoning rules can still choose the heavy tier for a search turn. Owner decision, 2026-10-19.
+Nothing yet.
+
+## 2026-10-19
 
 ### Added
-- **`docs/PROVIDER-RELIABILITY.md`.** Ten lessons from review findings and measurements, each with a rule and sources: retries, backup models, hedged requests, error labels, pricing, usage parsing, migrations, `waitUntil`, the circuit breaker and the deploy guard. There are also checklists for adding a model, an error rule or a migration. ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4))
-- **This changelog**, and a rule in `AGENTS.md` that every pull request updates it. ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4))
-
-### Added (in review: [PR #3](https://github.com/PATELOM925/P-Dot/pull/3))
-- **Model routing for Nemotron on Nebius Token Factory.**
+- **Model routing for Nemotron on Nebius Token Factory** ([PR #3](https://github.com/PATELOM925/P-Dot/pull/3), merged as `6e5224d`).
   - Problem: one fixed model for every message was either too slow and costly for small questions or too weak for hard ones. A provider error ended the reply with no second try.
   - Resolution: a rule-based router picks a tier with no extra model call:
     - fast: Lightning → Nano → Super
@@ -30,14 +23,12 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
   - Retries happen only before the first visible token. The router uses backoff with jitter, honors `Retry-After`, caps the attempts, sends one hedged request on the fast tier only, and skips a failing model for a short time with a circuit breaker.
   - Every attempt goes through the spend guard. Each reply shows which model answered and why.
   - Decision: [0007](docs/decisions/0007-model-routing.md).
-- **Fixed during review:**
+- **Fixed during review (PR #3):**
   - A failed hedge reset the other model's retry wait, so it retried too early. Each model now keeps its own wait. ([round 1](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6257890039))
   - Error events inside the stream were misread. "Model not found" stopped instead of moving to the next model, and "out of credit" was retried. Errors are now classified by status and label. ([round 1](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6257890039))
   - Chat failed if the code went live before its migration. Reads and inserts now fall back to the old columns, for a missing route column only. ([round 1](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6257890039), [round 2](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6258000501))
-
-## 2026-10-19
-
-### Added
+- **`docs/PROVIDER-RELIABILITY.md`.** Ten lessons from review findings and measurements, each with a rule and sources: retries, backup models, hedged requests, error labels, pricing, usage parsing, migrations, `waitUntil`, the circuit breaker and the deploy guard. There are also checklists for adding a model, an error rule or a migration. ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4))
+- **This changelog**, and a rule in `AGENTS.md` that every pull request updates it. ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4))
 - **Global spend guard for Nebius and Tavily** ([PR #2](https://github.com/PATELOM925/P-Dot/pull/2), merged as `00a2865`).
   - Problem: the only limit was per user, and sign-up is open for judges. Anyone could make many accounts and use up the owner's $25 Nebius credit, and then the card is charged.
   - Resolution: Postgres counters with caps for all users together:
@@ -47,7 +38,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
   - Each paid call reserves its worst-case cost first and settles the real cost after. Errors, Stop and missing usage keep the full hold.
   - The Supabase GitHub integration applied the migration on merge (confirmed with `supabase migration list` about 30 seconds later).
   - Decision: [0006](docs/decisions/0006-global-spend-guard.md).
-- **Fixed during review:**
+- **Fixed during review (PR #2):**
   - An unknown model got a fallback price below real catalog prices, so spending could pass the cap. Unpriced models are now refused. ([round 1](https://github.com/PATELOM925/P-Dot/pull/2#issuecomment-6257586511))
   - Negative usage counts were clamped to zero, so a malformed reply was free. Invalid usage now keeps the full hold. ([round 1](https://github.com/PATELOM925/P-Dot/pull/2#issuecomment-6257586511), [round 2](https://github.com/PATELOM925/P-Dot/pull/2#issuecomment-6257656084))
 - **Nemotron reasoning control** (PR #2).
@@ -68,6 +59,11 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 - **First deploy** to https://pdot.iampatelom.com (Cloudflare Workers free plan, about 2.3 MB compressed).
 
 ### Changed
+- **"Think harder" applies to one message only.**
+  - Problem: the switch stayed on until the user turned it off, so a forgotten switch kept using the most expensive model (Ultra).
+  - Resolution: the switch goes back to "Auto" when the server accepts the message. Owner decision, 2026-10-19.
+  - PR: routing follow-ups ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4)).
+- **Decision 0007 (model routing) is accepted.** Web search raises an otherwise fast message to the standard tier (Nemotron 3 Super), because summarizing sources needs the better model. "Think harder" and the stronger reasoning rules can still choose the heavy tier for a search turn. Owner decision, 2026-10-19.
 - **Merged Personal and Work modes, tasks, rename and dictation into `main`** (Awais's frontend, `ec3ea0e`). It was a fast-forward. Lint, types, 131 tests and the build passed before the merge (run locally on 2026-10-19). The Supabase GitHub integration applied both migrations (confirmed with `supabase migration list`).
 
 ### Security
