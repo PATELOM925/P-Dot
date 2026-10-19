@@ -1,0 +1,393 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { MAX_DOCUMENT_BODY_BYTES, MAX_DOCUMENT_CHARS } from "@/lib/limits";
+import { ConfigError } from "@/lib/supabase-config";
+import type { AuthContext } from "@/server/auth/session";
+import type { AssistantConfig } from "@/server/config";
+import type { Embedder } from "@/server/assistant/embed";
+import { EmbeddingBudgetError } from "@/server/assistant/embed";
+import type { ActionLogRepository } from "@/server/db/action-log";
+import type { DocumentRepository, NewChunk, NewDocument } from "@/server/db/documents";
+import { ProviderError } from "@/server/providers/errors";
+import type { DocumentDTO, DocumentStatus, Mode } from "@/types/api";
+
+vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
+vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn() }));
+vi.mock("@/server/assistant/deps", () => ({ createEmbedderForRequest: vi.fn() }));
+vi.mock("@/server/db/documents", () => ({ createDocumentRepository: vi.fn() }));
+vi.mock("@/server/db/action-log", () => ({ createActionLogRepository: vi.fn() }));
+
+const { getAuthContext } = await import("@/server/auth/session");
+const { getAssistantConfig } = await import("@/server/config");
+const { createEmbedderForRequest } = await import("@/server/assistant/deps");
+const { createDocumentRepository } = await import("@/server/db/documents");
+const { createActionLogRepository } = await import("@/server/db/action-log");
+const documentsRoute = await import("@/app/api/documents/route");
+const documentItemRoute = await import("@/app/api/documents/[id]/route");
+
+const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const MISSING_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const SECRET = "Quarterly plan SECRET-MARKER-42.";
+const FAILED_MESSAGE = "The document could not be processed. Please retry.";
+
+// ---------------------------------------------------------------------------
+// Fakes. They keep state in memory and record what the routes did.
+// ---------------------------------------------------------------------------
+
+interface StoredDocument {
+  dto: DocumentDTO;
+  userId: string;
+  chunks: NewChunk[];
+}
+
+class FakeDocuments implements DocumentRepository {
+  stored: StoredDocument[] = [];
+  /** When set, insertChunks throws this error (a failure that is not a provider error). */
+  failInsertChunks: Error | null = null;
+
+  private find(userId: string, documentId: string) {
+    return this.stored.find((d) => d.userId === userId && d.dto.id === documentId);
+  }
+
+  async listDocuments(userId: string, mode: Mode, limit: number): Promise<DocumentDTO[]> {
+    return this.stored
+      .filter((d) => d.userId === userId && d.dto.mode === mode)
+      .map((d) => ({ ...d.dto }))
+      .reverse()
+      .slice(0, limit);
+  }
+
+  async createDocument(userId: string, doc: NewDocument): Promise<DocumentDTO> {
+    const dto: DocumentDTO = {
+      id: crypto.randomUUID(),
+      mode: doc.mode,
+      title: doc.title,
+      mediaType: doc.mediaType,
+      charCount: doc.charCount,
+      status: "processing",
+      createdAt: new Date().toISOString(),
+    };
+    this.stored.push({ dto, userId, chunks: [] });
+    return { ...dto };
+  }
+
+  async insertChunks(userId: string, documentId: string, chunks: NewChunk[]): Promise<void> {
+    if (this.failInsertChunks) throw this.failInsertChunks;
+    const doc = this.find(userId, documentId);
+    if (!doc) throw new Error("document not found in fake");
+    doc.chunks.push(...chunks);
+  }
+
+  async setStatus(userId: string, documentId: string, status: DocumentStatus): Promise<void> {
+    const doc = this.find(userId, documentId);
+    if (doc) doc.dto.status = status;
+  }
+
+  async deleteDocument(userId: string, documentId: string): Promise<boolean> {
+    const index = this.stored.findIndex((d) => d.userId === userId && d.dto.id === documentId);
+    if (index < 0) return false;
+    this.stored.splice(index, 1);
+    return true;
+  }
+}
+
+class FakeActionLog implements ActionLogRepository {
+  entries: { userId: string; event: string; detail: Record<string, unknown> }[] = [];
+
+  async append(userId: string, event: string, detail: Record<string, unknown> = {}): Promise<void> {
+    this.entries.push({ userId, event, detail });
+  }
+
+  async list(): Promise<never[]> {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function signInAs(userId: string | null) {
+  vi.mocked(getAuthContext).mockResolvedValue(
+    userId ? ({ userId, email: `${userId}@example.com`, supabase: {} as SupabaseClient } satisfies AuthContext) : null,
+  );
+}
+
+function jsonRequest(method: string, body: unknown, headers: Record<string, string> = {}) {
+  return new Request("http://localhost/api/documents", {
+    method,
+    headers: { host: "localhost", origin: "http://localhost", "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+function rawRequest(method: string, body: string, headers: Record<string, string> = {}) {
+  return new Request("http://localhost/api/documents", {
+    method,
+    headers: { host: "localhost", origin: "http://localhost", "content-type": "application/json", ...headers },
+    body,
+  });
+}
+
+function plainRequest(method: string, url = "http://localhost/api/documents", headers: Record<string, string> = {}) {
+  return new Request(url, { method, headers: { host: "localhost", origin: "http://localhost", ...headers } });
+}
+
+const params = (id: string) => ({ params: Promise.resolve({ id }) });
+
+/** Several paragraphs, with a marker that must never appear in a log. */
+const LONG_TEXT = `${SECRET}\n\n${"Filler sentence for the plan. ".repeat(200)}`;
+
+function validBody(overrides: Record<string, unknown> = {}) {
+  return { mode: "work", title: "Team handbook", mediaType: "text/plain", text: LONG_TEXT, ...overrides };
+}
+
+/** Everything the code logged, as one string. */
+interface CallRecorder {
+  mock: { calls: unknown[][] };
+}
+
+function allLogText(spies: CallRecorder[]): string {
+  return spies.flatMap((spy) => spy.mock.calls.map((call) => JSON.stringify(call))).join("\n");
+}
+
+let docs: FakeDocuments;
+let log: FakeActionLog;
+let embedder: { embed: ReturnType<typeof vi.fn> };
+let consoleSpies: CallRecorder[];
+
+beforeEach(() => {
+  consoleSpies = [
+    vi.spyOn(console, "info").mockImplementation(() => {}),
+    vi.spyOn(console, "warn").mockImplementation(() => {}),
+    vi.spyOn(console, "error").mockImplementation(() => {}),
+  ];
+  docs = new FakeDocuments();
+  log = new FakeActionLog();
+  embedder = { embed: vi.fn(async (texts: string[]) => texts.map(() => [0.1, 0.2])) };
+  vi.mocked(createDocumentRepository).mockReturnValue(docs);
+  vi.mocked(createActionLogRepository).mockReturnValue(log);
+  vi.mocked(getAssistantConfig).mockReturnValue({} as AssistantConfig);
+  vi.mocked(createEmbedderForRequest).mockReturnValue(embedder as unknown as Embedder);
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/documents
+// ---------------------------------------------------------------------------
+
+describe("GET /api/documents", () => {
+  it("requires a session", async () => {
+    signInAs(null);
+    expect((await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"))).status).toBe(401);
+  });
+
+  it("rejects a missing or unknown mode", async () => {
+    signInAs(ALICE);
+    expect((await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents"))).status).toBe(400);
+    expect((await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=hobby"))).status).toBe(400);
+  });
+
+  it("lists only the signed-in user's documents in the requested mode, without embeddings", async () => {
+    signInAs(ALICE);
+    await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 10 });
+    await docs.createDocument(ALICE, { mode: "personal", title: "Home", mediaType: "text/plain", charCount: 10 });
+    await docs.createDocument(BOB, { mode: "work", title: "Bob's", mediaType: "text/plain", charCount: 10 });
+
+    const response = await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.documents.map((d: DocumentDTO) => d.title)).toEqual(["Mine"]);
+    expect(JSON.stringify(body)).not.toContain("embedding");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/documents
+// ---------------------------------------------------------------------------
+
+describe("POST /api/documents", () => {
+  it("requires a session and creates nothing", async () => {
+    signInAs(null);
+    expect((await documentsRoute.POST(jsonRequest("POST", validBody()))).status).toBe(401);
+    expect(docs.stored).toHaveLength(0);
+  });
+
+  it("rejects a cross-origin upload", async () => {
+    signInAs(ALICE);
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody(), { origin: "https://evil.example" }));
+    expect(response.status).toBe(403);
+    expect(docs.stored).toHaveLength(0);
+  });
+
+  it.each([
+    ["an empty text", { text: "" }],
+    ["a text of only spaces", { text: "  \n  " }],
+    ["a text over the limit", { text: "a".repeat(MAX_DOCUMENT_CHARS + 1) }],
+    ["an unknown media type", { mediaType: "text/html" }],
+    ["an empty title", { title: "   " }],
+    ["a title that is too long", { title: "x".repeat(201) }],
+    ["an unknown mode", { mode: "hobby" }],
+    ["a client-supplied user", { userId: BOB }],
+  ])("rejects %s with 400 and creates nothing", async (_label, override) => {
+    signInAs(ALICE);
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody(override)));
+    expect(response.status).toBe(400);
+    expect(docs.stored).toHaveLength(0);
+  });
+
+  it("rejects a body that is not JSON, and a body that is not application/json", async () => {
+    signInAs(ALICE);
+    expect((await documentsRoute.POST(rawRequest("POST", "{not json"))).status).toBe(400);
+    const notJson = new Request("http://localhost/api/documents", {
+      method: "POST",
+      headers: { host: "localhost", origin: "http://localhost", "content-type": "text/plain" },
+      body: "hello",
+    });
+    expect((await documentsRoute.POST(notJson)).status).toBe(415);
+  });
+
+  it("rejects a body over the size limit with 413", async () => {
+    signInAs(ALICE);
+    const big = JSON.stringify(validBody({ text: "a".repeat(MAX_DOCUMENT_BODY_BYTES) }));
+    expect((await documentsRoute.POST(rawRequest("POST", big))).status).toBe(413);
+    expect(docs.stored).toHaveLength(0);
+  });
+
+  it("answers a configuration error before any document is created", async () => {
+    signInAs(ALICE);
+    vi.mocked(getAssistantConfig).mockImplementation(() => {
+      throw new ConfigError(["NEBIUS_API_KEY"]);
+    });
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(503);
+    expect((await response.json()).error.code).toBe("not_configured");
+    expect(docs.stored).toHaveLength(0);
+    expect(embedder.embed).not.toHaveBeenCalled();
+  });
+
+  it("stores ready chunks with their embeddings, logs the upload, and answers 201 without embeddings", async () => {
+    signInAs(ALICE);
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(201);
+
+    const body = await response.json();
+    expect(body).toMatchObject({ mode: "work", title: "Team handbook", mediaType: "text/plain", status: "ready" });
+    expect(body.charCount).toBe(LONG_TEXT.length);
+    expect(JSON.stringify(body)).not.toContain("embedding");
+
+    const stored = docs.stored[0]!;
+    expect(stored.dto.status).toBe("ready");
+    expect(stored.chunks.length).toBeGreaterThan(1);
+    expect(stored.chunks.map((c) => c.index)).toEqual(stored.chunks.map((_, i) => i));
+    expect(stored.chunks[0]!.content).toContain("SECRET-MARKER-42");
+
+    expect(log.entries).toEqual([
+      {
+        userId: ALICE,
+        event: "document_added",
+        detail: { documentId: body.id, mode: "work", chunkCount: stored.chunks.length },
+      },
+    ]);
+  });
+
+  it("keeps the document text out of logs and the action log", async () => {
+    signInAs(ALICE);
+    await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(allLogText(consoleSpies)).not.toContain("SECRET-MARKER");
+    expect(JSON.stringify(log.entries)).not.toContain("SECRET-MARKER");
+  });
+
+  it("marks the document failed and answers 429 when the daily budget refuses", async () => {
+    signInAs(ALICE);
+    embedder.embed.mockRejectedValueOnce(new EmbeddingBudgetError("day"));
+
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toMatch(/^\d+$/);
+    expect(await response.json()).toMatchObject({ error: { code: "budget_exhausted" } });
+
+    expect(docs.stored[0]!.dto.status).toBe("failed");
+    expect(docs.stored[0]!.chunks).toHaveLength(0);
+    expect(log.entries).toHaveLength(0);
+    expect(allLogText(consoleSpies)).not.toContain("SECRET-MARKER");
+  });
+
+  it("answers 429 for a user's own daily limit", async () => {
+    signInAs(ALICE);
+    embedder.embed.mockRejectedValueOnce(new EmbeddingBudgetError("user"));
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(429);
+    expect((await response.json()).error.message).toBe("You have reached your daily usage limit. Try again tomorrow.");
+  });
+
+  it("marks the document failed and answers 502 when the provider fails", async () => {
+    signInAs(ALICE);
+    embedder.embed.mockRejectedValueOnce(new ProviderError("nebius", "unavailable", 500));
+
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({
+      error: { code: "provider_unavailable", message: FAILED_MESSAGE },
+    });
+    expect(docs.stored[0]!.dto.status).toBe("failed");
+    expect(docs.stored[0]!.chunks).toHaveLength(0);
+    expect(log.entries).toHaveLength(0);
+  });
+
+  it("marks the document failed and answers 500 for any other error", async () => {
+    signInAs(ALICE);
+    docs.failInsertChunks = new Error("database detail with SECRET-MARKER-42");
+
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(500);
+    expect(docs.stored[0]!.dto.status).toBe("failed");
+    expect(log.entries).toHaveLength(0);
+    expect(allLogText(consoleSpies)).not.toContain("SECRET-MARKER");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/documents/:id
+// ---------------------------------------------------------------------------
+
+describe("DELETE /api/documents/:id", () => {
+  it("requires a session", async () => {
+    signInAs(null);
+    expect((await documentItemRoute.DELETE(plainRequest("DELETE"), params(MISSING_ID))).status).toBe(401);
+  });
+
+  it("removes the owner's document, logs it, and answers 204", async () => {
+    signInAs(ALICE);
+    const created = await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 5 });
+
+    const response = await documentItemRoute.DELETE(plainRequest("DELETE"), params(created.id));
+    expect(response.status).toBe(204);
+    expect(docs.stored).toHaveLength(0);
+    expect(log.entries).toEqual([{ userId: ALICE, event: "document_deleted", detail: { documentId: created.id } }]);
+  });
+
+  it("answers 404 for another user's document, a missing one, or a bad ID, and deletes nothing", async () => {
+    const theirs = await docs.createDocument(ALICE, { mode: "work", title: "Alice's", mediaType: "text/plain", charCount: 5 });
+    signInAs(BOB);
+
+    for (const id of [theirs.id, MISSING_ID, "not-a-uuid"]) {
+      const response = await documentItemRoute.DELETE(plainRequest("DELETE"), params(id));
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: { code: "not_found", message: "Document not found." } });
+    }
+    expect(docs.stored).toHaveLength(1);
+    expect(log.entries).toHaveLength(0);
+  });
+
+  it("rejects a cross-origin delete", async () => {
+    const created = await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 5 });
+    signInAs(ALICE);
+    const response = await documentItemRoute.DELETE(
+      plainRequest("DELETE", undefined, { origin: "https://evil.example" }),
+      params(created.id),
+    );
+    expect(response.status).toBe(403);
+    expect(docs.stored).toHaveLength(1);
+  });
+});

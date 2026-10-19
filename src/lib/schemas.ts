@@ -1,5 +1,14 @@
 import { z } from "zod";
-import { MAX_MESSAGE_CHARS, MAX_TASK_CHARS, MAX_TITLE_CHARS } from "./limits";
+import {
+  MAX_ACTION_SUMMARY_CHARS,
+  MAX_DOCUMENT_CHARS,
+  MAX_DOCUMENT_TITLE_CHARS,
+  MAX_MEMORY_CHARS,
+  MAX_MESSAGE_CHARS,
+  MAX_REMINDER_TITLE_CHARS,
+  MAX_TASK_CHARS,
+  MAX_TITLE_CHARS,
+} from "./limits";
 import { EFFORTS } from "./routing";
 import type { ChatRequest } from "@/types/api";
 
@@ -75,3 +84,79 @@ export const newPasswordSchema = z
   .refine((value) => new TextEncoder().encode(value).length <= 72, {
     message: "Password must be at most 72 bytes.",
   });
+
+// ---------------------------------------------------------------------------
+// Memory, documents, action proposals and reminders (decision 0009).
+// ---------------------------------------------------------------------------
+
+const memoryContent = z
+  .string()
+  .trim()
+  .min(1, "Memory cannot be empty.")
+  .max(MAX_MEMORY_CHARS, `Memory must be at most ${MAX_MEMORY_CHARS} characters.`);
+
+export const createMemorySchema = z.object({ mode: modeSchema, content: memoryContent }).strict();
+
+/** Edit the text or mode, or approve a proposed memory (status "active"). */
+export const updateMemorySchema = z
+  .object({ content: memoryContent.optional(), mode: modeSchema.optional(), status: z.literal("active").optional() })
+  .strict()
+  .refine((v) => v.content !== undefined || v.mode !== undefined || v.status !== undefined, {
+    message: "Nothing to update.",
+  });
+
+export const createDocumentSchema = z
+  .object({
+    mode: modeSchema,
+    title: z
+      .string()
+      .trim()
+      .min(1, "Title cannot be empty.")
+      .max(MAX_DOCUMENT_TITLE_CHARS, `Title must be at most ${MAX_DOCUMENT_TITLE_CHARS} characters.`),
+    mediaType: z.enum(["text/plain", "text/markdown"]),
+    text: z
+      .string()
+      .min(1, "The document is empty.")
+      .max(MAX_DOCUMENT_CHARS, `The document must be at most ${MAX_DOCUMENT_CHARS} characters.`)
+      .refine((t) => t.trim().length > 0, { message: "The document is empty." }),
+  })
+  .strict();
+
+const reminderTitle = z
+  .string()
+  .trim()
+  .min(1, "Reminder cannot be empty.")
+  .max(MAX_REMINDER_TITLE_CHARS, `Reminder must be at most ${MAX_REMINDER_TITLE_CHARS} characters.`);
+
+/** An ISO 8601 date-time with a time zone offset, for example 2026-10-30T17:00:00Z. */
+const dueAt = z.iso.datetime({ offset: true, message: "Use a date and time, for example 2026-10-30T17:00:00Z." });
+
+export const createReminderSchema = z.object({ mode: modeSchema, title: reminderTitle, dueAt }).strict();
+
+export const updateReminderSchema = z
+  .object({
+    title: reminderTitle.optional(),
+    dueAt: dueAt.optional(),
+    status: z.enum(["scheduled", "done", "cancelled"]).optional(),
+  })
+  .strict()
+  .refine((v) => v.title !== undefined || v.dueAt !== undefined || v.status !== undefined, {
+    message: "Nothing to update.",
+  });
+
+/** The payload of an action proposal. Also used to validate an edited payload on approval. */
+export const actionPayloadSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("create_task"), mode: modeSchema, title: taskTitle }).strict(),
+  z.object({ kind: z.literal("create_reminder"), mode: modeSchema, title: reminderTitle, dueAt }).strict(),
+  z.object({ kind: z.literal("save_memory"), mode: modeSchema, content: memoryContent }).strict(),
+]);
+
+/** POST /api/actions/:id/decision. An edited payload must keep the same kind. */
+export const actionDecisionSchema = z
+  .object({ decision: z.enum(["approve", "reject"]), payload: actionPayloadSchema.optional() })
+  .strict()
+  .refine((v) => v.decision === "approve" || v.payload === undefined, {
+    message: "Only an approval can change the payload.",
+  });
+
+export const actionSummarySchema = z.string().trim().min(1).max(MAX_ACTION_SUMMARY_CHARS);
