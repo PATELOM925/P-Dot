@@ -1,10 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback } from "react";
+import { APPROVAL_MODE_LABELS } from "@/lib/approval-policy";
 import { MODE_LABELS } from "@/lib/mode";
 import type { ActionProposalDTO, Mode } from "@/types/api";
 import { ApprovalCard } from "./ApprovalCard";
+import { useApprovalMode } from "./approval-mode";
 import { visibleProposals } from "./format";
 import { useProposals } from "./useProposals";
 
@@ -15,6 +18,7 @@ import { useProposals } from "./useProposals";
  */
 export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionProposalDTO[] }) {
   const router = useRouter();
+  const approvalMode = useApprovalMode();
   const toLogin = useCallback(() => router.replace("/login?next=/today"), [router]);
   const { proposals, state, decidedHere, decided, stale, reload } = useProposals({ initial, onUnauthorized: toLogin });
 
@@ -70,6 +74,9 @@ export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionPr
           {waitingInOtherMode} more waiting in {MODE_LABELS[otherMode]} mode.
         </p>
       )}
+      <p className="hint approval-mode-line">
+        Approvals: <strong>{APPROVAL_MODE_LABELS[approvalMode]}</strong> · <Link href="/settings#approvals">Change</Link>
+      </p>
     </section>
   );
 }

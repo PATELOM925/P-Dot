@@ -31,6 +31,26 @@ function add<T>(map: Map<string, T[]>, key: string, item: T) {
   else map.set(key, [item]);
 }
 
+/** Index of the turn an item made at `createdAt` belongs to: the last saved user message at or before it, or -1. */
+function turnIndexAt(messages: PlacedMessage[], createdAt: string): number {
+  const time = Date.parse(createdAt);
+  if (Number.isNaN(time)) return -1;
+  let userIndex = -1;
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!;
+    if (message.role !== "user" || message.pending) continue;
+    if (Date.parse(message.createdAt) <= time) userIndex = i;
+    else break;
+  }
+  return userIndex;
+}
+
+/** The ID of the user message that starts the turn an item belongs to, or null. */
+export function turnStartFor(messages: PlacedMessage[], createdAt: string): string | null {
+  const index = turnIndexAt(messages, createdAt);
+  return index === -1 ? null : messages[index]!.id;
+}
+
 /**
  * Places items made while a turn was running, such as action proposals. A turn
  * starts with a user message, so an item belongs to the last saved user
@@ -41,15 +61,8 @@ export function placeByTime<T extends { createdAt: string }>(messages: PlacedMes
   const byMessage = new Map<string, T[]>();
   const rest: T[] = [];
   for (const item of items) {
-    const time = Date.parse(item.createdAt);
-    let userIndex = -1;
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i]!;
-      if (message.role !== "user" || message.pending) continue;
-      if (Date.parse(message.createdAt) <= time) userIndex = i;
-      else break;
-    }
-    if (userIndex === -1 || Number.isNaN(time)) rest.push(item);
+    const userIndex = turnIndexAt(messages, item.createdAt);
+    if (userIndex === -1) rest.push(item);
     else add(byMessage, turnAnchor(messages, userIndex), item);
   }
   return { byMessage, rest };

@@ -63,12 +63,15 @@ export function ApprovalCard({
   onDecided,
   onStale,
   onUnauthorized,
+  askReason,
 }: {
   proposal: ActionProposalDTO;
   onDecided: (updated: ActionProposalDTO) => void;
   /** Called when the server's copy changed (already decided, or the run failed), so the list can reload. */
   onStale?: () => void;
   onUnauthorized?: () => void;
+  /** In Auto mode: why this action still waits for the user. */
+  askReason?: string;
 }) {
   const id = useId();
   const kind = proposal.payload.kind;
@@ -141,6 +144,11 @@ export function ApprovalCard({
       </p>
       {approvedEdit && (
         <p className="hint">P-Dot&apos;s suggestion. You changed it before approving; the details below are what was done.</p>
+      )}
+      {waiting && askReason && (
+        <p className="approval-ask-reason small">
+          <strong>Asks even in Auto:</strong> {askReason}
+        </p>
       )}
 
       {editing ? (

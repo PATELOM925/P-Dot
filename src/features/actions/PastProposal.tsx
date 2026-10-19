@@ -2,11 +2,13 @@ import Link from "next/link";
 import type { ActionProposalDTO, ActionStatus } from "@/types/api";
 import { KIND_LABELS, KIND_RESULT_LINKS } from "./format";
 
+// "Approved" rather than "you approved": until the server records who decided (decision 0011),
+// an approval made by Auto mode looks the same as one made with a click.
 const PAST: Record<Exclude<ActionStatus, "proposed">, { label: string; pill: string; note: string }> = {
-  approved: { label: "Running", pill: "status-approved", note: "You approved it. It is still running." },
-  executed: { label: "Done", pill: "status-executed", note: "You approved it." },
+  approved: { label: "Running", pill: "status-approved", note: "Approved. It is still running." },
+  executed: { label: "Done", pill: "status-executed", note: "Approved and done." },
   rejected: { label: "Cancelled", pill: "status-rejected", note: "You cancelled it. Nothing was changed." },
-  failed: { label: "Failed", pill: "status-failed", note: "You approved it, but it could not be completed." },
+  failed: { label: "Failed", pill: "status-failed", note: "Approved, but it could not be completed." },
 };
 
 /**

@@ -1,8 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ApprovalModeOptions } from "@/features/actions/ApprovalModePicker";
+import { KIND_LABELS } from "@/features/actions/format";
 import { signOutAction } from "@/features/auth/actions";
 import { AppSettings } from "@/features/pwa/AppSettings";
+import { ACTION_EFFECTS, ALWAYS_ASK_REASONS, MAX_AUTO_ACTIONS_PER_REPLY } from "@/lib/approval-policy";
 import { requireAuth } from "@/server/auth/session";
+import type { ActionKind } from "@/types/api";
+
+// Read from the shared policy, so this page always matches what Auto mode does.
+const RUNS_ON_ITS_OWN = (Object.keys(ACTION_EFFECTS) as ActionKind[])
+  .filter((kind) => ACTION_EFFECTS[kind] === "create_own")
+  .map((kind) => KIND_LABELS[kind]);
 
 export const metadata: Metadata = { title: "Settings · P-Dot" };
 
@@ -28,6 +37,29 @@ export default async function SettingsPage() {
             </button>
           </form>
         </div>
+      </section>
+
+      <section id="approvals" className="card stack" aria-labelledby="approvals-heading">
+        <h2 id="approvals-heading">Approvals</h2>
+        <p>Choose how P-Dot acts on what it suggests in chat. You can also switch with the button next to the message box.</p>
+        <ApprovalModeOptions />
+        <p className="muted small">
+          In Auto, for replies to messages you send while it is on, P-Dot does these on its own and shows them under the
+          reply with Undo: {RUNS_ON_ITS_OWN.join(", ").toLowerCase()}. At most {MAX_AUTO_ACTIONS_PER_REPLY} for one reply;
+          the rest ask.
+        </p>
+        <div className="stack">
+          <h3>Always asks, even in Auto</h3>
+          <ul className="plain-list">
+            {Object.values(ALWAYS_ASK_REASONS).map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        </div>
+        <p className="hint">
+          Your choice is saved on this device. P-Dot does not propose actions in chat yet, so neither mode has anything
+          to do until that step is built. Every action, either way, appears in the <Link href="/action-log">action log</Link>.
+        </p>
       </section>
 
       <AppSettings />

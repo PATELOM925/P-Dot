@@ -24,11 +24,14 @@ export function MemorySuggestionCard({
   onKept,
   onDropped,
   onUnauthorized,
+  askReason,
 }: {
   suggestion: MemorySuggestion;
   onKept: (memory: MemoryDTO) => void;
   onDropped: (memory: MemoryDTO) => void;
   onUnauthorized?: () => void;
+  /** In Auto mode: why this still waits for the user. */
+  askReason?: string;
 }) {
   const id = useId();
   const { memory, outcome } = suggestion;
@@ -137,6 +140,11 @@ export function MemorySuggestionCard({
           <p className="hint">
             P-Dot suggested remembering this in {MODE_LABELS[memory.mode]} mode. It is not used until you keep it.
           </p>
+          {askReason && (
+            <p className="approval-ask-reason small">
+              <strong>Asks even in Auto:</strong> {askReason}
+            </p>
+          )}
           <div className="actions">
             <button
               type="button"

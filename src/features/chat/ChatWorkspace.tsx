@@ -1,8 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { ApprovalModeMenu, ApprovalModeSetup } from "@/features/actions/ApprovalModePicker";
+import { useApprovalMode } from "@/features/actions/approval-mode";
 import { notifyActionsChanged } from "@/features/actions/events";
+import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
@@ -94,6 +98,9 @@ export function ChatWorkspace({
   const [savingRename, setSavingRename] = useState(false);
   // Bumped after each reply so P-Dot's suggestions reload; a reply may come with new proposals or memories.
   const [suggestionsKey, setSuggestionsKey] = useState(0);
+  // "Ask first" or "Auto". Auto acts only on replies to messages sent while it was on (their user message IDs).
+  const approvalMode = useApprovalMode();
+  const [autoTurns, setAutoTurns] = useState<ReadonlySet<string>>(() => new Set());
 
   const dictation = useDictation(
     useCallback((text: string) => setDraft((current) => appendDictation(current, text, MAX_MESSAGE_CHARS)), []),
@@ -212,6 +219,8 @@ export function ChatWorkspace({
         : { action, conversationId: activeId!, webSearch, effort };
 
     const sentEffort = { effort, version: effortVersion.current };
+    // The mode when the user pressed Send decides whether Auto may act on this reply.
+    const sentInAuto = approvalMode === "auto";
     const controller = new AbortController();
     abortRef.current = controller;
     const tempId = `pending-${Date.now()}`;
@@ -253,6 +262,7 @@ export function ChatWorkspace({
         switch (event.type) {
           case "start":
             accepted = true;
+            if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
             setActiveId(event.conversation.id);
@@ -372,6 +382,17 @@ export function ChatWorkspace({
         .filter((p) => p.conversationId === activeId)
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
     : [];
+  // In Auto, safe actions from replies to messages sent in Auto are approved through the normal decision route.
+  const auto = useAutoApprovals({
+    mode: approvalMode,
+    messages,
+    proposals: conversationProposals,
+    autoTurns,
+    onDecided: actions.decided,
+    onStale: actions.stale,
+    onUnauthorized: goToLogin,
+  });
+  const autoRunning = new Set(auto.running.map((p) => p.id));
   const placedProposals = placeByTime(messages, conversationProposals);
   const placedSuggestions = placeBySource(messages, memorySuggestions.items);
   const showSuggestions = activeId !== null && !loadingMessages;
@@ -380,6 +401,10 @@ export function ChatWorkspace({
       <TurnExtras
         proposals={proposals}
         suggestions={suggestions}
+        approvalMode={approvalMode}
+        autoRunning={autoRunning}
+        autoRan={auto.ran}
+        askReasons={auto.asks}
         decidedHere={actions.decidedHere}
         onDecided={actions.decided}
         onStale={actions.stale}
@@ -566,6 +591,9 @@ export function ChatWorkspace({
           </div>
         )}
 
+        {/* Once per device: choose Ask first or Auto. Outside the form, so Enter on an option cannot send. */}
+        <ApprovalModeSetup />
+
         <form
           className="composer"
           onSubmit={(event) => {
@@ -666,6 +694,8 @@ export function ChatWorkspace({
                   ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`
                   : "Enter to send · Shift+Enter for a new line"}
               </span>
+              {/* Kept apart from the effort switch, whose "Auto" is about models, not approvals. */}
+              <ApprovalModeMenu />
               <button
                 type="button"
                 className={`round-button${dictation.listening ? " is-listening" : ""}`}
@@ -702,6 +732,12 @@ export function ChatWorkspace({
           {dictation.error && (
             <p className="alert alert-warning small" role="alert">
               {dictation.error}
+            </p>
+          )}
+          {approvalMode === "auto" && (
+            <p className="approval-mode-hint small">
+              <strong>Auto is on:</strong> tasks and reminders are added on their own, with Undo. Deleting, memories,
+              outside accounts and private data still ask. <Link href="/settings#approvals">What always asks</Link>
             </p>
           )}
           <p className="disclaimer">P-Dot is an AI and can make mistakes, so please double-check anything important.</p>
