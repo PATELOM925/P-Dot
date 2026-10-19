@@ -60,14 +60,14 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
   | rate limit (429), 408, 409, 425, 500, 502, 503, 504, overloaded | retry with backoff |
   | 400, 413, 422 | stop |
 
-  Labels are also read from HTTP error bodies, at most 8 KB, and never logged.
+  Labels are also read from HTTP error bodies. The reader stops at about 8,192 characters. It checks the length after each chunk, so one large chunk can go over that number. The body is never logged.
 - **Rule:** Test with raw wire data (SSE lines, real error bodies) through the real adapter and the executor together.
 - **Limit:** These fixtures prove how our code reads those shapes. They do not prove that Nebius sends them. Record any real Nebius error shape you see in this file.
 - **Sources:** [PR #3 review, round 1](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6257890039) and [fix](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6257965287); [OpenAI API error codes](https://platform.openai.com/docs/guides/error-codes).
 
 ### 6. New code can run before its migration
 
-- **What happened:** The routing PR reads and writes new columns on `messages`. A merge to `main` makes the Supabase GitHub integration apply the migration (on 2026-10-19 this took about 30 seconds). Workers Builds deploys the code from the same merge. If the code wins the race, every query that names the new columns fails with `42703 column ... does not exist`, and chat and history return 500. The first test for this case used made-up rows, so it passed anyway.
+- **What happened:** The routing PR reads and writes new columns on `messages`. A merge to `main` makes the Supabase GitHub integration apply the migration (on 2026-10-19, `supabase migration list` showed it about 30 seconds after the merge). Workers Builds deploys the code from the same merge. If the code wins the race, every query that names the new columns fails with `42703 column ... does not exist`, and chat and history return 500. The first test for this case used made-up rows, so it passed anyway.
 - **Fix:** For a missing route column error only, the repository repeats the read or insert with the old columns and returns `route: null`. The error must be 42703 or PGRST204, name the `messages` table, and name one of the four route columns exactly. A second review found that the first matcher also accepted other tables, so it was made narrower. A failed insert writes no row, so the repeat cannot make a duplicate.
 - **Rule:** Every migration must be additive and safe for the code that is live now. New code must work on the old schema until the migration lands. Match schema errors narrowly. Test against the old and new schemas parsed from the migration files.
 - **Sources:** [PR #3 review, round 1](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6257890039), [round 2](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6258000501) and [fix](https://github.com/PATELOM925/P-Dot/pull/3#issuecomment-6258019314); [Supabase GitHub integration](https://supabase.com/docs/guides/deployment/branching/github-integration); [PostgreSQL error codes](https://www.postgresql.org/docs/current/errcodes-appendix.html); [PostgREST errors](https://docs.postgrest.org/en/stable/references/errors.html).

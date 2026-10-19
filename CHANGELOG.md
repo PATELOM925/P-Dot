@@ -13,7 +13,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
   - Problem: the switch stayed on until the user turned it off, so a forgotten switch kept using the most expensive model (Ultra).
   - Resolution: the switch goes back to "Auto" when the server accepts the message. Owner decision, 2026-10-19.
   - PR: routing follow-ups ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4)).
-- **Decision 0007 (model routing) is accepted.** Web search turns stay on the standard tier (Nemotron 3 Super), because summarizing sources needs the better model. Owner decision, 2026-10-19.
+- **Decision 0007 (model routing) is accepted.** Web search raises an otherwise fast message to the standard tier (Nemotron 3 Super), because summarizing sources needs the better model. "Think harder" and the stronger reasoning rules can still choose the heavy tier for a search turn. Owner decision, 2026-10-19.
 
 ### Added
 - **`docs/PROVIDER-RELIABILITY.md`.** Ten lessons from review findings and measurements, each with a rule and sources: retries, backup models, hedged requests, error labels, pricing, usage parsing, migrations, `waitUntil`, the circuit breaker and the deploy guard. There are also checklists for adding a model, an error rule or a migration. ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4))
@@ -45,7 +45,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - Tavily: 40 credits a day and 800 a month
     - each user: $0.25 and 10 credits a day
   - Each paid call reserves its worst-case cost first and settles the real cost after. Errors, Stop and missing usage keep the full hold.
-  - The migration was applied by the Supabase GitHub integration on merge.
+  - The Supabase GitHub integration applied the migration on merge (confirmed with `supabase migration list` about 30 seconds later).
   - Decision: [0006](docs/decisions/0006-global-spend-guard.md).
 - **Fixed during review:**
   - An unknown model got a fallback price below real catalog prices, so spending could pass the cap. Unpriced models are now refused. ([round 1](https://github.com/PATELOM925/P-Dot/pull/2#issuecomment-6257586511))
@@ -68,10 +68,10 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 - **First deploy** to https://pdot.iampatelom.com (Cloudflare Workers free plan, about 2.3 MB compressed).
 
 ### Changed
-- **Merged Personal and Work modes, tasks, rename and dictation into `main`** (Awais's frontend, `ec3ea0e`). It was a fast-forward. Lint, types, 131 tests and the build passed before the merge. The Supabase GitHub integration applied both migrations.
+- **Merged Personal and Work modes, tasks, rename and dictation into `main`** (Awais's frontend, `ec3ea0e`). It was a fast-forward. Lint, types, 131 tests and the build passed before the merge (run locally on 2026-10-19). The Supabase GitHub integration applied both migrations (confirmed with `supabase migration list`).
 
 ### Security
-- **Real keys were found in the tracked `.env.example` before any commit.** The values were moved to git-ignored files, and the template went back to blank values. The admin key, database password and connection strings now live only in `.env.admin.local`, which the app never reads. Nothing was pushed, so no key needed rotation.
+- **Real keys were found in the tracked `.env.example` before any commit.** The values were moved to git-ignored files, and the template went back to blank values. The admin key, database password and connection strings now live only in `.env.admin.local`, which the app never reads. `git status` showed the file as changed but never committed, and nothing was pushed, so no key needed rotation.
 
 ## 2026-10-16
 

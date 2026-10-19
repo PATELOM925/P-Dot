@@ -13,6 +13,7 @@ import {
   renameConversation,
 } from "./api";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
+import { effortAfterAccept } from "./effort";
 import { readChatStream } from "./stream";
 import { useDictation } from "./useDictation";
 
@@ -64,6 +65,8 @@ export function ChatWorkspace({
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
   const [effort, setEffort] = useState<Effort>("auto");
+  // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
+  const effortVersion = useRef(0);
   const [sending, setSending] = useState(false);
   const [streaming, setStreaming] = useState<StreamingReply | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
@@ -178,6 +181,7 @@ export function ChatWorkspace({
         ? { action, message: text, webSearch, effort, ...(activeId ? { conversationId: activeId } : { mode }) }
         : { action, conversationId: activeId!, webSearch, effort };
 
+    const sentEffort = { effort, version: effortVersion.current };
     const controller = new AbortController();
     abortRef.current = controller;
     const tempId = `pending-${Date.now()}`;
@@ -218,7 +222,7 @@ export function ChatWorkspace({
           case "start":
             accepted = true;
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
-            if (body.effort === "deep") setEffort("auto");
+            setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
             setActiveId(event.conversation.id);
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
@@ -564,7 +568,10 @@ export function ChatWorkspace({
                     className="mode-option"
                     aria-pressed={effort === option.value}
                     title={option.title}
-                    onClick={() => setEffort(option.value)}
+                    onClick={() => {
+                      effortVersion.current += 1;
+                      setEffort(option.value);
+                    }}
                   >
                     {option.label}
                   </button>
