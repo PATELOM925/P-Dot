@@ -53,7 +53,8 @@ The agent loop can call `routeRequest({ ..., requestedTier: "heavy" })` for plan
   - Next model, no retry: 404 (for example an unknown model ID).
   - Stop: 400, 401, 403, 413, 422 and account quota errors. Another model would fail the same way.
   - An empty reply (finished with no visible text): next model.
-- **Retries.** At most 2 tries on each model, then the next model. The wait before a retry uses full jitter: a random time from 0 to min(2 s, 200 ms × 2^(try − 1)). If the provider sends `Retry-After` of 2 s or less, the executor waits at least that long. If it is longer, the executor goes to the next model at once.
+  - The same rules apply to an error event inside the stream. Its numeric `code` (or a numeric string) is kept as the status. A known OpenAI-compatible label in `error.code` or `error.type` decides first, from the stream or from a JSON error body (read up to 8 KB and never logged). Quota or billing labels stop every model, even with HTTP 429, and the user sees "The AI provider account for P-Dot has reached its limit." Authentication labels stop. `model_not_found` goes to the next model. Rate-limit, server and overloaded labels are retried.
+- **Retries.** At most 2 tries on each model, then the next model. The wait before a retry uses full jitter: a random time from 0 to min(2 s, 200 ms × 2^(try − 1)). If the provider sends `Retry-After` of 2 s or less, the executor waits at least that long. If it is longer, the executor goes to the next model at once. Each model has its own earliest next-try time. A failure on another model (for example the hedge) never shortens it, and a hedge never starts on a model that is still waiting.
 - **First-token timeout.** Each attempt must send a token (reply text or reasoning) within the tier's timeout. If not, it stops, and the next model starts.
 - **Deadline.** One deadline covers all attempts and the streaming of the reply. No attempt starts with less than 1 s left.
 - **Attempt cap.** At most 4 attempts for `fast`, 3 for `standard` and `heavy`, and 2 for `vision`, with the hedge included.
@@ -86,6 +87,10 @@ Each attempt (retries, fallbacks and the hedge included) holds spend before it s
 - Every model in a chain must have a price. An unpriced model is a config error (chat says "not configured"). The chain never skips it silently.
 
 The attempt cap and the deadline limit how many holds one reply can make.
+
+### Before the migration is applied
+
+A merge to `main` applies the migration and deploys the Worker at about the same time, so the new code can run first. When the database says that a route column does not exist (Postgres `42703` or PostgREST `PGRST204`, naming only `model`, `model_tier`, `route_reason` or `model_fallback`), the repository repeats the statement with the old columns. Replies then have `route: null`, and nothing else changes. A missing column fails the statement before any row is written, so the repeated insert cannot make a duplicate. Each request makes a new repository, so the fallback ends as soon as the migration is applied. Other database errors still fail closed.
 
 ### What the user sees
 
