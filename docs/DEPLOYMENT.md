@@ -36,12 +36,23 @@ Workers Builds was connected on 2026-10-19. Each push to `main` starts one produ
 
 When two or more pull requests, or a stack of pull requests, are ready at about the same time, merge them all first and deploy once. Each build costs build minutes and CI time, and a build of an in-between state is replaced minutes later.
 
-- Merge the whole stack in one sitting, bottom first, with no pause between merges. Change the base of the next pull request to `main` right after each merge.
-- Only the build of the last merge matters. Cancel any older build that is still running (Workers & Pages → `pdot` → Deployments → View build history → Cancel build).
+1. **Before each merge,** check the pull request again:
+   - its base is `main`, or the branch below it in the stack;
+   - its diff contains only its own changes;
+   - its review verdict (SHIP) is for its current head commit;
+   - its required checks pass.
+
+   After a merge, change the base of the next pull request to `main`. If it was based on a squash merge, rebase it first and review the new diff. Use "Create a merge commit" for stacks, so the next pull request keeps its history. See [merging stacked pull requests on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-stacked-pull-requests).
+2. **Merge the whole set in one sitting,** without waiting for builds between merges.
+3. **Cancel every older build** of `main`, running or queued, so only the build of the last merge deploys (Workers & Pages → `pdot` → Deployments → View build history → Cancel build). An older build that already finished has already deployed; the last build replaces it.
+4. **Confirm the last build succeeded.** If it failed, fix it and deploy the final `main` once. Do not deploy the in-between commits by hand.
+5. **Confirm production runs the final `main`:** open the build of the last merge commit in the build history and note the version ID it deployed. It must match the active version in `npx wrangler deployments list --name pdot`. Then check the live site once (`/api/health`, sign-in, one chat).
+
+Other rules:
+
 - Do not push small follow-up fixes to `main` one by one. Put them in one pull request.
-- Do not run a manual deploy after each merge. If the builds are broken, fix the build first, then run one deploy for the final `main`.
-- Each merge still applies its own migration (Supabase GitHub integration), so every migration must be safe on its own.
-- Check the live site once, after the last build.
+- Each merge applies its own migration (Supabase GitHub integration) at once, but new code goes live only with the last build. During that time the new migrations run with the old code. So every migration must be safe for the code that is live now, and new code must work on the old schema ([lesson 6](PROVIDER-RELIABILITY.md#6-new-code-can-run-before-its-migration)). If the last build fails, this time is longer, so fix it first.
+- These steps are for the owner. Agents still must not merge or deploy (see [Rules for coding agents](#rules-for-coding-agents)).
 
 ## What runs in Workers Builds
 

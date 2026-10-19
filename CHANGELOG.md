@@ -11,11 +11,11 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ### Fixed
 - **Automatic deploys from GitHub (Workers Builds) failed on every merge.**
   - Problem: the build settings were empty, so Cloudflare used its defaults (`npm run build`, `npx wrangler deploy`). The plain Next.js build does not make the OpenNext Worker, so each deploy failed after about 45 seconds. The first three builds on 2026-10-19 failed this way, and PR #3 and #4 were deployed by hand.
-  - Resolution: the commands from `docs/DEPLOYMENT.md` and the two public Supabase build variables were set on both the Production and Previews Base tabs. A rerun of `main` (`9a8bea2`) then built and deployed in 1 minute 42 seconds. A live sign-up and chat worked after it, and the reply showed "Nemotron 3.5 Lightning · everyday request". (This PR records it; the fix itself is a dashboard setting.)
+  - Resolution: the commands from `docs/DEPLOYMENT.md` and the two public Supabase build variables were set on both the Production and Previews Base tabs. A rerun of `main` (`9a8bea2`) then built and deployed in 1 minute 42 seconds. A live sign-up and chat worked after it, and the reply showed "Nemotron 3.5 Lightning · everyday request". The fix itself is a dashboard setting. [PR #5](https://github.com/PATELOM925/P-Dot/pull/5) records it ([review, round 1](https://github.com/PATELOM925/P-Dot/pull/5#issuecomment-6258531931)).
 
 ### Changed
-- **Merge several pull requests first, then deploy once.** Owner rule, 2026-10-19: when pull requests or a stack are ready at about the same time, merge them all and let one build deploy them. Added to `AGENTS.md` and `docs/DEPLOYMENT.md`.
-- `docs/DEPLOYMENT.md` now records which one-time setup steps are done and the Workers Builds failure above.
+- **Merge several pull requests first, then deploy once.** Owner rule, 2026-10-19: when pull requests or a stack are ready at about the same time, merge them all and let one build deploy them. Added to `AGENTS.md` and `docs/DEPLOYMENT.md`, with checks before each merge, cancelling older builds, and confirming that production runs the final `main`. ([PR #5](https://github.com/PATELOM925/P-Dot/pull/5), [review, round 1](https://github.com/PATELOM925/P-Dot/pull/5#issuecomment-6258531931))
+- `docs/DEPLOYMENT.md` now records which one-time setup steps are done and the Workers Builds failure above. ([PR #5](https://github.com/PATELOM925/P-Dot/pull/5))
 
 ## 2026-10-19
 
