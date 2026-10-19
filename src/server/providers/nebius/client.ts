@@ -9,6 +9,7 @@ import {
   type ProviderErrorKind,
 } from "../errors";
 import { readSseData, SseFormatError } from "./sse";
+import { createThinkFilter } from "./think";
 
 // Nebius Token Factory exposes an OpenAI-compatible chat completions API.
 // https://api.tokenfactory.nebius.com/docs
@@ -47,7 +48,8 @@ const chunkSchema = z.object({
   choices: z
     .array(
       z.object({
-        // `reasoning_content` and other delta fields are intentionally ignored.
+        // Reasoning arrives in `reasoning` and `reasoning_content`. Those and
+        // other delta fields are ignored, so reasoning is never shown or saved.
         delta: z.object({ content: z.string().nullish() }).nullish(),
         finish_reason: z.string().nullish(),
       }),
@@ -110,7 +112,12 @@ export async function* streamChatCompletion(
           messages,
           max_tokens: settings.maxOutputTokens,
           stream: true,
+          // Token usage arrives in a last chunk with no choices. The spend guard needs it.
           stream_options: { include_usage: true },
+          // Turns off reasoning for Nemotron (and other models whose chat template reads
+          // this flag). Reasoning tokens cost money and count against max_tokens, so they
+          // could leave no room for the reply. Models that do not read it ignore it.
+          chat_template_kwargs: { enable_thinking: false },
         }),
         signal: scope.signal,
       });
@@ -128,6 +135,7 @@ export async function* streamChatCompletion(
     let completed = false;
     let finishReason: string | null = null;
     let usage: TokenUsage | null = null;
+    const think = createThinkFilter();
 
     try {
       for await (const data of readSseData(response.body, scope.signal)) {
@@ -151,7 +159,7 @@ export async function* streamChatCompletion(
           };
         }
         for (const choice of chunk.choices ?? []) {
-          const text = choice.delta?.content;
+          const text = choice.delta?.content ? think.push(choice.delta.content) : "";
           if (text) yield { type: "text", text };
           if (choice.finish_reason) finishReason = choice.finish_reason;
         }
@@ -166,6 +174,8 @@ export async function* streamChatCompletion(
     if (!completed && finishReason === null) {
       throw networkError(scope, options.signal);
     }
+    const rest = think.flush();
+    if (rest) yield { type: "text", text: rest };
     yield { type: "finish", finishReason, usage };
   } finally {
     scope.dispose();
