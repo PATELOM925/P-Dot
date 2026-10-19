@@ -7,6 +7,12 @@ import { createTask, deleteTask, updateTask } from "./api";
 
 export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: TaskDTO[] }) {
   const [tasks, setTasks] = useState(initialTasks);
+  // A server refresh (for example after an approved "add a task" action) brings a new list.
+  const [shownInitial, setShownInitial] = useState(initialTasks);
+  if (initialTasks !== shownInitial) {
+    setShownInitial(initialTasks);
+    setTasks(initialTasks);
+  }
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);

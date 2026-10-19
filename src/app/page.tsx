@@ -55,11 +55,11 @@ export default async function LandingPage() {
           <h1>
             Don&apos;t just chat.
             <br />
-            Get it done.
+            <span className="gradient-text">Get it done.</span>
           </h1>
           <p className="lead">
-            P-Dot reads your day, plans the steps, uses your tools and checks with you before it acts. Chat is just where
-            you start.
+            A private agent on open Nemotron that never trains on your data. You can see and edit everything it
+            remembers. It acts on your own laptop and phone, and every action is approved and logged.
           </p>
           <div className="actions">
             {signedIn ? (
@@ -80,7 +80,7 @@ export default async function LandingPage() {
           <div className="connect-row">
             <span className="connect-label">Connect your tools</span>
             {["Gmail", "Calendar", "GitHub", "Telegram"].map((name) => (
-              <span key={name} className="chip chip-neutral">
+              <span key={name} className={`chip chip-${name.toLowerCase()}`}>
                 {name}
               </span>
             ))}
@@ -89,8 +89,9 @@ export default async function LandingPage() {
             </Link>
           </div>
           <p className="muted small landing-note">
-            <strong>Powered by NVIDIA Nemotron, deployed through Nebius.</strong> It runs on your own Nebius account with
-            an open model, so you choose the model, hold the keys and own your data. Connectors are still being built.
+            <strong>Powered by NVIDIA Nemotron, deployed through Nebius</strong> on your own account, so you choose the
+            model and hold the keys. Memory, approvals and the action log are in place; replies do not use memories yet,
+            P-Dot does not propose actions in chat yet, and device actions are still being built.
           </p>
         </section>
 
@@ -112,7 +113,7 @@ export default async function LandingPage() {
                   <p className="agent-step-title">{step.title}</p>
                   {"tool" in step && (
                     <p className="agent-step-detail">
-                      <span className="chip chip-neutral">{step.tool}</span> {step.detail}
+                      <span className={`chip chip-${step.tool.toLowerCase()}`}>{step.tool}</span> {step.detail}
                     </p>
                   )}
                   {step.state === "done" && !("tool" in step) && <p className="agent-step-detail">{step.detail}</p>}

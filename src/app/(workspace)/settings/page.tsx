@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { signOutAction } from "@/features/auth/actions";
+import { AppSettings } from "@/features/pwa/AppSettings";
 import { requireAuth } from "@/server/auth/session";
 
 export const metadata: Metadata = { title: "Settings · P-Dot" };
@@ -29,6 +30,16 @@ export default async function SettingsPage() {
         </div>
       </section>
 
+      <AppSettings />
+
+      <section className="card stack" aria-labelledby="devices-heading">
+        <h2 id="devices-heading">Devices</h2>
+        <p>
+          See how this device is set up, and how pairing your laptop and phone will work.{" "}
+          <Link href="/devices">Open devices</Link>
+        </p>
+      </section>
+
       <section className="card stack" aria-labelledby="data-heading">
         <h2 id="data-heading">How your data is used</h2>
         <ul className="plain-list">
@@ -51,8 +62,31 @@ export default async function SettingsPage() {
             assistant stays within that mode&apos;s topics.
           </li>
           <li>
-            <strong>Storage (Supabase):</strong> your account and conversations are stored in a Supabase
-            database, visible only to your account.
+            <strong>Memory:</strong> when you save or edit a memory, its text is sent to Nebius once to make it
+            searchable (an embedding). Memories are not used in replies yet. You can see, change and delete all of them
+            on the <Link href="/memory">Memory</Link> page.
+          </li>
+          <li>
+            <strong>Documents:</strong> when you add a text or Markdown file, its text is sent to Nebius once, in
+            parts, to make it searchable. Documents are not used in replies yet. They are listed, and can be deleted,
+            on the <Link href="/memory#documents">Memory</Link> page.
+          </li>
+          <li>
+            <strong>Approvals:</strong> when P-Dot proposes adding a task, a reminder or a memory, nothing happens
+            until you approve it. You can edit the proposal first or cancel it.
+          </li>
+          <li>
+            <strong>What was sent:</strong> for each reply, P-Dot records which model answered and how much context it
+            received (counts and IDs, not a copy of the text). Open it with &ldquo;What was sent&rdquo; under a reply.
+          </li>
+          <li>
+            <strong>Action log:</strong> approvals, cancellations, completed actions and changes to memories,
+            documents and reminders are recorded without their text, and cannot be edited or deleted. See the{" "}
+            <Link href="/action-log">action log</Link>.
+          </li>
+          <li>
+            <strong>Storage (Supabase):</strong> your account, conversations, tasks, memories, documents, reminders and
+            the action log are stored in a Supabase database, visible only to your account.
           </li>
           <li>
             <strong>Logs:</strong> the server logs request metadata (timing, status, error type) but not your
@@ -67,6 +101,11 @@ export default async function SettingsPage() {
           Conversations are kept until you delete them. Deleting a conversation from the chat sidebar removes
           it and its messages from the active database immediately. Database backups may keep a copy until
           they expire according to the hosting plan&apos;s backup retention.
+        </p>
+        <p>
+          Deleting a memory or a document removes its text and search vector at once. Action proposals and the action
+          log are kept as an audit record and cannot be deleted from the app; they hold kinds, counts and IDs, and a
+          proposal also keeps the details you were asked to approve.
         </p>
         <p className="muted">
           Self-service account deletion is not available yet. The final retention policy is still being

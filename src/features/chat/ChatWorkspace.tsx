@@ -1,9 +1,21 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { notifyActionsChanged } from "@/features/actions/events";
+import { useProposals } from "@/features/actions/useProposals";
+import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
-import type { ChatRequest, ConversationSummary, Effort, Mode, ModelTier, SourceRef, WebSearchStatus } from "@/types/api";
+import type {
+  ActionProposalDTO,
+  ChatRequest,
+  ConversationSummary,
+  Effort,
+  Mode,
+  ModelTier,
+  SourceRef,
+  WebSearchStatus,
+} from "@/types/api";
 import {
   ApiError,
   deleteConversation,
@@ -13,9 +25,11 @@ import {
   renameConversation,
 } from "./api";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
+import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
+import { placeBySource, placeByTime } from "./placement";
 import { readChatStream } from "./stream";
-import { useDictation } from "./useDictation";
+import { appendDictation, useDictation } from "./useDictation";
 
 interface StreamingReply {
   text: string;
@@ -78,9 +92,11 @@ export function ChatWorkspace({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [savingRename, setSavingRename] = useState(false);
+  // Bumped after each reply so P-Dot's suggestions reload; a reply may come with new proposals or memories.
+  const [suggestionsKey, setSuggestionsKey] = useState(0);
 
   const dictation = useDictation(
-    useCallback((text: string) => setDraft((current) => (current.trim() ? `${current.trimEnd()} ${text}` : text)), []),
+    useCallback((text: string) => setDraft((current) => appendDictation(current, text, MAX_MESSAGE_CHARS)), []),
   );
 
   const router = useRouter();
@@ -99,6 +115,17 @@ export function ChatWorkspace({
     },
     [router],
   );
+  const goToLogin = useCallback(() => router.replace("/login?next=/chat"), [router]);
+
+  // P-Dot's suggestions (actions to approve, memories to keep), shown under the reply they came from.
+  const suggestionsRefresh = `${activeId ?? ""}:${suggestionsKey}`;
+  const actions = useProposals({ refreshKey: suggestionsRefresh, enabled: activeId !== null, onUnauthorized: goToLogin });
+  const memorySuggestions = useMemorySuggestions({
+    mode,
+    refreshKey: suggestionsRefresh,
+    enabled: activeId !== null,
+    onUnauthorized: goToLogin,
+  });
 
   const loadMessages = useCallback(
     (id: string) => {
@@ -148,6 +175,8 @@ export function ChatWorkspace({
 
   function openConversation(id: string) {
     abortRef.current?.abort();
+    // Words still being dictated belong to the conversation the user is leaving.
+    dictation.cancel();
     setActiveId(id);
     setMessages([]);
     setError(null);
@@ -160,6 +189,7 @@ export function ChatWorkspace({
 
   function startNewConversation() {
     abortRef.current?.abort();
+    dictation.cancel();
     loadSeq.current += 1;
     setActiveId(null);
     setMessages([]);
@@ -199,6 +229,8 @@ export function ChatWorkspace({
     setStreaming({ text: "", search: null });
     setStatus("Sending…");
     if (action === "send") {
+      // Stop dictating, so words heard after Send do not land in the next message.
+      dictation.cancel();
       setDraft("");
       setMessages((current) => [
         ...current,
@@ -255,6 +287,8 @@ export function ChatWorkspace({
             finished = true;
             setMessages((current) => [...current, { ...event.message, truncated: event.truncated }]);
             setStreaming(null);
+            setSuggestionsKey((key) => key + 1);
+            notifyActionsChanged();
             setStatus("Reply complete.");
             break;
           case "error":
@@ -331,6 +365,29 @@ export function ChatWorkspace({
   const last = messages.at(-1);
   const canRetry = !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending;
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
+
+  // Oldest first, so a reply's suggestions read in the order P-Dot made them.
+  const conversationProposals = activeId
+    ? actions.proposals
+        .filter((p) => p.conversationId === activeId)
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    : [];
+  const placedProposals = placeByTime(messages, conversationProposals);
+  const placedSuggestions = placeBySource(messages, memorySuggestions.items);
+  const showSuggestions = activeId !== null && !loadingMessages;
+  const suggestionsFor = (proposals?: ActionProposalDTO[], suggestions?: MemorySuggestion[]) =>
+    showSuggestions && (
+      <TurnExtras
+        proposals={proposals}
+        suggestions={suggestions}
+        decidedHere={actions.decidedHere}
+        onDecided={actions.decided}
+        onStale={actions.stale}
+        onKept={memorySuggestions.kept}
+        onDropped={memorySuggestions.dropped}
+        onUnauthorized={goToLogin}
+      />
+    );
 
   return (
     <div className="chat-layout">
@@ -468,7 +525,10 @@ export function ChatWorkspace({
             </div>
           )}
           {messages.map((message) => (
-            <MessageItem key={message.id} message={message} />
+            <Fragment key={message.id}>
+              <MessageItem message={message} />
+              {suggestionsFor(placedProposals.byMessage.get(message.id), placedSuggestions.get(message.id))}
+            </Fragment>
           ))}
           {streaming && (
             <article className="message message-assistant" aria-busy="true">
@@ -488,6 +548,7 @@ export function ChatWorkspace({
               {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
           )}
+          {suggestionsFor(placedProposals.rest)}
           <div ref={endRef} />
         </div>
 
@@ -525,6 +586,8 @@ export function ChatWorkspace({
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void submit("send");
+                } else if (event.key === "Escape" && dictation.listening) {
+                  dictation.toggle();
                 }
               }}
               rows={2}
@@ -532,6 +595,13 @@ export function ChatWorkspace({
               placeholder="Ask P-Dot anything…"
               aria-describedby="composer-hint"
             />
+            {dictation.listening && (
+              <p className="dictation-live">
+                <span role="status">Listening… speak now. Tap the microphone or press Esc to stop.</span>
+                {/* Not announced: it changes with every word. The settled words go into the message box. */}
+                {dictation.interim && <span className="dictation-interim">“{dictation.interim}”</span>}
+              </p>
+            )}
             <div className="composer-bar">
               <div className="tools-anchor">
                 {toolsOpen && (
@@ -544,7 +614,7 @@ export function ChatWorkspace({
                       <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />
                       <span>
                         <strong>Search the web</strong>
-                        <span className="hint">Powered by Tavily. Off unless you turn it on.</span>
+                        <span className="hint">Powered by Tavily</span>
                       </span>
                     </label>
                   </div>

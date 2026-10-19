@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { signOutAction } from "@/features/auth/actions";
+import { InstallButton } from "@/features/pwa/InstallButton";
 import type { Mode } from "@/types/api";
 import { ModeToggle } from "./ModeToggle";
 import { NavLinks } from "./NavLinks";
@@ -12,6 +13,7 @@ export function WorkspaceHeader({ email, mode }: { email: string | null; mode: M
       </Link>
       <NavLinks />
       <div className="header-account">
+        <InstallButton />
         <ModeToggle mode={mode} />
         {email && <span className="muted small header-email">{email}</span>}
         <form action={signOutAction}>
