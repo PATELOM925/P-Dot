@@ -2,7 +2,7 @@
 
 A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, and browser dictation. The Workflows and Connectors pages are previews only (nothing can be connected or automated yet). Unit tests use mocked providers; the database rules were tested against a local Supabase, but Nebius and Tavily have **not** been called for real. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key and model are set. See [What works today](#what-works-today) and [Verification status](#verification-status).
+**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, and browser dictation. The Workflows and Connectors pages are previews only (nothing can be connected or automated yet). Unit tests use mocked providers; the database rules were tested against a local Supabase. A few small real Nebius calls checked the token usage and reasoning format (see [decision 0006](docs/decisions/0006-global-spend-guard.md)); a full chat through the live app has not been tested yet. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key is set. A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
 
 ## What works today
 
@@ -132,6 +132,8 @@ Open `http://localhost:3000` (not `127.0.0.1`, so cookies and email links share 
 | Second user in a private window | Sees none of the first user's conversations |
 | Delete a conversation | Gone from the sidebar and from Studio |
 | Exceed `CHAT_REQUESTS_PER_WINDOW` (set it to 2 to try) | 429 "You have reached your request limit" |
+| Set `NEBIUS_DAILY_CAP_USD=0.01` and send two or three messages | 429 "P-Dot has reached its daily usage limit. Try again tomorrow." |
+| Set `TAVILY_DAILY_CREDITS=1`, turn on search, send two messages | The second reply says web search was not used because of the search limit |
 
 To skip email confirmation, set `enable_confirmations = false` under `[auth.email]` in `config.toml`, then `npm run db:stop && npm run db:start`. If reset emails stop arriving, raise `email_sent` under `[auth.rate_limit]`.
 
@@ -153,7 +155,7 @@ $env:SUPABASE_TEST_USER_B_PASSWORD="<user B password>"
 npm test
 ```
 
-The 4 tests in `tests/integration/rls.test.ts` should then run instead of being skipped.
+The 9 tests in `tests/integration/rls.test.ts` should then run instead of being skipped. They also reserve and give back a few micro-dollars through the spend guard functions.
 
 ### Housekeeping
 
@@ -186,7 +188,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 
 | Method and path | Purpose |
 | --- | --- |
-| `POST /api/chat` | `{ action: "send", conversationId?, mode?, message, webSearch }` (`mode` applies to new conversations) or `{ action: "retry", conversationId, webSearch }`. Streams `application/x-ndjson` events: `start`, `search`, `delta`, `done`, `error`. Returns 401, 403, 404, 409, 413, 415, 429, or 503 before streaming when appropriate. |
+| `POST /api/chat` | `{ action: "send", conversationId?, mode?, message, webSearch }` (`mode` applies to new conversations) or `{ action: "retry", conversationId, webSearch }`. Streams `application/x-ndjson` events: `start`, `search`, `delta`, `done`, `error`. Returns 401, 403, 404, 409, 413, 415, 429, or 503 before streaming when appropriate. A global spend cap returns `budget_exhausted` (429 for a daily cap, 503 for the total cap). |
 | `GET /api/conversations[?mode=personal\|work]` | The user's conversations, most recent first, optionally for one mode |
 | `PATCH /api/conversations/:id` | Rename: `{ title }` (404 for someone else's) |
 | `GET /api/tasks?mode=` | The user's to-do items for a mode |
@@ -209,7 +211,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `src/components/` | Shared layout components |
 | `src/server/` | Server-only code: config, auth session, Supabase repositories, assistant orchestration, Nebius/Tavily adapters, HTTP helpers |
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
-| `supabase/migrations/` | Database schema, RLS policies, the quota function, and the modes/rename/tasks migration |
+| `supabase/migrations/` | Database schema, RLS policies, the quota function, the modes/rename/tasks migration, and the global spend guard |
 | `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
 | `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), decision records |
 | `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle |
@@ -229,8 +231,19 @@ Short version:
 
 ## Verification status
 
-Done and passing locally: lint, type-check, 131 unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules), production build, and the 6 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
+Done and passing locally: lint, type-check, the unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules, spend guard holds, settles and refusals), production build, and the 6 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
 
 Deployed and checked on 2026-10-19: `/api/health` (auth configured, inference not configured), `/`, `/login`, `/signup` return 200, `/chat` redirects to `/login` when signed out, and `POST /api/chat` without a session returns 401. No CPU-limit or runtime errors in the Worker logs.
 
-Not yet done: real Nebius and Tavily calls, a signed-in browser walkthrough (local or production), dictation in real browsers, end-to-end tests, Workers Builds (automatic deploys and previews), and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
+Spend guard SQL (2026-10-19): the migration was run on an in-memory Postgres (PGlite) with stand-ins for the Supabase roles and `auth.uid()`. Checked: hold and settle, settle once, no settle by another user, no negative or above-hold settle, parameter bounds, day, total and per-user caps, no direct table access for `anon` or `authenticated`. Not checked there: many requests at the same time (row locks).
+
+Real provider checks (2026-10-19): 4 small Nebius calls to `nvidia/nemotron-3-super-120b-a12b` (`max_tokens` at most 300) and the free Tavily usage endpoint. No Tavily search was made.
+
+Not yet done: a real Tavily search, a full chat through the live app, a signed-in browser walkthrough (local or production), dictation in real browsers, end-to-end tests, Workers Builds (automatic deploys and previews), and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
+
+## Usage limits
+
+Two kinds of limit protect the owner's paid credit:
+
+- **Per user:** 30 chat requests each hour (`CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`).
+- **All users together (global spend guard):** Nebius $1.00 each UTC day and $20.00 in total; Tavily 40 credits each UTC day and 800 each month. One user can use at most $0.25 of Nebius and 10 Tavily credits each day. The settings are `NEBIUS_DAILY_CAP_USD`, `NEBIUS_TOTAL_CAP_USD`, `NEBIUS_USER_DAILY_CAP_USD`, `TAVILY_DAILY_CREDITS`, `TAVILY_MONTHLY_CREDITS` and `TAVILY_USER_DAILY_CREDITS`. When the Nebius budget is used up, chat says "P-Dot has reached its daily usage limit. Try again tomorrow." When only the Tavily budget is used up, replies come without web search and say so. Details, and how to change or reset the caps: [decision 0006](docs/decisions/0006-global-spend-guard.md).

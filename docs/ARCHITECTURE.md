@@ -44,7 +44,7 @@ src/
     auth/                  getClaims-based session, proxy helper
     assistant/             context budget, prompt assembly, orchestration
     providers/             nebius/ (SSE streaming), tavily/, shared errors/timeouts
-    db/                    Supabase client, conversation repository, quota gate
+    db/                    Supabase client, conversation repository, quota gate, spend guard
     http/                  body limits, origin check, error responses, NDJSON
   lib/                     limits, zod schemas, URL safety, Supabase public config
   types/                   API contracts shared with the browser
@@ -74,12 +74,13 @@ Defined in `supabase/migrations/20261014000000_initial_schema.sql`:
 - `conversations`: ID, owner, title, created/updated time. A trigger bumps `updated_at` when a message is added.
 - `messages`: ID, conversation, owner, role (`user`/`assistant`), content, web-search outcome (`off`/`used`/`no_results`/`failed`), source references (`[{title, url}]`), created time. Only completed assistant replies are stored, so there is no per-message completion status; an unanswered trailing user message is what the UI offers to retry.
 - `usage_windows`: per-user request count per fixed window, written only by `consume_chat_quota()`.
+- `spend_counters` and `spend_reservations`: global spend for Nebius (micro-dollars) and Tavily (credits) per UTC day, month and all time, plus one row per held call. No user content. Users cannot read or write them; only `reserve_provider_spend()` and `settle_provider_spend()` do ([decision 0006](decisions/0006-global-spend-guard.md)).
 
-RLS allows each user to select and insert only their own rows and to delete only their own conversations (messages cascade). Updates are revoked. Repository methods also filter by the session user ID. Token counts are logged per request but not yet enforced as a budget.
+RLS allows each user to select and insert only their own rows and to delete only their own conversations (messages cascade). Updates are revoked. Repository methods also filter by the session user ID. Each chat request holds a worst-case Nebius cost (and one Tavily credit when search is on) before the paid call, and settles the real cost from the token usage after it. Global caps refuse a request with `budget_exhausted` before streaming ([decision 0006](decisions/0006-global-spend-guard.md)).
 
 ## Provider contracts
 
-Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_URL}/chat/completions` with `stream: true` and parses server-sent events, including errors sent mid-stream. The base URL and model ID are configuration. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data. The assistant has no tools, so retrieved content cannot trigger actions.
+Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_URL}/chat/completions` with `stream: true`, `stream_options.include_usage` (token usage for the spend guard) and `chat_template_kwargs.enable_thinking: false` (no reasoning tokens), and parses server-sent events, including errors sent mid-stream. Reasoning fields and a leading `<think>` block are never shown or saved. The base URL and model ID are configuration. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data. The assistant has no tools, so retrieved content cannot trigger actions.
 
 Reference documentation:
 

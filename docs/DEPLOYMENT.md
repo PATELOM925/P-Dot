@@ -55,14 +55,14 @@ If `npm run check` fails, the build stops and nothing is deployed.
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Build time. Put into the browser bundle. Public. | Workers Builds build variables, or `.env.local` for a manual deploy |
 | `SITE_URL` | Runtime variable | `wrangler.jsonc` (`https://pdot.iampatelom.com`) |
-| `NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS` | Runtime variables. The code has defaults for all except `NEBIUS_MODEL`, which chat needs. | `wrangler.jsonc`, in **both** `vars` (production) and `previews.vars` (Previews), changed through a pull request. Previews do not get top-level `vars` or dashboard variables. `tests/unit/wrangler-config.test.ts` fails if the two lists have different names. Dashboard variables (Workers & Pages → `pdot` → Settings → Variables and Secrets) are kept on deploy by `keep_vars: true`, but they apply to production only. |
+| `NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`, and the spend caps `NEBIUS_DAILY_CAP_USD`, `NEBIUS_TOTAL_CAP_USD`, `NEBIUS_USER_DAILY_CAP_USD`, `TAVILY_DAILY_CREDITS`, `TAVILY_MONTHLY_CREDITS`, `TAVILY_USER_DAILY_CREDITS` ([decision 0006](decisions/0006-global-spend-guard.md)) | Runtime variables. The code has defaults for all except `NEBIUS_MODEL`, which chat needs. `wrangler.jsonc` sets `NEBIUS_MODEL` to `nvidia/nemotron-3-super-120b-a12b` and sets each cap. | `wrangler.jsonc`, in **both** `vars` (production) and `previews.vars` (Previews), changed through a pull request. Previews do not get top-level `vars` or dashboard variables. `tests/unit/wrangler-config.test.ts` fails if the two lists have different names. Dashboard variables (Workers & Pages → `pdot` → Settings → Variables and Secrets) are kept on deploy by `keep_vars: true`, but they apply to production only. |
 | `NEBIUS_API_KEY`, `TAVILY_API_KEY` | Runtime secrets | `npx wrangler secret put NAME` (owner only) |
 
 Rules:
 
 - Never commit a secret. Never put a secret in `wrangler.jsonc`, in a build variable, or in a `NEXT_PUBLIC_` variable.
 - Never add the Supabase secret key (service role key), a database password or a connection string to the Worker.
-- **The OpenNext build copies every value from `.env`, `.env.local`, `.env.production` and `.env.production.local` (and the `development` versions) into the Worker bundle** (`.open-next/cloudflare/next-env.mjs`). `npm run deploy` and `npm run upload` run `scripts/check-worker-env.mjs` after the build. It stops the deploy if any variable that is not on its allow list has a value in that file. The allow list is in `scripts/worker-env-rules.mjs`: the two public Supabase values, `SITE_URL`, and the Nebius and chat-limit settings. Keys, passwords and connection strings are never on it. To add a non-secret setting, add its name there through a pull request. Workers Builds has no `.env` file, so this problem does not occur there.
+- **The OpenNext build copies every value from `.env`, `.env.local`, `.env.production` and `.env.production.local` (and the `development` versions) into the Worker bundle** (`.open-next/cloudflare/next-env.mjs`). `npm run deploy` and `npm run upload` run `scripts/check-worker-env.mjs` after the build. It stops the deploy if any variable that is not on its allow list has a value in that file. The allow list is in `scripts/worker-env-rules.mjs`: the two public Supabase values, `SITE_URL`, the Nebius and chat-limit settings, and the spend caps. A unit test fails if a name in `wrangler.jsonc` `vars` is not on it. Keys, passwords and connection strings are never on it. To add a non-secret setting, add its name there through a pull request. Workers Builds has no `.env` file, so this problem does not occur there.
 - Previews do not get the production secrets. They use the `previews` block in `wrangler.jsonc` for variables, and the Preview base config for secrets (`npx wrangler preview base-config secret put NAME`, owner only). Until the owner adds them, chat in a preview says "This service is not configured yet."
 
 ## Previews: what to know
@@ -80,7 +80,7 @@ Rules:
 
 ## Database changes
 
-Migrations are in `supabase/migrations/`. Neither a merge nor a deploy applies them. The owner applies each migration to the hosted project by hand (`supabase db push` from a linked checkout, or the SQL editor), **before** the code that needs it is merged. Write each migration so that the code which is live now still works after it runs.
+Migrations are in `supabase/migrations/`. The hosted Supabase project has the GitHub integration on: a merge to `main` applies new migrations automatically. Agents never apply migrations. Write each migration so that the code which is live now still works after it runs (additive changes only). The new code and the migration go live at about the same time; for a short time the new code can run before its migration, so new database calls must fail closed.
 
 ## One-time setup (owner only)
 
@@ -95,7 +95,7 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    ```
 
    Set a spending limit on both provider accounts first.
-3. **Choose the model.** Open a pull request that adds `NEBIUS_MODEL` (and any changed limit, for example `CHAT_REQUESTS_PER_WINDOW`) to both `vars` and `previews.vars` in `wrangler.jsonc`. The model ID is not a secret.
+3. **Model and spend caps.** `wrangler.jsonc` sets `NEBIUS_MODEL` (`nvidia/nemotron-3-super-120b-a12b`) and the global spend caps in both `vars` and `previews.vars`. To change one, open a pull request. If the new model is not in the price table in `src/server/providers/nebius/pricing.ts`, add its price, or it is charged at the most expensive price. See [decision 0006](decisions/0006-global-spend-guard.md).
 4. **Preview secrets (optional).** To let Previews call Nebius and Tavily, set them in the Preview base config. Use a separate key with a low spending limit if the provider allows it:
 
    ```bash
@@ -131,3 +131,4 @@ Use this only when Workers Builds is not available. You need macOS, Linux or WSL
 - `src/proxy.ts` uses Node.js middleware, which OpenNext supports only as experimental. Watch the session redirects after each deploy.
 - Worker size limit: 64 MiB **uncompressed** on the Free and Paid plans. There is no compressed limit; the gzip number from Wrangler is for reference only. Check the `Total Upload` value from `npx wrangler deploy --dry-run --outdir <folder>`. The first deploy (2026-10-19) was 11,728 KiB uncompressed (2,344 KiB gzip). Source: https://developers.cloudflare.com/workers/platform/limits/#worker-size
 - Logs: `npx wrangler tail pdot --format json` (owner account). Preview versions do not appear in `wrangler tail`.
+- Spend caps: Previews use the production database, so Preview chats count against the same global caps. The `spend_limit_reached` log event shows when a cap refuses a request. Usage is in the `spend_counters` table (SQL editor, owner only).
