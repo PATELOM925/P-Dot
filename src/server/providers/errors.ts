@@ -22,10 +22,15 @@ export class ProviderError extends Error {
     public readonly provider: ProviderName,
     public readonly kind: ProviderErrorKind,
     public readonly status?: number,
+    details: { retryAfterMs?: number } = {},
   ) {
     super(`${provider} request failed: ${kind}${status ? ` (HTTP ${status})` : ""}`);
     this.name = "ProviderError";
+    this.retryAfterMs = details.retryAfterMs;
   }
+
+  /** The provider's `Retry-After`, in milliseconds, when it sent one. */
+  public readonly retryAfterMs?: number;
 }
 
 export function kindFromStatus(status: number): ProviderErrorKind {

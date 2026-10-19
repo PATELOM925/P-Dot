@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ProviderError } from "@/server/providers/errors";
-import { streamChatCompletion, type NebiusSettings } from "@/server/providers/nebius/client";
+import { parseRetryAfterMs, streamChatCompletion, type NebiusSettings } from "@/server/providers/nebius/client";
 import { readSseData } from "@/server/providers/nebius/sse";
 import { createThinkFilter } from "@/server/providers/nebius/think";
 import { collect, deltaChunk, finishChunk, hangingStream, sseEvent, streamFrom } from "../support/streams";
@@ -85,6 +85,8 @@ describe("streamChatCompletion", () => {
     );
     const chunks = await collect(streamChatCompletion(settings, messages, { fetchImpl }));
     expect(chunks).toEqual([
+      // Reasoning text is dropped; only a marker without text shows the model is working.
+      { type: "reasoning" },
       { type: "text", text: "\n\nSeventeen multiplied by three equals fifty-one." },
       { type: "finish", finishReason: "stop", usage: { promptTokens: 37, completionTokens: 45 } },
     ]);
@@ -153,6 +155,7 @@ describe("streamChatCompletion", () => {
     const chunks = await collect(streamChatCompletion(settings, messages, { fetchImpl }));
     expect(chunks).toEqual([
       { type: "text", text: "Hel" },
+      { type: "reasoning" },
       { type: "text", text: "lo" },
       { type: "finish", finishReason: "stop", usage: { promptTokens: 12, completionTokens: 3 } },
     ]);
@@ -168,6 +171,28 @@ describe("streamChatCompletion", () => {
   ])("maps HTTP %i to %s", async (status, kind) => {
     const fetchImpl = fetchReturning(new Response('{"detail":"secret internal detail"}', { status }));
     await expectProviderError(collect(streamChatCompletion(settings, messages, { fetchImpl })), kind, status);
+  });
+
+  it("turns reasoning on with a token budget only when asked", async () => {
+    const fetchImpl = fetchReturning(sseResponse([sseEvent(deltaChunk("Hi")), sseEvent(finishChunk()), sseEvent("[DONE]")]));
+    await collect(streamChatCompletion({ ...settings, thinkingBudgetTokens: 1024 }, messages, { fetchImpl }));
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
+    expect(body).toMatchObject({ chat_template_kwargs: { enable_thinking: true }, thinking_token_budget: 1024 });
+
+    const off = fetchReturning(sseResponse([sseEvent(deltaChunk("Hi")), sseEvent(finishChunk()), sseEvent("[DONE]")]));
+    await collect(streamChatCompletion({ ...settings, thinkingBudgetTokens: 0 }, messages, { fetchImpl: off }));
+    const offBody = JSON.parse(String(off.mock.calls[0]![1]?.body));
+    expect(offBody.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(offBody).not.toHaveProperty("thinking_token_budget");
+  });
+
+  it("reads Retry-After from an error response", async () => {
+    const fetchImpl = fetchReturning(new Response("busy", { status: 429, headers: { "Retry-After": "2" } }));
+    const error = await collect(streamChatCompletion(settings, messages, { fetchImpl })).catch((e: unknown) => e);
+    expect(error).toMatchObject({ kind: "rate_limited", status: 429, retryAfterMs: 2000 });
+    expect(parseRetryAfterMs("Wed, 21 Oct 2026 07:28:10 GMT", Date.parse("Wed, 21 Oct 2026 07:28:00 GMT"))).toBe(10_000);
+    expect(parseRetryAfterMs("soon")).toBeUndefined();
+    expect(parseRetryAfterMs(null)).toBeUndefined();
   });
 
   it("does not leak provider response bodies in error messages", async () => {

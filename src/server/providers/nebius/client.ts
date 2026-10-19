@@ -24,6 +24,13 @@ export interface NebiusSettings {
   baseUrl: string;
   model: string;
   maxOutputTokens: number;
+  /**
+   * Reasoning ("thinking") budget in tokens. When above 0, reasoning is on and
+   * Nebius stops it after this many tokens (`thinking_token_budget`, checked on
+   * Nano, Super and Ultra on 2026-10-19), so the reply always gets the rest of
+   * `maxOutputTokens`. When 0 or unset, reasoning is off.
+   */
+  thinkingBudgetTokens?: number;
 }
 
 export interface TokenUsage {
@@ -33,6 +40,8 @@ export interface TokenUsage {
 
 export type CompletionChunk =
   | { type: "text"; text: string }
+  /** The model is reasoning. Carries no text: reasoning is never shown or saved. */
+  | { type: "reasoning" }
   | { type: "finish"; finishReason: string | null; usage: TokenUsage | null };
 
 export interface StreamOptions {
@@ -50,7 +59,13 @@ const chunkSchema = z.object({
       z.object({
         // Reasoning arrives in `reasoning` and `reasoning_content`. Those and
         // other delta fields are ignored, so reasoning is never shown or saved.
-        delta: z.object({ content: z.string().nullish() }).nullish(),
+        delta: z
+          .object({
+            content: z.string().nullish(),
+            reasoning: z.string().nullish(),
+            reasoning_content: z.string().nullish(),
+          })
+          .nullish(),
         finish_reason: z.string().nullish(),
       }),
     )
@@ -76,6 +91,20 @@ function streamErrorKind(error: { code?: string | number | null; type?: string |
   if (label.includes("rate")) return "rate_limited";
   if (label.includes("timeout")) return "timeout";
   return "unavailable";
+}
+
+function thinkingFields(budget: number): Record<string, unknown> {
+  if (budget <= 0) return { chat_template_kwargs: { enable_thinking: false } };
+  return { chat_template_kwargs: { enable_thinking: true }, thinking_token_budget: budget };
+}
+
+/** `Retry-After` in milliseconds (seconds or an HTTP date), or undefined. */
+export function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return Math.round(Number(trimmed) * 1000);
+  const date = Date.parse(trimmed);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
 function networkError(scope: AbortScope, parent?: AbortSignal): ProviderError {
@@ -118,10 +147,10 @@ export async function* streamChatCompletion(
           stream: true,
           // Token usage arrives in a last chunk with no choices. The spend guard needs it.
           stream_options: { include_usage: true },
-          // Turns off reasoning for Nemotron (and other models whose chat template reads
-          // this flag). Reasoning tokens cost money and count against max_tokens, so they
-          // could leave no room for the reply. Models that do not read it ignore it.
-          chat_template_kwargs: { enable_thinking: false },
+          // Turns reasoning off (or on) for Nemotron and other models whose chat template
+          // reads this flag. Reasoning tokens cost money and count against max_tokens, so
+          // without a budget they could leave no room for the reply.
+          ...thinkingFields(settings.thinkingBudgetTokens ?? 0),
         }),
         signal: scope.signal,
       });
@@ -131,7 +160,9 @@ export async function* streamChatCompletion(
 
     if (!response.ok) {
       await discardBody(response);
-      throw new ProviderError("nebius", kindFromStatus(response.status), response.status);
+      throw new ProviderError("nebius", kindFromStatus(response.status), response.status, {
+        retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+      });
     }
     if (!response.body) throw new ProviderError("nebius", "bad_response");
     scope.touch();
@@ -165,6 +196,9 @@ export async function* streamChatCompletion(
         for (const choice of chunk.choices ?? []) {
           const text = choice.delta?.content ? think.push(choice.delta.content) : "";
           if (text) yield { type: "text", text };
+          else if (choice.delta?.content || choice.delta?.reasoning || choice.delta?.reasoning_content) {
+            yield { type: "reasoning" };
+          }
           if (choice.finish_reason) finishReason = choice.finish_reason;
         }
       }
