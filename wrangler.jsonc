@@ -23,6 +23,8 @@
   "vars": {
     "SITE_URL": "https://pdot.iampatelom.com"
   },
+  // Keep variables set in the dashboard (for example NEBIUS_MODEL) when a deploy runs.
+  "keep_vars": true,
   "observability": {
     "enabled": true
   }

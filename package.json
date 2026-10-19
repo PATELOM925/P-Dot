@@ -20,8 +20,9 @@
     "db:reset": "supabase db reset",
     "db:stop": "supabase stop",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+    "deploy": "opennextjs-cloudflare build && node scripts/check-worker-env.mjs && opennextjs-cloudflare deploy",
+    "upload": "opennextjs-cloudflare build && node scripts/check-worker-env.mjs && opennextjs-cloudflare upload",
+    "check:worker-env": "node scripts/check-worker-env.mjs",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {

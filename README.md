@@ -2,7 +2,7 @@
 
 A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, and browser dictation. The Workflows and Connectors pages are previews only (nothing can be connected or automated yet). Unit tests use mocked providers; the database rules were tested against a local Supabase, but Nebius and Tavily have **not** been called for real, and nothing is deployed. See [What works today](#what-works-today) and [Verification status](#verification-status).
+**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, and browser dictation. The Workflows and Connectors pages are previews only (nothing can be connected or automated yet). Unit tests use mocked providers; the database rules were tested against a local Supabase, but Nebius and Tavily have **not** been called for real. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key and model are set. See [What works today](#what-works-today) and [Verification status](#verification-status).
 
 ## What works today
 
@@ -170,8 +170,9 @@ The 4 tests in `tests/integration/rls.test.ts` should then run instead of being 
 | `npm run build` | Production build (does not need secrets) |
 | `npm run db:start` / `db:status` / `db:reset` / `db:stop` | Manage the local Supabase stack (Docker) |
 | `npm run preview` | Build for Cloudflare and run the Worker locally in the Workers runtime |
-| `npm run deploy` | Build for Cloudflare and deploy the Worker (see [Deploying to Cloudflare](#deploying-to-cloudflare)) |
-| `npm run upload` | Build for Cloudflare and upload a new Worker version without deploying |
+| `npm run deploy` | Owner only. Build for Cloudflare, check that no secret is in the bundle, and deploy (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)) |
+| `npm run upload` | Owner only. Same as deploy, but uploads a new version without sending traffic to it |
+| `npm run check:worker-env` | Check the last OpenNext build for secret values copied from `.env` files |
 | `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest unit tests; the live RLS integration test is skipped unless configured |
@@ -210,44 +211,26 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
 | `supabase/migrations/` | Database schema, RLS policies, the quota function, and the modes/rename/tasks migration |
 | `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
-| `docs/` | PRD, architecture, decision records |
+| `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), decision records |
+| `scripts/` | `check-worker-env.mjs`: deploy guard against secrets in the Worker bundle |
+| `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the brand blue) |
 
 ## Deploying to Cloudflare
 
-The app runs as one Cloudflare Worker built with the [OpenNext Cloudflare adapter](https://opennext.js.org/cloudflare). Configuration: [`wrangler.jsonc`](wrangler.jsonc) (Worker name `pdot`, custom domain `pdot.iampatelom.com`, static assets, Node.js compatibility; the `workers.dev` address is off) and [`open-next.config.ts`](open-next.config.ts). Decision record: [0004](docs/decisions/0004-cloudflare-workers-deployment.md).
+**Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).** It is the full guide for people and coding agents: the branch → pull request → preview → merge → production flow, where each setting and secret lives, previews, database changes, and what agents must not do.
 
-Build and deploy from **Linux, macOS, WSL, or Cloudflare's build service**. OpenNext warns that native Windows is not fully supported, and `.open-next/` can be locked by a running `next dev`/preview on Windows.
+Short version:
 
-1. **Log in** (once): `npx wrangler login`.
-2. **Build-time variables.** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are inlined into the bundle at build time, so they must be in the build environment: your shell or `.env.local` for `npm run deploy`, or "Build variables" in Workers Builds. Use your **hosted** Supabase project's values, not the local ones.
-3. **Runtime secrets and variables.** Server-only values are read when the Worker runs. Set the secrets, entering each value when prompted:
-
-   ```bash
-   npx wrangler secret put NEBIUS_API_KEY
-   npx wrangler secret put TAVILY_API_KEY
-   ```
-
-   Set the non-secret values (`NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `SITE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`) as Worker variables in the Cloudflare dashboard (Workers & Pages → pdot → Settings → Variables). `SITE_URL` is already set in `wrangler.jsonc` to `https://pdot.iampatelom.com`; without it, auth emails link to `http://localhost:3000`. If you deploy from the CLI and manage variables in the dashboard, pass `-- --keep-vars` so deploys do not remove them.
-4. **Deploy**:
-
-   ```bash
-   npm run deploy
-   ```
-
-   The app is served at `https://pdot.iampatelom.com` (a Cloudflare custom domain on the `iampatelom.com` zone). The `workers.dev` address is turned off in `wrangler.jsonc`.
-5. **Allow the origin in Supabase** (Authentication → URL Configuration): set the Site URL to the deployed origin and add `https://<your-origin>/**` to the redirect URLs, plus the email-template links from [Setup](#setup).
-6. Set budgets on the Nebius and Tavily accounts before giving anyone access, then check `https://<your-origin>/api/health`.
-
-To run the built Worker locally in the Workers runtime, use `npm run preview` (same Windows caveat; stop `next dev` first). `npm run upload` uploads a new version without deploying it.
-
-Notes:
-- **Next.js version:** pinned to 16.3.8. Next 16.4.1 loads a `preview-props.json` manifest that OpenNext 1.20.11 does not inline, so every page returned a 500 in the Workers runtime. Re-test before upgrading Next or the adapter.
-- **`src/proxy.ts`** runs on Next's Node.js middleware runtime, which OpenNext marks **experimental** on Cloudflare. The build prints a warning. It worked in local Workers-runtime tests (session redirects), but watch it after deploys. Authorization is also enforced in every page and API route, so a proxy failure does not expose private data.
-- **Limits:** Workers cap compressed bundle size (3 MiB on Free, 10 MiB on Paid) and CPU time per request. Time spent waiting on Nebius or Tavily does not count as CPU time. Check the plan limits against the built bundle.
-- Every route is rendered per request; no R2/KV cache is configured.
+- Production: https://pdot.iampatelom.com, one Cloudflare Worker named `pdot` ([`wrangler.jsonc`](wrangler.jsonc), [`open-next.config.ts`](open-next.config.ts), [decision 0004](docs/decisions/0004-cloudflare-workers-deployment.md)).
+- Every change goes through a pull request into `main` with an adversarial review. When the owner merges, Cloudflare Workers Builds deploys `main`. Each pull request branch gets a preview link. (Workers Builds must first be connected by the owner; until then only the owner deploys, with `npm run deploy`.)
+- `npm run preview` runs the built Worker on your computer in the Workers runtime, with no Cloudflare account. Stop `npm run dev` first.
+- `NEXT_PUBLIC_*` values are put into the bundle at build time. Provider keys are Worker secrets. The OpenNext build copies `.env.local` values into the Worker bundle, so `npm run deploy` and `npm run upload` stop if a secret has a value there (`scripts/check-worker-env.mjs`).
+- Build and deploy from macOS, Linux, WSL or Workers Builds. Native Windows is not supported by OpenNext.
 
 ## Verification status
 
 Done and passing locally: lint, type-check, 131 unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules), production build, and the 6 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
 
-Not yet done: real Nebius and Tavily calls, a signed-in browser walkthrough of the new screens (the redesigned pages were not clicked through by the developer), dictation in real browsers, end-to-end tests, and a Cloudflare deployment. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
+Deployed and checked on 2026-10-19: `/api/health` (auth configured, inference not configured), `/`, `/login`, `/signup` return 200, `/chat` redirects to `/login` when signed out, and `POST /api/chat` without a session returns 401. No CPU-limit or runtime errors in the Worker logs.
+
+Not yet done: real Nebius and Tavily calls, a signed-in browser walkthrough (local or production), dictation in real browsers, end-to-end tests, Workers Builds (automatic deploys and previews), and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).

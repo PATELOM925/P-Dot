@@ -2,7 +2,14 @@
 
 ## Current phase
 
-MVP implementation was authorized on 2026-10-14. The backend and a minimal frontend exist; see `README.md` for setup, commands, and verification status. Do not provision services or deploy unless the user asks. Remaining empty directories (with `.gitkeep`) are intentional.
+MVP implementation was authorized on 2026-10-14. The backend and a minimal frontend exist; see `README.md` for setup, commands, and verification status. Production is live at https://pdot.iampatelom.com. Do not provision services or deploy unless the user asks. Remaining empty directories (with `.gitkeep`) are intentional.
+
+## Pull requests and deployment
+
+- Every change goes through a pull request into `main`. Do not push to `main`. Do not merge your own pull request; the owner merges.
+- Each pull request gets an adversarial review posted as pull request comments. Fix or answer every comment in new commits before merge.
+- A merge to `main` deploys production through Cloudflare Workers Builds (once the owner connects it). Pull request branches get preview links that use the production database.
+- Read `docs/DEPLOYMENT.md` before you change deployment settings, environment variables, `wrangler.jsonc`, `open-next.config.ts` or the deploy scripts. It lists the commands agents must not run.
 
 ## Product and source of truth
 
