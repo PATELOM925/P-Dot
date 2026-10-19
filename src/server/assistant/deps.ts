@@ -2,6 +2,7 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
+import { createContextRecordRepository } from "@/server/db/context-records";
 import { createConversationRepository } from "@/server/db/conversations";
 import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
@@ -33,6 +34,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     now: () => new Date(),
     log: logEvent,
     waitUntil,
+    contextRecords: createContextRecordRepository(auth.supabase),
   };
 }
 
