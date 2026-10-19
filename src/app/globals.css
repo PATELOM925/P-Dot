@@ -632,6 +632,23 @@ textarea::placeholder {
   display: none;
 }
 
+.message-route {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.effort-toggle {
+  flex-shrink: 0;
+  padding: 0.1875rem;
+  border-radius: 10px;
+}
+
+.effort-toggle .mode-option {
+  padding: 0.3125rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+}
+
 .message-content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -871,6 +888,10 @@ textarea::placeholder {
   .chat-error,
   .retry-bar {
     margin-inline: 1rem;
+  }
+
+  .composer-bar {
+    flex-wrap: wrap;
   }
 }
 

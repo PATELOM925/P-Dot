@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
-import type { ChatRequest, ConversationSummary, Mode, SourceRef, WebSearchStatus } from "@/types/api";
+import type { ChatRequest, ConversationSummary, Effort, Mode, ModelTier, SourceRef, WebSearchStatus } from "@/types/api";
 import {
   ApiError,
   deleteConversation,
@@ -19,7 +19,18 @@ import { useDictation } from "./useDictation";
 interface StreamingReply {
   text: string;
   search: { status: Exclude<WebSearchStatus, "off">; sources: SourceRef[]; message?: string } | null;
+  /** The tier from the start event, before the first token. */
+  tier?: ModelTier;
 }
+
+const EFFORT_OPTIONS: { value: Effort; label: string; title: string }[] = [
+  { value: "auto", label: "Auto", title: "P-Dot chooses a model for each message." },
+  {
+    value: "deep",
+    label: "Think harder",
+    title: "Use the strongest model. It is slower and uses more of the daily limit.",
+  },
+];
 
 interface ErrorState {
   message: string;
@@ -52,6 +63,7 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  const [effort, setEffort] = useState<Effort>("auto");
   const [sending, setSending] = useState(false);
   const [streaming, setStreaming] = useState<StreamingReply | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
@@ -163,8 +175,8 @@ export function ChatWorkspace({
 
     const body: ChatRequest =
       action === "send"
-        ? { action, message: text, webSearch, ...(activeId ? { conversationId: activeId } : { mode }) }
-        : { action, conversationId: activeId!, webSearch };
+        ? { action, message: text, webSearch, effort, ...(activeId ? { conversationId: activeId } : { mode }) }
+        : { action, conversationId: activeId!, webSearch, effort };
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -211,17 +223,27 @@ export function ChatWorkspace({
             if (action === "send") {
               setMessages((current) => current.map((m) => (m.id === tempId ? event.userMessage : m)));
             }
+            setStreaming((current) => ({
+              text: current?.text ?? "",
+              search: current?.search ?? null,
+              tier: event.route.tier,
+            }));
             setStatus(webSearch ? "Searching the web…" : "P-Dot is replying…");
             break;
           case "search":
             setStreaming((current) => ({
               text: current?.text ?? "",
               search: { status: event.status, sources: event.sources, message: event.message },
+              tier: current?.tier,
             }));
             setStatus(event.status === "used" ? "Web search complete. P-Dot is replying…" : (event.message ?? ""));
             break;
           case "delta":
-            setStreaming((current) => ({ text: (current?.text ?? "") + event.text, search: current?.search ?? null }));
+            setStreaming((current) => ({
+              text: (current?.text ?? "") + event.text,
+              search: current?.search ?? null,
+              tier: current?.tier,
+            }));
             break;
           case "done":
             finished = true;
@@ -447,7 +469,15 @@ export function ChatWorkspace({
               <p className="message-author">P-Dot</p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
               <div className="message-content">
-                {streaming.text || <span className="muted">{webSearch && !streaming.search ? "Searching the web…" : "Thinking…"}</span>}
+                {streaming.text || (
+                  <span className="muted">
+                    {webSearch && !streaming.search
+                      ? "Searching the web…"
+                      : streaming.tier === "heavy"
+                        ? "Thinking harder…"
+                        : "Thinking…"}
+                  </span>
+                )}
               </div>
               {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
@@ -523,6 +553,20 @@ export function ChatWorkspace({
                 >
                   +
                 </button>
+              </div>
+              <div role="group" aria-label="Effort" className="mode-toggle effort-toggle">
+                {EFFORT_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className="mode-option"
+                    aria-pressed={effort === option.value}
+                    title={option.title}
+                    onClick={() => setEffort(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
               {webSearch && (
                 <button

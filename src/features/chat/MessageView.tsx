@@ -1,3 +1,4 @@
+import { routeSummary } from "@/lib/routing";
 import { toSafeHttpUrl } from "@/lib/safe-url";
 import type { MessageDTO, SourceRef, WebSearchStatus } from "@/types/api";
 
@@ -65,6 +66,11 @@ export function MessageItem({ message }: { message: UiMessage }) {
       {message.pending && <p className="hint">Sending…</p>}
       {message.truncated && <p className="hint">This reply reached the length limit and may be incomplete.</p>}
       {!isUser && message.webSearch === "used" && <SourceList sources={message.sources} />}
+      {!isUser && message.route && (
+        <p className="message-route" title={`Model tier: ${message.route.tier}`}>
+          {routeSummary(message.route)}
+        </p>
+      )}
     </article>
   );
 }
