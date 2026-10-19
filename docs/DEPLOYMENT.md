@@ -34,7 +34,10 @@ Workers Builds was connected on 2026-10-19. Each push to `main` starts one produ
 
 ### Merging several pull requests
 
-When two or more pull requests, or a stack of pull requests, are ready at about the same time, merge them all first and deploy once. Each build costs build minutes and CI time, and a build of an in-between state is replaced minutes later.
+When two or more pull requests, or a stack of pull requests, are ready at about the same time, merge them together and aim for one deploy. Each build costs build minutes and CI time, and a build of an in-between state is replaced minutes later. Workers Builds starts a build for every push to `main` ([branch builds](https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/)), so there are two ways:
+
+- **One push (strict, for a stack):** after the step 1 checks, change the base of every pull request in the stack to `main`, then merge only the top one. One push to `main` starts one build. GitHub marks a pull request as merged when its head commit reaches its base branch, so check that each lower pull request now shows "Merged". If one does not, close it with a link to the merge commit.
+- **Several merges (best effort):** merge one after another and cancel the older builds. An older build can still finish and deploy before you cancel it, so an in-between version can go live for a short time.
 
 1. **Before each merge,** check the pull request again:
    - its base is `main`, or the branch below it in the stack;
@@ -43,9 +46,9 @@ When two or more pull requests, or a stack of pull requests, are ready at about 
    - its required checks pass.
 
    After a merge, change the base of the next pull request to `main`. If it was based on a squash merge, rebase it first and review the new diff. Use "Create a merge commit" for stacks, so the next pull request keeps its history. See [merging stacked pull requests on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-stacked-pull-requests).
-2. **Merge the whole set in one sitting,** without waiting for builds between merges.
-3. **Cancel every older build** of `main`, running or queued, so only the build of the last merge deploys (Workers & Pages → `pdot` → Deployments → View build history → Cancel build). An older build that already finished has already deployed; the last build replaces it.
-4. **Confirm the last build succeeded.** If it failed, fix it and deploy the final `main` once. Do not deploy the in-between commits by hand.
+2. **Merge in one sitting,** with one push or several merges as described above. Do not wait for builds between merges.
+3. **Cancel every older build** of `main` that is still queued or running (Workers & Pages → `pdot` → Deployments → View build history → Cancel build). This is best effort: an older build that already finished has already deployed, and the last build replaces it.
+4. **Wait until every build of `main` has finished or is cancelled, and confirm the last build succeeded.** If it failed, fix it and deploy the final `main` once. Do not deploy the in-between commits by hand.
 5. **Confirm production runs the final `main`:** open the build of the last merge commit in the build history and note the version ID it deployed. It must match the active version in `npx wrangler deployments list --name pdot`. Then check the live site once (`/api/health`, sign-in, one chat).
 
 Other rules:
