@@ -24,8 +24,13 @@ export function toPublicCompletionError(error: unknown): PublicError {
           message: "The assistant is busy right now. Wait a moment, then retry.",
           retryable: true,
         };
-      case "auth":
       case "quota":
+        return {
+          code: "provider_unavailable",
+          message: "The AI provider account for P-Dot has reached its limit. Please try again later.",
+          retryable: false,
+        };
+      case "auth":
       case "invalid_request":
         return {
           code: "provider_unavailable",

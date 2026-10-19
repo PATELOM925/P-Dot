@@ -3,10 +3,10 @@ import { z } from "zod";
 import {
   createAbortScope,
   discardBody,
+  kindFromErrorLabel,
   kindFromStatus,
   ProviderError,
   type AbortScope,
-  type ProviderErrorKind,
 } from "../errors";
 import { readSseData, SseFormatError } from "./sse";
 import { createThinkFilter } from "./think";
@@ -85,12 +85,47 @@ const chunkSchema = z.object({
 const tokenCount = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const usageSchema = z.object({ prompt_tokens: tokenCount, completion_tokens: tokenCount });
 
-function streamErrorKind(error: { code?: string | number | null; type?: string | null }): ProviderErrorKind {
-  if (typeof error.code === "number") return kindFromStatus(error.code);
-  const label = `${error.code ?? ""} ${error.type ?? ""}`.toLowerCase();
-  if (label.includes("rate")) return "rate_limited";
-  if (label.includes("timeout")) return "timeout";
-  return "unavailable";
+/**
+ * An error event inside the stream. A numeric code (or a numeric string) is an
+ * HTTP status and is kept, so the executor can tell 404 from 503. A known label
+ * decides the kind first (for example `insufficient_quota`). Only the code and
+ * type are read; the message is never read or logged.
+ */
+function streamError(error: { code?: string | number | null; type?: string | null }): ProviderError {
+  const code = typeof error.code === "string" && /^\d{3}$/.test(error.code.trim()) ? Number(error.code) : error.code;
+  const status = typeof code === "number" && Number.isInteger(code) && code >= 100 && code <= 599 ? code : undefined;
+  const label = `${typeof code === "string" ? code : ""} ${error.type ?? ""}`;
+  const kind = kindFromErrorLabel(label) ?? (status !== undefined ? kindFromStatus(status) : "unavailable");
+  return new ProviderError("nebius", kind, status);
+}
+
+const MAX_ERROR_BODY_CHARS = 8_192;
+
+/**
+ * `error.code` and `error.type` from a JSON error body, read up to 8 KB. Used
+ * only to choose the error kind; the body is never logged or returned.
+ */
+async function errorBodyLabel(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  try {
+    const decoder = new TextDecoder();
+    let text = "";
+    while (text.length <= MAX_ERROR_BODY_CHARS) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    if (text.length > MAX_ERROR_BODY_CHARS) return "";
+    const body: unknown = JSON.parse(text);
+    const root = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    const error = root.error && typeof root.error === "object" ? (root.error as Record<string, unknown>) : root;
+    return [error.code, error.type].filter((value) => typeof value === "string").join(" ");
+  } catch {
+    return "";
+  } finally {
+    reader.cancel().catch(() => {});
+  }
 }
 
 function thinkingFields(budget: number): Record<string, unknown> {
@@ -159,8 +194,10 @@ export async function* streamChatCompletion(
     }
 
     if (!response.ok) {
+      const label = await errorBodyLabel(response);
       await discardBody(response);
-      throw new ProviderError("nebius", kindFromStatus(response.status), response.status, {
+      const kind = kindFromErrorLabel(label) ?? kindFromStatus(response.status);
+      throw new ProviderError("nebius", kind, response.status, {
         retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
       });
     }
@@ -186,7 +223,7 @@ export async function* streamChatCompletion(
         } catch {
           throw new ProviderError("nebius", "bad_response");
         }
-        if (chunk.error) throw new ProviderError("nebius", streamErrorKind(chunk.error));
+        if (chunk.error) throw streamError(chunk.error);
         if (chunk.usage !== undefined && chunk.usage !== null) {
           const parsed = usageSchema.safeParse(chunk.usage);
           usage = parsed.success

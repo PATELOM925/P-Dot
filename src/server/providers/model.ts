@@ -26,7 +26,10 @@ export interface ModelProvider {
   stream(request: ModelCallRequest, signal: AbortSignal): AsyncIterable<CompletionChunk>;
 }
 
-export function createNebiusProvider(settings: { apiKey: string; baseUrl: string }): ModelProvider {
+export function createNebiusProvider(
+  settings: { apiKey: string; baseUrl: string },
+  options: { fetchImpl?: typeof fetch } = {},
+): ModelProvider {
   return {
     name: "nebius",
     stream: (request, signal) =>
@@ -39,7 +42,7 @@ export function createNebiusProvider(settings: { apiKey: string; baseUrl: string
           thinkingBudgetTokens: request.thinkingBudgetTokens,
         },
         request.messages,
-        { signal, totalTimeoutMs: request.timeoutMs },
+        { signal, totalTimeoutMs: request.timeoutMs, fetchImpl: options.fetchImpl },
       ),
   };
 }
