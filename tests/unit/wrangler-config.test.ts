@@ -37,7 +37,7 @@ const config = JSON.parse(stripJsonComments(readFileSync("wrangler.jsonc", "utf8
 
 describe("wrangler.jsonc", () => {
   // Previews do not inherit top-level vars. A setting missing from previews.vars
-  // makes Previews behave differently from production (for example no NEBIUS_MODEL).
+  // makes Previews behave differently from production (for example other model chains).
   it("gives Previews the same variable names as production", () => {
     expect(Object.keys(config.previews?.vars ?? {}).sort()).toEqual(Object.keys(config.vars ?? {}).sort());
   });
@@ -46,11 +46,14 @@ describe("wrangler.jsonc", () => {
     for (const name of Object.keys(config.vars ?? {})) expect(ALLOWED_NAMES.has(name), name).toBe(true);
   });
 
-  it("uses a model with a known price and spend caps that the config accepts", () => {
-    const model = config.vars?.NEBIUS_MODEL ?? "";
-    expect(priceForModel(model)).not.toBeNull();
+  it("uses priced models, model chains and spend caps that the config accepts", () => {
     for (const vars of [config.vars, config.previews?.vars]) {
       const parsed = getAssistantConfig({ ...vars, NEBIUS_API_KEY: "k", NODE_ENV: "test" });
+      for (const plan of Object.values(parsed.routing)) {
+        for (const model of plan.models) expect(priceForModel(model), model).not.toBeNull();
+      }
+      // The values in wrangler.jsonc are the code defaults.
+      expect(parsed.routing).toEqual(getAssistantConfig({ NEBIUS_API_KEY: "k", NODE_ENV: "test" }).routing);
       expect(parsed.spend).toEqual({
         nebius: { day: 1_000_000, period: 20_000_000, userDay: 250_000 },
         tavily: { day: 40, period: 800, userDay: 10 },

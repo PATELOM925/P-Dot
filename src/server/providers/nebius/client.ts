@@ -3,10 +3,10 @@ import { z } from "zod";
 import {
   createAbortScope,
   discardBody,
+  kindFromErrorLabel,
   kindFromStatus,
   ProviderError,
   type AbortScope,
-  type ProviderErrorKind,
 } from "../errors";
 import { readSseData, SseFormatError } from "./sse";
 import { createThinkFilter } from "./think";
@@ -24,6 +24,13 @@ export interface NebiusSettings {
   baseUrl: string;
   model: string;
   maxOutputTokens: number;
+  /**
+   * Reasoning ("thinking") budget in tokens. When above 0, reasoning is on and
+   * Nebius stops it after this many tokens (`thinking_token_budget`, checked on
+   * Nano, Super and Ultra on 2026-10-19), so the reply always gets the rest of
+   * `maxOutputTokens`. When 0 or unset, reasoning is off.
+   */
+  thinkingBudgetTokens?: number;
 }
 
 export interface TokenUsage {
@@ -33,6 +40,8 @@ export interface TokenUsage {
 
 export type CompletionChunk =
   | { type: "text"; text: string }
+  /** The model is reasoning. Carries no text: reasoning is never shown or saved. */
+  | { type: "reasoning" }
   | { type: "finish"; finishReason: string | null; usage: TokenUsage | null };
 
 export interface StreamOptions {
@@ -50,7 +59,13 @@ const chunkSchema = z.object({
       z.object({
         // Reasoning arrives in `reasoning` and `reasoning_content`. Those and
         // other delta fields are ignored, so reasoning is never shown or saved.
-        delta: z.object({ content: z.string().nullish() }).nullish(),
+        delta: z
+          .object({
+            content: z.string().nullish(),
+            reasoning: z.string().nullish(),
+            reasoning_content: z.string().nullish(),
+          })
+          .nullish(),
         finish_reason: z.string().nullish(),
       }),
     )
@@ -70,12 +85,61 @@ const chunkSchema = z.object({
 const tokenCount = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const usageSchema = z.object({ prompt_tokens: tokenCount, completion_tokens: tokenCount });
 
-function streamErrorKind(error: { code?: string | number | null; type?: string | null }): ProviderErrorKind {
-  if (typeof error.code === "number") return kindFromStatus(error.code);
-  const label = `${error.code ?? ""} ${error.type ?? ""}`.toLowerCase();
-  if (label.includes("rate")) return "rate_limited";
-  if (label.includes("timeout")) return "timeout";
-  return "unavailable";
+/**
+ * An error event inside the stream. A numeric code (or a numeric string) is an
+ * HTTP status and is kept, so the executor can tell 404 from 503. A known label
+ * decides the kind first (for example `insufficient_quota`). Only the code and
+ * type are read; the message is never read or logged.
+ */
+function streamError(error: { code?: string | number | null; type?: string | null }): ProviderError {
+  const code = typeof error.code === "string" && /^\d{3}$/.test(error.code.trim()) ? Number(error.code) : error.code;
+  const status = typeof code === "number" && Number.isInteger(code) && code >= 100 && code <= 599 ? code : undefined;
+  const label = `${typeof code === "string" ? code : ""} ${error.type ?? ""}`;
+  const kind = kindFromErrorLabel(label) ?? (status !== undefined ? kindFromStatus(status) : "unavailable");
+  return new ProviderError("nebius", kind, status);
+}
+
+const MAX_ERROR_BODY_CHARS = 8_192;
+
+/**
+ * `error.code` and `error.type` from a JSON error body, read up to 8 KB. Used
+ * only to choose the error kind; the body is never logged or returned.
+ */
+async function errorBodyLabel(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  try {
+    const decoder = new TextDecoder();
+    let text = "";
+    while (text.length <= MAX_ERROR_BODY_CHARS) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    if (text.length > MAX_ERROR_BODY_CHARS) return "";
+    const body: unknown = JSON.parse(text);
+    const root = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    const error = root.error && typeof root.error === "object" ? (root.error as Record<string, unknown>) : root;
+    return [error.code, error.type].filter((value) => typeof value === "string").join(" ");
+  } catch {
+    return "";
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+function thinkingFields(budget: number): Record<string, unknown> {
+  if (budget <= 0) return { chat_template_kwargs: { enable_thinking: false } };
+  return { chat_template_kwargs: { enable_thinking: true }, thinking_token_budget: budget };
+}
+
+/** `Retry-After` in milliseconds (seconds or an HTTP date), or undefined. */
+export function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return Math.round(Number(trimmed) * 1000);
+  const date = Date.parse(trimmed);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
 function networkError(scope: AbortScope, parent?: AbortSignal): ProviderError {
@@ -118,10 +182,10 @@ export async function* streamChatCompletion(
           stream: true,
           // Token usage arrives in a last chunk with no choices. The spend guard needs it.
           stream_options: { include_usage: true },
-          // Turns off reasoning for Nemotron (and other models whose chat template reads
-          // this flag). Reasoning tokens cost money and count against max_tokens, so they
-          // could leave no room for the reply. Models that do not read it ignore it.
-          chat_template_kwargs: { enable_thinking: false },
+          // Turns reasoning off (or on) for Nemotron and other models whose chat template
+          // reads this flag. Reasoning tokens cost money and count against max_tokens, so
+          // without a budget they could leave no room for the reply.
+          ...thinkingFields(settings.thinkingBudgetTokens ?? 0),
         }),
         signal: scope.signal,
       });
@@ -130,8 +194,12 @@ export async function* streamChatCompletion(
     }
 
     if (!response.ok) {
+      const label = await errorBodyLabel(response);
       await discardBody(response);
-      throw new ProviderError("nebius", kindFromStatus(response.status), response.status);
+      const kind = kindFromErrorLabel(label) ?? kindFromStatus(response.status);
+      throw new ProviderError("nebius", kind, response.status, {
+        retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+      });
     }
     if (!response.body) throw new ProviderError("nebius", "bad_response");
     scope.touch();
@@ -155,7 +223,7 @@ export async function* streamChatCompletion(
         } catch {
           throw new ProviderError("nebius", "bad_response");
         }
-        if (chunk.error) throw new ProviderError("nebius", streamErrorKind(chunk.error));
+        if (chunk.error) throw streamError(chunk.error);
         if (chunk.usage !== undefined && chunk.usage !== null) {
           const parsed = usageSchema.safeParse(chunk.usage);
           usage = parsed.success
@@ -165,6 +233,9 @@ export async function* streamChatCompletion(
         for (const choice of chunk.choices ?? []) {
           const text = choice.delta?.content ? think.push(choice.delta.content) : "";
           if (text) yield { type: "text", text };
+          else if (choice.delta?.content || choice.delta?.reasoning || choice.delta?.reasoning_content) {
+            yield { type: "reasoning" };
+          }
           if (choice.finish_reason) finishReason = choice.finish_reason;
         }
       }

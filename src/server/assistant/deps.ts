@@ -6,9 +6,17 @@ import { createConversationRepository } from "@/server/db/conversations";
 import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
-import { streamChatCompletion } from "@/server/providers/nebius/client";
+import { createNebiusProvider } from "@/server/providers/model";
 import { searchWeb } from "@/server/providers/tavily/client";
+import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
 import type { AssistantDeps } from "./service";
+
+/**
+ * One breaker for each Workers isolate. Best effort: isolates do not share it,
+ * and it is lost when the isolate is recycled. It only skips a failing model
+ * for a short time; it never sets a limit.
+ */
+const breaker = createCircuitBreaker(BREAKER_DEFAULTS);
 
 /** Wires the assistant service to real providers for one authenticated request. */
 export function createAssistantDeps(auth: AuthContext, config: AssistantConfig): AssistantDeps {
@@ -17,9 +25,10 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
     spend: createSpendGuard(auth.supabase, config.spend),
-    model: { id: config.nebius.model, maxOutputTokens: config.nebius.maxOutputTokens },
+    routing: config.routing,
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
-    complete: (messages, signal) => streamChatCompletion(config.nebius, messages, { signal }),
+    provider: createNebiusProvider(config.nebius),
+    breaker,
     now: () => new Date(),
     log: logEvent,
     waitUntil,

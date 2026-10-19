@@ -1,6 +1,8 @@
 import "server-only";
 import { z } from "zod";
 import { ConfigError } from "@/lib/supabase-config";
+import { MODEL_TIERS, type ModelTier } from "@/lib/routing";
+import { buildRoutingConfig, DEFAULT_CHAINS, type RoutingConfig } from "@/server/assistant/tiers";
 import type { SpendCaps, SpendProvider } from "@/server/db/spend";
 import { priceForModel } from "@/server/providers/nebius/pricing";
 
@@ -12,9 +14,9 @@ export interface AssistantConfig {
   nebius: {
     apiKey: string;
     baseUrl: string;
-    model: string;
-    maxOutputTokens: number;
   };
+  /** Model tiers: chains, output limits and timing (docs/decisions/0007-model-routing.md). */
+  routing: RoutingConfig;
   /** Null when TAVILY_API_KEY is not set; search requests then report failure. */
   tavily: { apiKey: string } | null;
   quota: {
@@ -34,16 +36,41 @@ const MICRO_USD_PER_USD = 1_000_000;
 const usd = (min: number, max: number, fallback: number) => z.coerce.number().min(min).max(max).default(fallback);
 const credits = (max: number, fallback: number) => z.coerce.number().int().min(1).max(max).default(fallback);
 
+const outputTokens = (fallback: number) => z.coerce.number().int().min(64).max(8192).default(fallback);
+
+const MODEL_ID = /^[A-Za-z0-9._:/-]{1,200}$/;
+
+/**
+ * A comma-separated list of 1 to 4 model IDs, tried in order. Every model must
+ * have a price in the price table (the spend guard refuses unpriced models), so
+ * an unpriced model is a config error, not a model the chain skips.
+ */
+function modelChain(fallback: string[]) {
+  return z
+    .string()
+    .transform((value) => value.split(",").map((model) => model.trim()).filter(Boolean))
+    .refine((models) => models.length >= 1 && models.length <= 4)
+    .refine((models) => new Set(models).size === models.length)
+    .refine((models) => models.every((model) => MODEL_ID.test(model) && priceForModel(model) !== null))
+    .default(fallback);
+}
+
+function chainEnvName(tier: ModelTier): string {
+  return `NEBIUS_${tier.toUpperCase()}_MODELS`;
+}
+
 const assistantEnvSchema = z.object({
   NEBIUS_API_KEY: z.string().trim().min(1),
   NEBIUS_BASE_URL: z.url().default("https://api.tokenfactory.nebius.com/v1"),
-  // Only a model with an entry in the price table can be used (spend guard).
-  NEBIUS_MODEL: z
-    .string()
-    .trim()
-    .min(1)
-    .refine((model) => priceForModel(model) !== null),
-  NEBIUS_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(8192).default(1024),
+  NEBIUS_FAST_MODELS: modelChain(DEFAULT_CHAINS.fast),
+  NEBIUS_STANDARD_MODELS: modelChain(DEFAULT_CHAINS.standard),
+  NEBIUS_HEAVY_MODELS: modelChain(DEFAULT_CHAINS.heavy),
+  NEBIUS_VISION_MODELS: modelChain(DEFAULT_CHAINS.vision),
+  NEBIUS_MAX_OUTPUT_TOKENS: outputTokens(1024),
+  NEBIUS_STANDARD_MAX_OUTPUT_TOKENS: outputTokens(2048),
+  NEBIUS_HEAVY_MAX_OUTPUT_TOKENS: outputTokens(4096),
+  NEBIUS_HEAVY_THINKING_BUDGET: z.coerce.number().int().min(0).max(4096).default(1024),
+  NEBIUS_HEDGE_AFTER_MS: z.coerce.number().int().min(0).max(10_000).default(1500),
   TAVILY_API_KEY: z.string().trim().optional(),
   CHAT_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).max(10_000).default(30),
   CHAT_WINDOW_SECONDS: z.coerce.number().int().min(60).max(2_678_400).default(3600),
@@ -54,6 +81,21 @@ const assistantEnvSchema = z.object({
   TAVILY_MONTHLY_CREDITS: credits(20_000, 800),
   TAVILY_USER_DAILY_CREDITS: credits(20, 10),
 });
+
+const ROUTING_ENV_NAMES = [
+  "NEBIUS_FAST_MODELS",
+  "NEBIUS_STANDARD_MODELS",
+  "NEBIUS_HEAVY_MODELS",
+  "NEBIUS_VISION_MODELS",
+  "NEBIUS_MAX_OUTPUT_TOKENS",
+  "NEBIUS_STANDARD_MAX_OUTPUT_TOKENS",
+  "NEBIUS_HEAVY_MAX_OUTPUT_TOKENS",
+  "NEBIUS_HEAVY_THINKING_BUDGET",
+  "NEBIUS_HEDGE_AFTER_MS",
+] as const;
+
+/** The reply needs this many tokens after the reasoning budget. */
+const MIN_ANSWER_TOKENS = 512;
 
 const SPEND_ENV_NAMES = [
   "NEBIUS_DAILY_CAP_USD",
@@ -72,8 +114,7 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
   const parsed = assistantEnvSchema.safeParse({
     NEBIUS_API_KEY: env.NEBIUS_API_KEY,
     NEBIUS_BASE_URL: blankToUndefined(env.NEBIUS_BASE_URL),
-    NEBIUS_MODEL: env.NEBIUS_MODEL,
-    NEBIUS_MAX_OUTPUT_TOKENS: blankToUndefined(env.NEBIUS_MAX_OUTPUT_TOKENS),
+    ...Object.fromEntries(ROUTING_ENV_NAMES.map((name) => [name, blankToUndefined(env[name])])),
     TAVILY_API_KEY: blankToUndefined(env.TAVILY_API_KEY),
     CHAT_REQUESTS_PER_WINDOW: blankToUndefined(env.CHAT_REQUESTS_PER_WINDOW),
     CHAT_WINDOW_SECONDS: blankToUndefined(env.CHAT_WINDOW_SECONDS),
@@ -85,13 +126,30 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
     throw new ConfigError(names);
   }
   const e = parsed.data;
+  if (e.NEBIUS_HEAVY_MAX_OUTPUT_TOKENS - e.NEBIUS_HEAVY_THINKING_BUDGET < MIN_ANSWER_TOKENS) {
+    // The reasoning budget must leave room for a visible reply.
+    throw new ConfigError(["NEBIUS_HEAVY_THINKING_BUDGET"]);
+  }
+  const chains: Record<ModelTier, string[]> = {
+    fast: e.NEBIUS_FAST_MODELS,
+    standard: e.NEBIUS_STANDARD_MODELS,
+    heavy: e.NEBIUS_HEAVY_MODELS,
+    vision: e.NEBIUS_VISION_MODELS,
+  };
+  for (const tier of MODEL_TIERS) if (chains[tier].length === 0) throw new ConfigError([chainEnvName(tier)]);
   return {
     nebius: {
       apiKey: e.NEBIUS_API_KEY,
       baseUrl: e.NEBIUS_BASE_URL.replace(/\/+$/, ""),
-      model: e.NEBIUS_MODEL,
-      maxOutputTokens: e.NEBIUS_MAX_OUTPUT_TOKENS,
     },
+    routing: buildRoutingConfig({
+      chains,
+      maxOutputTokens: e.NEBIUS_MAX_OUTPUT_TOKENS,
+      standardMaxOutputTokens: e.NEBIUS_STANDARD_MAX_OUTPUT_TOKENS,
+      heavyMaxOutputTokens: e.NEBIUS_HEAVY_MAX_OUTPUT_TOKENS,
+      heavyThinkingBudgetTokens: e.NEBIUS_HEAVY_THINKING_BUDGET,
+      hedgeAfterMs: e.NEBIUS_HEDGE_AFTER_MS,
+    }),
     tavily: e.TAVILY_API_KEY ? { apiKey: e.TAVILY_API_KEY } : null,
     quota: {
       requestsPerWindow: e.CHAT_REQUESTS_PER_WINDOW,

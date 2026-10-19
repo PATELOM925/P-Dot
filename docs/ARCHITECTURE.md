@@ -13,6 +13,8 @@ Cloudflare Worker (OpenNext): Next.js API routes
    |-- src/proxy.ts: session cookie refresh, page redirects
    |-- authentication and ownership checks (Supabase Auth, getClaims)
    |-- assistant orchestration (src/server/assistant)
+   |     |-- router: picks a model tier (no model call)
+   |     |-- executor: retries, fallbacks, hedge, breaker
    |     |-- Nebius Token Factory: streamed model inference
    |     `-- Tavily: optional web retrieval
    `-- persistence (src/server/db) -> Supabase Postgres with row-level security
@@ -42,8 +44,10 @@ src/
     config.ts              env validation (lazy; build needs no secrets)
     log.ts                 metadata-only structured logs
     auth/                  getClaims-based session, proxy helper
-    assistant/             context budget, prompt assembly, orchestration
-    providers/             nebius/ (SSE streaming), tavily/, shared errors/timeouts
+    assistant/             context budget, prompt assembly, orchestration,
+                           model router, tiers, executor, circuit breaker
+    providers/             model.ts (provider interface), nebius/ (SSE streaming),
+                           tavily/, shared errors/timeouts
     db/                    Supabase client, conversation repository, quota gate, spend guard
     http/                  body limits, origin check, error responses, NDJSON
   lib/                     limits, zod schemas, URL safety, Supabase public config
@@ -72,7 +76,7 @@ Defined in `supabase/migrations/20261014000000_initial_schema.sql`:
 
 - User: `auth.users`, managed by Supabase Auth.
 - `conversations`: ID, owner, title, created/updated time. A trigger bumps `updated_at` when a message is added.
-- `messages`: ID, conversation, owner, role (`user`/`assistant`), content, web-search outcome (`off`/`used`/`no_results`/`failed`), source references (`[{title, url}]`), created time. Only completed assistant replies are stored, so there is no per-message completion status; an unanswered trailing user message is what the UI offers to retry.
+- `messages`: ID, conversation, owner, role (`user`/`assistant`), content, web-search outcome (`off`/`used`/`no_results`/`failed`), source references (`[{title, url}]`), created time, and for assistant replies the model, tier, route reason and fallback flag (nullable; `NULL` for replies saved before model routing, [decision 0007](decisions/0007-model-routing.md)). Only completed assistant replies are stored, so there is no per-message completion status; an unanswered trailing user message is what the UI offers to retry.
 - `usage_windows`: per-user request count per fixed window, written only by `consume_chat_quota()`.
 - `spend_counters` and `spend_reservations`: global spend for Nebius (micro-dollars) and Tavily (credits) per UTC day, month and all time, plus one row per held call. No user content. Users cannot read or write them; only `reserve_provider_spend()` and `settle_provider_spend()` do ([decision 0006](decisions/0006-global-spend-guard.md)).
 
@@ -80,7 +84,9 @@ RLS allows each user to select and insert only their own rows and to delete only
 
 ## Provider contracts
 
-Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_URL}/chat/completions` with `stream: true`, `stream_options.include_usage` (token usage for the spend guard) and `chat_template_kwargs.enable_thinking: false` (no reasoning tokens), and parses server-sent events, including errors sent mid-stream. Reasoning fields and a leading `<think>` block are never shown or saved. The base URL and model ID are configuration. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data. The assistant has no tools, so retrieved content cannot trigger actions.
+Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_URL}/chat/completions` with `stream: true`, `stream_options.include_usage` (token usage for the spend guard) and `chat_template_kwargs.enable_thinking` (off, or on with `thinking_token_budget` for the heavy tier), and parses server-sent events, including errors sent mid-stream. Reasoning fields and a leading `<think>` block are never shown or saved. The base URL and the model chains are configuration.
+
+Model routing ([decision 0007](decisions/0007-model-routing.md)): a rule-based router picks a tier (`fast`, `standard`, `heavy` or `vision`) from the message, the conversation size, web search and the user's effort choice. The executor runs the tier's model chain through a provider interface (`src/server/providers/model.ts`). It retries and falls back only before the first visible token, uses one deadline for all attempts, hedges slow fast-tier calls once, and skips a failing model with a soft breaker in isolate memory (best effort, not shared). Each attempt holds and settles spend through the spend guard. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data. The assistant has no tools, so retrieved content cannot trigger actions.
 
 Reference documentation:
 

@@ -2,7 +2,9 @@ import type { ConversationRepository, NewMessage } from "@/server/db/conversatio
 import type { QuotaGate } from "@/server/db/quota";
 import type { SpendCaps, SpendGuard, SpendLimit, SpendProvider, SpendReservation } from "@/server/db/spend";
 import type { AssistantDeps } from "@/server/assistant/service";
-import type { ChatMessage, CompletionChunk } from "@/server/providers/nebius/client";
+import { createCircuitBreaker } from "@/server/assistant/breaker";
+import { buildRoutingConfig, type RoutingConfig } from "@/server/assistant/tiers";
+import type { ChatMessage, CompletionChunk, ModelCallRequest, ModelProvider } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import type { ConversationSummary, MessageDTO, Mode, TaskDTO } from "@/types/api";
 import type { TaskRepository } from "@/server/db/tasks";
@@ -17,8 +19,8 @@ interface StoredMessage extends MessageDTO {
 }
 
 function toDto(message: StoredMessage): MessageDTO {
-  const { id, role, content, webSearch, sources, createdAt } = message;
-  return { id, role, content, webSearch, sources, createdAt };
+  const { id, role, content, webSearch, sources, route, createdAt } = message;
+  return { id, role, content, webSearch, sources, route, createdAt };
 }
 
 /**
@@ -91,6 +93,7 @@ export class MemoryRepository implements ConversationRepository {
       content: message.content,
       webSearch: message.webSearch ?? "off",
       sources: message.sources ?? [],
+      route: message.role === "assistant" ? (message.route ?? null) : null,
       createdAt: this.timestamp(),
       userId,
       conversationId: message.conversationId,
@@ -194,17 +197,35 @@ export class FakeQuota implements QuotaGate {
   }
 }
 
+/** Routing where every tier uses one model with 1,024 output tokens and no hedge. */
+export function testRouting(model = "nvidia/nemotron-3-super-120b-a12b") {
+  return buildRoutingConfig({
+    chains: { fast: [model], standard: [model], heavy: [model], vision: [model] },
+    maxOutputTokens: 1024,
+    standardMaxOutputTokens: 1024,
+    heavyMaxOutputTokens: 1024,
+    heavyThinkingBudgetTokens: 0,
+    hedgeAfterMs: 0,
+  });
+}
+
 export interface FakeDepsOptions {
   repo?: MemoryRepository;
   quota?: FakeQuota;
   spend?: FakeSpend;
+  /** Every tier uses only this model (default: Super), so prices stay simple in tests. */
   model?: string;
   search?: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
   reply?: string[] | ((messages: ChatMessage[], signal: AbortSignal) => AsyncIterable<CompletionChunk>);
+  /** Replaces the simple reply provider (for routing tests). */
+  provider?: ModelProvider;
+  routing?: RoutingConfig;
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
   const prompts: ChatMessage[][] = [];
+  const calls: ModelCallRequest[] = [];
+  const model = options.model ?? "nvidia/nemotron-3-super-120b-a12b";
   const searches: string[] = [];
   const logs: { level: string; event: string; fields: Record<string, unknown> }[] = [];
   const waited: Promise<unknown>[] = [];
@@ -214,7 +235,7 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
     repo: options.repo ?? new MemoryRepository(),
     quota: options.quota ?? new FakeQuota(),
     spend: options.spend ?? new FakeSpend(),
-    model: { id: options.model ?? "nvidia/nemotron-3-super-120b-a12b", maxOutputTokens: 1024 },
+    routing: options.routing ?? testRouting(model),
     search:
       options.search === null
         ? null
@@ -222,14 +243,20 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
             searches.push(query);
             return options.search ? options.search(query, signal) : [];
           },
-    complete: (messages, signal) => {
-      prompts.push(messages);
-      if (typeof reply === "function") return reply(messages, signal);
-      return (async function* () {
-        for (const text of reply) yield { type: "text" as const, text };
-        yield { type: "finish" as const, finishReason: "stop", usage: { promptTokens: 10, completionTokens: 2 } };
-      })();
+    provider: options.provider ?? {
+      name: "nebius",
+      stream: (request, signal) => {
+        calls.push(request);
+        prompts.push(request.messages);
+        if (typeof reply === "function") return reply(request.messages, signal);
+        return (async function* () {
+          for (const text of reply) yield { type: "text" as const, text };
+          yield { type: "finish" as const, finishReason: "stop", usage: { promptTokens: 10, completionTokens: 2 } };
+        })();
+      },
     },
+    breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
+    random: () => 0,
     now: () => new Date(Date.UTC(2026, 9, 14, 12, 30, 0)),
     log: (level, event, fields = {}) => {
       logs.push({ level, event, fields });
@@ -238,5 +265,5 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
       waited.push(work);
     },
   };
-  return { deps, prompts, searches, logs, waited };
+  return { deps, prompts, calls, searches, logs, waited };
 }

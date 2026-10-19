@@ -7,7 +7,8 @@ export type ProviderErrorKind =
   | "rate_limited"
   | "auth" // credentials rejected: an operator problem, not the user's
   | "quota" // provider account out of credit or plan limit
-  | "invalid_request" // e.g. unknown model ID or context too long
+  | "invalid_request" // e.g. context too long
+  | "model_not_found" // the provider does not know this model ID
   | "unavailable"
   | "bad_response"
   | "aborted";
@@ -22,10 +23,31 @@ export class ProviderError extends Error {
     public readonly provider: ProviderName,
     public readonly kind: ProviderErrorKind,
     public readonly status?: number,
+    details: { retryAfterMs?: number } = {},
   ) {
     super(`${provider} request failed: ${kind}${status ? ` (HTTP ${status})` : ""}`);
     this.name = "ProviderError";
+    this.retryAfterMs = details.retryAfterMs;
   }
+
+  /** The provider's `Retry-After`, in milliseconds, when it sent one. */
+  public readonly retryAfterMs?: number;
+}
+
+/**
+ * The kind for a known OpenAI-compatible error label (`error.code` or
+ * `error.type`), or null. A label is more exact than the HTTP status: for
+ * example `insufficient_quota` can come with HTTP 429, but a retry cannot help.
+ */
+export function kindFromErrorLabel(label: string): ProviderErrorKind | null {
+  const l = label.toLowerCase();
+  if (/quota|billing|credit|payment|insufficient_funds/.test(l)) return "quota";
+  if (/invalid_api_key|authentication|unauthori[sz]ed|permission|forbidden/.test(l)) return "auth";
+  if (/model_not_found|model_not_exist|no_such_model/.test(l)) return "model_not_found";
+  if (/rate_limit|rate limit|too_many_requests/.test(l)) return "rate_limited";
+  if (/timeout|timed_out/.test(l)) return "timeout";
+  if (/server_error|overloaded|internal|service_unavailable|unavailable/.test(l)) return "unavailable";
+  return null;
 }
 
 export function kindFromStatus(status: number): ProviderErrorKind {

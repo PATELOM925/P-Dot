@@ -61,53 +61,106 @@ describe("readChatStream", () => {
 });
 
 describe("getAssistantConfig", () => {
-  it("requires the Nebius key and model and reports names only", () => {
+  it("requires the Nebius key and reports names only", () => {
     try {
       getAssistantConfig({ NEBIUS_API_KEY: "", NODE_ENV: "test" });
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(ConfigError);
-      expect((error as ConfigError).missing).toEqual(["NEBIUS_API_KEY", "NEBIUS_MODEL"]);
+      expect((error as ConfigError).missing).toEqual(["NEBIUS_API_KEY"]);
     }
   });
 
-  it("refuses a model that has no price, naming the variable but not the value", () => {
-    try {
-      getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_MODEL: "moonshotai/Kimi-K3", NODE_ENV: "test" });
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toBeInstanceOf(ConfigError);
-      expect((error as ConfigError).missing).toEqual(["NEBIUS_MODEL"]);
-      expect(String((error as Error).message)).not.toContain("Kimi");
-    }
+  it.each(["NEBIUS_FAST_MODELS", "NEBIUS_STANDARD_MODELS", "NEBIUS_HEAVY_MODELS", "NEBIUS_VISION_MODELS"])(
+    "refuses a model without a price in %s, naming the variable but not the value",
+    (name) => {
+      try {
+        getAssistantConfig({
+          NEBIUS_API_KEY: "k",
+          [name]: "nvidia/nemotron-3-super-120b-a12b,moonshotai/Kimi-K3",
+          NODE_ENV: "test",
+        });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as ConfigError).missing).toEqual([name]);
+        expect(String((error as Error).message)).not.toContain("Kimi");
+      }
+    },
+  );
+
+  it.each([
+    ["more than four models", "nvidia/Nemotron-3_5-Lightning,nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B,nvidia/nemotron-3-super-120b-a12b,nvidia/Nemotron-3-Ultra-550b-a55b,nvidia/Nemotron-3.5-Super-VL"],
+    ["the same model twice", "nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-super-120b-a12b"],
+    ["only commas", ", ,"],
+  ])("refuses a chain with %s", (_label, value) => {
+    expect(() => getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_FAST_MODELS: value, NODE_ENV: "test" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("refuses a reasoning budget that leaves less than 512 tokens for the reply", () => {
+    expect(() =>
+      getAssistantConfig({
+        NEBIUS_API_KEY: "k",
+        NEBIUS_HEAVY_MAX_OUTPUT_TOKENS: "2048",
+        NEBIUS_HEAVY_THINKING_BUDGET: "1600",
+        NODE_ENV: "test",
+      }),
+    ).toThrow(ConfigError);
   });
 
   it("applies defaults and treats a blank Tavily key as search disabled", () => {
     const config = getAssistantConfig({
       NEBIUS_API_KEY: "secret",
-      NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b",
       NEBIUS_BASE_URL: "https://api.tokenfactory.nebius.com/v1/",
       TAVILY_API_KEY: " ",
       NODE_ENV: "test",
     });
-    expect(config.nebius).toEqual({
-      apiKey: "secret",
-      baseUrl: "https://api.tokenfactory.nebius.com/v1",
-      model: "nvidia/nemotron-3-super-120b-a12b",
-      maxOutputTokens: 1024,
-    });
+    expect(config.nebius).toEqual({ apiKey: "secret", baseUrl: "https://api.tokenfactory.nebius.com/v1" });
     expect(config.tavily).toBeNull();
     expect(config.quota).toEqual({ requestsPerWindow: 30, windowSeconds: 3600 });
     expect(config.spend).toEqual({
       nebius: { day: 1_000_000, period: 20_000_000, userDay: 250_000 },
       tavily: { day: 40, period: 800, userDay: 10 },
     });
+    expect(config.routing.fast).toMatchObject({
+      models: ["nvidia/Nemotron-3_5-Lightning", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "nvidia/nemotron-3-super-120b-a12b"],
+      maxOutputTokens: 1024,
+      thinkingBudgetTokens: 0,
+      hedgeAfterMs: 1500,
+    });
+    expect(config.routing.standard).toMatchObject({
+      models: ["nvidia/nemotron-3-super-120b-a12b", "nvidia/Nemotron-3_5-Lightning"],
+      maxOutputTokens: 2048,
+      thinkingBudgetTokens: 0,
+      hedgeAfterMs: null,
+    });
+    expect(config.routing.heavy).toMatchObject({
+      models: ["nvidia/Nemotron-3-Ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b"],
+      maxOutputTokens: 4096,
+      thinkingBudgetTokens: 1024,
+      hedgeAfterMs: null,
+    });
+    expect(config.routing.vision).toMatchObject({ models: ["nvidia/Nemotron-3.5-Super-VL"], hedgeAfterMs: null });
+  });
+
+  it("reads model chains and turns hedging off with 0", () => {
+    const config = getAssistantConfig({
+      NEBIUS_API_KEY: "k",
+      NEBIUS_FAST_MODELS: " nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B , nvidia/Nemotron-3_5-Lightning ",
+      NEBIUS_HEDGE_AFTER_MS: "0",
+      NEBIUS_HEAVY_THINKING_BUDGET: "0",
+      NODE_ENV: "test",
+    });
+    expect(config.routing.fast.models).toEqual(["nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "nvidia/Nemotron-3_5-Lightning"]);
+    expect(config.routing.fast.hedgeAfterMs).toBeNull();
+    expect(config.routing.heavy.thinkingBudgetTokens).toBe(0);
   });
 
   it("reads spend caps in dollars and credits", () => {
     const config = getAssistantConfig({
       NEBIUS_API_KEY: "k",
-      NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b",
       NEBIUS_DAILY_CAP_USD: "2.5",
       NEBIUS_TOTAL_CAP_USD: "15",
       NEBIUS_USER_DAILY_CAP_USD: "0.1",
@@ -125,7 +178,6 @@ describe("getAssistantConfig", () => {
   it("never lets the per-user cap pass the cap for all users", () => {
     const config = getAssistantConfig({
       NEBIUS_API_KEY: "k",
-      NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b",
       NEBIUS_DAILY_CAP_USD: "0.1",
       TAVILY_DAILY_CREDITS: "3",
       NODE_ENV: "test",
