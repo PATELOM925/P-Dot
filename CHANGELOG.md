@@ -32,6 +32,15 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
   - Problem: the pitch needs memory the user can see and edit, search over their own documents, actions that run only after approval, a record of what happened, and a view of what was sent to the model. None of this had storage.
   - Resolution: one additive migration with pgvector, RLS on every table, append-only log and context records, and similarity search that runs as the caller. Embeddings use Qwen3-Embedding-8B at 1,024 dimensions through the spend guard. Shared types, request schemas and limits for the API routes that follow.
 
+- **"Ask first" and "Auto" approval modes in chat** ([decision 0011](docs/decisions/0011-approval-modes.md)). PR: not opened yet.
+  - Problem: approving every small action is tedious, but some actions must never happen unseen.
+  - Resolution:
+    - Easy to find and set: a one-time card in chat asks which mode to use (Ask first recommended, or keep it with one click). After that, a button next to the microphone always shows the current mode and opens a menu that explains both (touch, mouse and keyboard; Esc closes it). Settings → Approvals has the same choice as radio cards, and the Today panel shows the mode with a Change link. The choice is saved on the device; Ask first is the default.
+    - The button is kept apart from the effort switch, whose "Auto" means the model choice, not approvals.
+    - One shared rule set (`src/lib/approval-policy.ts`): every action kind must name its effect, or it does not compile. In Auto only adding to P-Dot's own lists runs on its own, at most 3 per reply; saving something personal, changing or deleting, outside accounts, private data, money and settings always ask, and their cards say why.
+    - Auto acts only on replies to messages sent while it was on. It approves through the existing decision route, so the server still checks and logs each action, and shows "Done on its own" with Undo (the existing task and reminder delete routes).
+    - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
+
 ### Fixed
 - **Dictation was blocked by P-Dot's own security header.** PR: not opened yet.
   - Problem: `next.config.ts` sent `Permissions-Policy: microphone=()`, which turns the microphone off on every page, so the microphone button showed as available but Chrome refused it, and the message told users to change their own browser settings. Words heard after Send also landed in the next message.
