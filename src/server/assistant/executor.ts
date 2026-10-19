@@ -113,12 +113,14 @@ type ErrorAction = "retry" | "next_model" | "stop";
 /**
  * How to handle a failed attempt before the first visible token.
  * - retry: network errors, timeouts, mid-stream errors, 408, 409, 425, 429, 5xx.
- * - next_model: 404 (for example an unknown model ID).
- * - stop: 400, 401, 403, 413, 422 and account quota errors. Another model
- *   would fail the same way.
+ * - next_model: 404 or a "model not found" label.
+ * - stop: 400, 401, 403, 413, 422, and account quota or authentication
+ *   labels (even with HTTP 429). Another model would fail the same way.
  */
 export function classifyError(error: unknown): ErrorAction {
   if (!(error instanceof ProviderError)) return "stop";
+  if (error.kind === "quota" || error.kind === "auth") return "stop";
+  if (error.kind === "model_not_found") return "next_model";
   const status = error.status;
   if (status !== undefined) {
     if (status === 404) return "next_model";
@@ -188,7 +190,9 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
   const live: Attempt[] = [];
   const all: Attempt[] = [];
   let lastError: unknown = null;
-  let retryWait: { model: string; ms: number } | null = null;
+  // The earliest time each model may be tried again (backoff or Retry-After).
+  // Kept for each model, so a failure on another model never shortens it.
+  const notBefore = new Map<string, number>();
   let hedgeUsed = false;
 
   const abortError = () =>
@@ -216,7 +220,11 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
 
   function takeHedgeSlot(primary: string): string | null {
     if (report.attempts >= plan.maxAttempts) return null;
-    const index = queue.findIndex((model) => model !== primary && usable(model));
+    // A hedge must start now, so a model that is still waiting to retry is not used.
+    const now = Date.now();
+    const index = queue.findIndex(
+      (model) => model !== primary && (notBefore.get(model) ?? 0) <= now && usable(model),
+    );
     return index === -1 ? null : queue.splice(index, 1)[0]!;
   }
 
@@ -402,7 +410,8 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
       return;
     }
     const wait = Math.max(backoffMs(tries.get(attempt.model) ?? 1, random), retryAfterMs ?? 0);
-    retryWait = { model: attempt.model, ms: wait };
+    const until = Date.now() + wait;
+    notBefore.set(attempt.model, Math.max(notBefore.get(attempt.model) ?? 0, until));
   }
 
   /** Runs attempts until one sends visible text. Returns that attempt and its first text. */
@@ -412,8 +421,7 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
       if (live.length === 0) {
         const model = takeSlot();
         if (!model) throw lastError ?? new ProviderError(provider.name, "unavailable");
-        const wait = retryWait?.model === model ? retryWait.ms : 0;
-        retryWait = null;
+        const wait = (notBefore.get(model) ?? 0) - Date.now();
         if (wait > 0) await sleep(Math.min(wait, Math.max(0, deadlineAt - Date.now())));
         if (request.signal.aborted) throw abortError();
         if (deadlineAt - Date.now() < RETRY_POLICY.minAttemptMs) {

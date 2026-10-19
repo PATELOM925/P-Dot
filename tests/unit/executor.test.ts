@@ -264,6 +264,29 @@ describe("executeRouted", () => {
     budget.expectAllSettledOnce();
   });
 
+  // Review round 1: a failed hedge used to erase the first model's Retry-After.
+  it("keeps each model's Retry-After when both the first attempt and the hedge fail", async () => {
+    const { chunks, provider, report } = await run({
+      [A]: [
+        { delayMs: 1_600, status: 429, retryAfterMs: 2_000 },
+        { status: 429, retryAfterMs: 5_000 },
+      ],
+      [B]: [{ delayMs: 200, status: 503, retryAfterMs: 1_990 }, {}],
+    });
+    const starts = provider.calls.map((c) => [c.model, c.startedAt]);
+    // A fails at 1,600 ms (wait 2,000 ms); the hedge B fails at 1,700 ms (wait 1,990 ms).
+    expect(starts[0]).toEqual([A, 0]);
+    expect(starts[1]).toEqual([B, 1_500]);
+    // A's second try waits for its own Retry-After: not before 3,600 ms.
+    expect(starts[2]![0]).toBe(A);
+    expect(starts[2]![1]).toBeGreaterThanOrEqual(3_600);
+    // A fails again at once; B's second try waits for B's Retry-After: not before 3,690 ms.
+    expect(starts[3]![0]).toBe(B);
+    expect(starts[3]![1]).toBeGreaterThanOrEqual(3_690);
+    expect(text(chunks)).toBe(`Answer from ${B}.`);
+    expect(report).toMatchObject({ attempts: 4, hedgeFired: true, model: B });
+  });
+
   it("starts at most one hedge", async () => {
     const { provider, report } = await run({ [A]: [{ delayMs: 4_500 }], [B]: [{ delayMs: 4_500 }], [C]: [{}] });
     expect(provider.calls.map((c) => c.model)).toEqual([A, B]);
