@@ -42,7 +42,7 @@ Requires Node.js 22.12 or newer.
 
 3. **Configure Supabase Auth** (Authentication → URL Configuration and Email Templates):
    - Site URL: your production URL (or `http://localhost:3000` for local work).
-   - Redirect URLs: add `http://localhost:3000/**` and each deployed origin you use, e.g. `https://p-dot.<your-account>.workers.dev/**`.
+   - Redirect URLs: add `http://localhost:3000/**` and each deployed origin you use, e.g. `https://pdot.iampatelom.com/**`.
    - Recommended email links (they work even if the email is opened in a different browser):
      - Confirm signup: `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email&next=/chat`
      - Reset password: `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/reset-password`
@@ -214,7 +214,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 
 ## Deploying to Cloudflare
 
-The app runs as one Cloudflare Worker built with the [OpenNext Cloudflare adapter](https://opennext.js.org/cloudflare). Configuration: [`wrangler.jsonc`](wrangler.jsonc) (Worker name `p-dot`, static assets, Node.js compatibility) and [`open-next.config.ts`](open-next.config.ts). Decision record: [0004](docs/decisions/0004-cloudflare-workers-deployment.md).
+The app runs as one Cloudflare Worker built with the [OpenNext Cloudflare adapter](https://opennext.js.org/cloudflare). Configuration: [`wrangler.jsonc`](wrangler.jsonc) (Worker name `pdot`, custom domain `pdot.iampatelom.com`, static assets, Node.js compatibility; the `workers.dev` address is off) and [`open-next.config.ts`](open-next.config.ts). Decision record: [0004](docs/decisions/0004-cloudflare-workers-deployment.md).
 
 Build and deploy from **Linux, macOS, WSL, or Cloudflare's build service**. OpenNext warns that native Windows is not fully supported, and `.open-next/` can be locked by a running `next dev`/preview on Windows.
 
@@ -227,14 +227,14 @@ Build and deploy from **Linux, macOS, WSL, or Cloudflare's build service**. Open
    npx wrangler secret put TAVILY_API_KEY
    ```
 
-   Set the non-secret values (`NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `SITE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`) as Worker variables in the Cloudflare dashboard (Workers & Pages → p-dot → Settings → Variables). Set `SITE_URL` to the deployed origin; without it, auth emails link to `http://localhost:3000`. If you deploy from the CLI and manage variables in the dashboard, pass `-- --keep-vars` so deploys do not remove them.
+   Set the non-secret values (`NEBIUS_MODEL`, `NEBIUS_BASE_URL`, `SITE_URL`, `NEBIUS_MAX_OUTPUT_TOKENS`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`) as Worker variables in the Cloudflare dashboard (Workers & Pages → pdot → Settings → Variables). `SITE_URL` is already set in `wrangler.jsonc` to `https://pdot.iampatelom.com`; without it, auth emails link to `http://localhost:3000`. If you deploy from the CLI and manage variables in the dashboard, pass `-- --keep-vars` so deploys do not remove them.
 4. **Deploy**:
 
    ```bash
    npm run deploy
    ```
 
-   The Worker URL is `https://p-dot.<your-account>.workers.dev` unless you attach a custom domain.
+   The app is served at `https://pdot.iampatelom.com` (a Cloudflare custom domain on the `iampatelom.com` zone). The `workers.dev` address is turned off in `wrangler.jsonc`.
 5. **Allow the origin in Supabase** (Authentication → URL Configuration): set the Site URL to the deployed origin and add `https://<your-origin>/**` to the redirect URLs, plus the email-template links from [Setup](#setup).
 6. Set budgets on the Nebius and Tavily accounts before giving anyone access, then check `https://<your-origin>/api/health`.
 
