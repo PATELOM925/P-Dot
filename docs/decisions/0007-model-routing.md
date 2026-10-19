@@ -1,6 +1,6 @@
 # 0007: Model routing with fallbacks, retries and a hedge
 
-- Status: Proposed (2026-10-19). The owner accepts it when the pull request is merged.
+- Status: Accepted (owner, 2026-10-19).
 - Code: `src/server/assistant/router.ts`, `tiers.ts`, `executor.ts`, `breaker.ts`, `src/server/providers/model.ts`, `src/lib/routing.ts`, `supabase/migrations/20261019120000_message_routing.sql`.
 
 ## Problem
@@ -96,7 +96,7 @@ A merge to `main` applies the migration and deploys the Worker at about the same
 
 - The `start` event has `route: { tier, reason }`. The `done` event's message, and each assistant message in the conversation history, has `route: { model, tier, reason, fallback }`, or `null` for replies saved before this change.
 - A small line under each reply, for example "Nemotron 3 Super · multi-step request", with "after fallback" when a later model answered.
-- The composer has an "Auto / Think harder" switch. "Think harder" sends `effort: "deep"`, so the reply always uses the heavy tier. It stays on until the user changes it.
+- The composer has an "Auto / Think harder" switch. "Think harder" sends `effort: "deep"`, so the reply always uses the heavy tier. It applies to one message only: the switch goes back to "Auto" when the server accepts the message. The owner chose this on 2026-10-19 so that a forgotten switch does not keep using the heavy tier.
 
 ### Logs
 

@@ -28,7 +28,7 @@ const EFFORT_OPTIONS: { value: Effort; label: string; title: string }[] = [
   {
     value: "deep",
     label: "Think harder",
-    title: "Use the strongest model. It is slower and uses more of the daily limit.",
+    title: "Use the strongest model for the next message only. It is slower and uses more of the daily limit.",
   },
 ];
 
@@ -217,6 +217,8 @@ export function ChatWorkspace({
         switch (event.type) {
           case "start":
             accepted = true;
+            // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
+            if (body.effort === "deep") setEffort("auto");
             setActiveId(event.conversation.id);
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
