@@ -9,6 +9,7 @@ import { logEvent } from "@/server/log";
 import { createNebiusProvider } from "@/server/providers/model";
 import { searchWeb } from "@/server/providers/tavily/client";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
+import { createBudgetedEmbedder, type Embedder } from "./embed";
 import type { AssistantDeps } from "./service";
 
 /**
@@ -46,4 +47,15 @@ function waitUntil(work: Promise<unknown>): void {
   } catch {
     // Not running in the Workers runtime.
   }
+}
+
+/**
+ * A spend-guarded embedder for one authenticated request. Throws ConfigError
+ * (the route answers 503 not_configured) when Nebius is not configured.
+ */
+export function createEmbedderForRequest(auth: AuthContext, config: AssistantConfig): Embedder {
+  return createBudgetedEmbedder({
+    settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
+    spend: createSpendGuard(auth.supabase, config.spend),
+  });
 }

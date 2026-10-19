@@ -8,7 +8,10 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- **Storage and shared code for memory, documents, action proposals, the action log, reminders and "what was sent"** (decision [0009](docs/decisions/0009-memory-documents-actions.md)).
+  - Problem: the pitch needs memory the user can see and edit, search over their own documents, actions that run only after approval, a record of what happened, and a view of what was sent to the model. None of this had storage.
+  - Resolution: one additive migration with pgvector, RLS on every table, append-only log and context records, and similarity search that runs as the caller. Embeddings use Qwen3-Embedding-8B at 1,024 dimensions through the spend guard. Shared types, request schemas and limits for the API routes that follow.
 
 ## 2026-10-19
 
