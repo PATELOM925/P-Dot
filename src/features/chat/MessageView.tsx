@@ -1,6 +1,7 @@
 import { routeSummary } from "@/lib/routing";
 import { toSafeHttpUrl } from "@/lib/safe-url";
 import type { MessageDTO, SourceRef, WebSearchStatus } from "@/types/api";
+import { WhatWasSent } from "./WhatWasSent";
 
 export interface UiMessage extends MessageDTO {
   /** Shown optimistically before the server confirms it was saved. */
@@ -66,10 +67,15 @@ export function MessageItem({ message }: { message: UiMessage }) {
       {message.pending && <p className="hint">Sending…</p>}
       {message.truncated && <p className="hint">This reply reached the length limit and may be incomplete.</p>}
       {!isUser && message.webSearch === "used" && <SourceList sources={message.sources} />}
-      {!isUser && message.route && (
-        <p className="message-route" title={`Model tier: ${message.route.tier}`}>
-          {routeSummary(message.route)}
-        </p>
+      {!isUser && (
+        <div className="message-footer">
+          {message.route && (
+            <p className="message-route" title={`Model tier: ${message.route.tier}`}>
+              {routeSummary(message.route)}
+            </p>
+          )}
+          <WhatWasSent messageId={message.id} createdAt={message.createdAt} />
+        </div>
       )}
     </article>
   );

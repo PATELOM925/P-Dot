@@ -2,6 +2,7 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
+import { createContextRecordRepository } from "@/server/db/context-records";
 import { createConversationRepository } from "@/server/db/conversations";
 import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
@@ -9,6 +10,7 @@ import { logEvent } from "@/server/log";
 import { createNebiusProvider } from "@/server/providers/model";
 import { searchWeb } from "@/server/providers/tavily/client";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
+import { createBudgetedEmbedder, type Embedder } from "./embed";
 import type { AssistantDeps } from "./service";
 
 /**
@@ -32,6 +34,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     now: () => new Date(),
     log: logEvent,
     waitUntil,
+    contextRecords: createContextRecordRepository(auth.supabase),
   };
 }
 
@@ -46,4 +49,15 @@ function waitUntil(work: Promise<unknown>): void {
   } catch {
     // Not running in the Workers runtime.
   }
+}
+
+/**
+ * A spend-guarded embedder for one authenticated request. Throws ConfigError
+ * (the route answers 503 not_configured) when Nebius is not configured.
+ */
+export function createEmbedderForRequest(auth: AuthContext, config: AssistantConfig): Embedder {
+  return createBudgetedEmbedder({
+    settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
+    spend: createSpendGuard(auth.supabase, config.spend),
+  });
 }

@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ApprovalList } from "@/features/actions/ApprovalList";
 import { TaskList } from "@/features/today/TaskList";
 import { MODE_LABELS } from "@/lib/mode";
-import { TASK_LIST_LIMIT } from "@/lib/limits";
+import { ACTION_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
 import { requireAuth } from "@/server/auth/session";
+import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createTaskRepository } from "@/server/db/tasks";
 import { getMode } from "@/server/mode";
 
@@ -17,7 +19,10 @@ const SCOPE: Record<"personal" | "work", string> = {
 export default async function TodayPage() {
   const auth = await requireAuth("/today");
   const mode = await getMode();
-  const tasks = await createTaskRepository(auth.supabase).listTasks(auth.userId, mode, TASK_LIST_LIMIT);
+  const [tasks, proposals] = await Promise.all([
+    createTaskRepository(auth.supabase).listTasks(auth.userId, mode, TASK_LIST_LIMIT),
+    createActionProposalRepository(auth.supabase).listProposals(auth.userId, undefined, ACTION_LIST_LIMIT),
+  ]);
 
   return (
     <main className="page page-wide stack">
@@ -28,7 +33,7 @@ export default async function TodayPage() {
         </Link>
       </div>
 
-      <p className="scope-note">
+      <p className={`scope-note scope-note-${mode}`}>
         <strong>{MODE_LABELS[mode]} mode:</strong> {SCOPE[mode]}
       </p>
 
@@ -46,13 +51,7 @@ export default async function TodayPage() {
         </div>
 
         <aside className="stack">
-          <section className="panel" aria-labelledby="approval-heading">
-            <h2 id="approval-heading">Waiting for your approval</h2>
-            <p className="muted">
-              Nothing is waiting. When automations arrive, anything that sends, books or deletes will show up here
-              first.
-            </p>
-          </section>
+          <ApprovalList key={mode} mode={mode} initial={proposals} />
           <section className="panel" aria-labelledby="start-heading">
             <h2 id="start-heading">Start something</h2>
             <p className="muted">

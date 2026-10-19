@@ -54,6 +54,12 @@ export interface PromptInput {
  * system message; retrieved web content is attached to the final user turn,
  * clearly delimited as untrusted data.
  */
+/**
+ * Changes when the system prompt or the prompt layout changes. Stored with
+ * each "what was sent" record, so a record can be read against the prompt it used.
+ */
+export const PROMPT_VERSION = "2026-10-20.1";
+
 export function buildPromptMessages(input: PromptInput): ChatMessage[] {
   const date = input.now.toISOString().slice(0, 10);
   const note = searchStatusNote(input.webSearch);

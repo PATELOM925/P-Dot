@@ -8,8 +8,10 @@ export async function proxy(request: NextRequest) {
   return updateSession(request);
 }
 
+// Static files, including the installable app's service worker, manifest and
+// offline page, need no session.
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|sw\\.js$|manifest\\.webmanifest$|offline\\.html$|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

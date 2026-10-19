@@ -30,6 +30,7 @@ export function ModeToggle({ mode }: { mode: Mode }) {
           type="button"
           className="mode-option"
           aria-pressed={mode === value}
+          data-mode={value}
           disabled={pending}
           onClick={() => select(value)}
         >

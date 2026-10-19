@@ -13,11 +13,13 @@ import type {
   SourceRef,
   WebSearchStatus,
 } from "@/types/api";
+import type { ContextRecordRepository } from "@/server/db/context-records";
 import type { ConversationRepository } from "@/server/db/conversations";
 import type { QuotaGate } from "@/server/db/quota";
 import type { SpendGuard } from "@/server/db/spend";
 import type { Logger } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
+import { isValidUsage } from "@/server/providers/nebius/pricing";
 import type { ModelProvider, TokenUsage } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import type { CircuitBreaker } from "./breaker";
@@ -31,7 +33,7 @@ import {
   type AttemptBudget,
   type RouteReport,
 } from "./executor";
-import { buildPromptMessages } from "./prompt";
+import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
 import { routeRequest, type RouteDecision } from "./router";
 import {
   budgetRefusal,
@@ -62,6 +64,11 @@ export interface AssistantDeps {
   log: Logger;
   /** Keeps work (the spend settle) running after the client disconnects. */
   waitUntil: (work: Promise<unknown>) => void;
+  /**
+   * Stores "what was sent" for each saved reply (decision 0009). Optional:
+   * without it, no record is written. A failed write never fails the reply.
+   */
+  contextRecords?: ContextRecordRepository;
 }
 
 /** A Nebius hold made before the stream starts and settled when it ends. */
@@ -334,8 +341,9 @@ async function* runChatTurn(
   }
 
   // 2. Inference over a bounded context window, on the routed tier.
+  const historyWindow = buildContextWindow(turn.history, HISTORY_CHAR_BUDGET);
   const messages = buildPromptMessages({
-    history: buildContextWindow(turn.history, HISTORY_CHAR_BUDGET),
+    history: historyWindow,
     webSearch,
     results,
     now: deps.now(),
@@ -468,6 +476,25 @@ async function* runChatTurn(
       retryable: true,
     };
     return;
+  }
+
+  if (deps.contextRecords) {
+    const validUsage = usage && isValidUsage(usage) ? usage : null;
+    const record = deps.contextRecords
+      .insertContextRecord(turn.userId, {
+        messageId: saved.id,
+        model: report.model,
+        historyMessageCount: historyWindow.length,
+        historyChars: historyWindow.reduce((sum, m) => sum + m.content.length, 0),
+        memoryIds: [],
+        documentChunkIds: [],
+        webSourceCount: webSearch === "used" ? results.length : 0,
+        promptVersion: PROMPT_VERSION,
+        inputTokens: validUsage?.promptTokens ?? null,
+        outputTokens: validUsage?.completionTokens ?? null,
+      })
+      .catch(() => deps.log("warn", "context_record_failed", logBase));
+    deps.waitUntil(record);
   }
 
   deps.log("info", "chat_completed", {
