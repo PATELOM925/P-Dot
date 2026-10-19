@@ -12,12 +12,12 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 - **"Think harder" applies to one message only.**
   - Problem: the switch stayed on until the user turned it off, so a forgotten switch kept using the most expensive model (Ultra).
   - Resolution: the switch goes back to "Auto" when the server accepts the message. Owner decision, 2026-10-19.
-  - PR: routing follow-ups (PR_FOLLOWUPS).
+  - PR: routing follow-ups ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4)).
 - **Decision 0007 (model routing) is accepted.** Web search turns stay on the standard tier (Nemotron 3 Super), because summarizing sources needs the better model. Owner decision, 2026-10-19.
 
 ### Added
-- **`docs/PROVIDER-RELIABILITY.md`.** Ten lessons from review findings and measurements, each with a rule and sources: retries, backup models, hedged requests, error labels, pricing, usage parsing, migrations, `waitUntil`, the circuit breaker and the deploy guard. There are also checklists for adding a model, an error rule or a migration. (PR_FOLLOWUPS)
-- **This changelog**, and a rule in `AGENTS.md` that every pull request updates it. (PR_FOLLOWUPS)
+- **`docs/PROVIDER-RELIABILITY.md`.** Ten lessons from review findings and measurements, each with a rule and sources: retries, backup models, hedged requests, error labels, pricing, usage parsing, migrations, `waitUntil`, the circuit breaker and the deploy guard. There are also checklists for adding a model, an error rule or a migration. ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4))
+- **This changelog**, and a rule in `AGENTS.md` that every pull request updates it. ([PR #4](https://github.com/PATELOM925/P-Dot/pull/4))
 
 ### Added (in review: [PR #3](https://github.com/PATELOM925/P-Dot/pull/3))
 - **Model routing for Nemotron on Nebius Token Factory.**
