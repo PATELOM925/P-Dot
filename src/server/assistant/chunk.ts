@@ -33,7 +33,8 @@ export function chunkText(text: string, options: ChunkOptions = {}): string[] {
   const size = options.size ?? DOCUMENT_CHUNK_CHARS;
   const overlap = options.overlap ?? DOCUMENT_CHUNK_OVERLAP_CHARS;
   const maxChunks = options.maxChunks ?? MAX_DOCUMENT_CHUNKS;
-  if (!Number.isInteger(size) || size < 1) throw new RangeError("Chunk size must be a whole number of at least 1.");
+  // At least 2, so a hard cut can step back over half of a character pair.
+  if (!Number.isInteger(size) || size < 2) throw new RangeError("Chunk size must be a whole number of at least 2.");
   if (!Number.isInteger(overlap) || overlap < 0 || overlap >= size) {
     throw new RangeError("Chunk overlap must be a whole number from 0 up to the chunk size.");
   }
@@ -68,7 +69,8 @@ function findCut(text: string, start: number, size: number, overlap: number): nu
     const cut = index + keep;
     if (cut >= earliest && cut <= hardEnd) return cut;
   }
-  return hardEnd;
+  // A hard cut must not split an emoji or other surrogate pair.
+  return isHighSurrogate(text.charCodeAt(hardEnd - 1)) ? hardEnd - 1 : hardEnd;
 }
 
 /**
@@ -78,7 +80,8 @@ function findCut(text: string, start: number, size: number, overlap: number): nu
  */
 function nextStart(text: string, start: number, cut: number, overlap: number): number {
   let next = Math.max(cut - overlap, start + 1);
-  if (next > 0 && !/\s/.test(text[next - 1]!)) {
+  if (isLowSurrogate(text.charCodeAt(next)) && isHighSurrogate(text.charCodeAt(next - 1))) next += 1;
+  if (!/\s/.test(text[next - 1]!)) {
     for (let i = next; i < cut; i++) {
       if (/\s/.test(text[i]!)) {
         next = i + 1;
@@ -87,4 +90,12 @@ function nextStart(text: string, start: number, cut: number, overlap: number): n
     }
   }
   return next;
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }

@@ -76,6 +76,46 @@ describe("chunkText", () => {
     expect(chunkText("x".repeat(25), { size: 10, overlap: 0 })).toEqual(["x".repeat(10), "x".repeat(10), "x".repeat(5)]);
   });
 
+  it("never splits an emoji, so every chunk is valid text", () => {
+    const text = "\u{1F600}".repeat(7);
+    const chunks = chunkText(text, { size: 5, overlap: 0 });
+    expect(chunks.join("")).toBe(text);
+    for (const chunk of chunks) expect(chunk).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+
+  it("splits text with no spaces at the size limit", () => {
+    const text = "汉".repeat(30);
+    expect(chunkText(text, { size: 10, overlap: 0 })).toEqual(["汉".repeat(10), "汉".repeat(10), "汉".repeat(10)]);
+  });
+
+  it("keeps every non-space character, in order, for many mixed texts", () => {
+    // A fixed pseudo-random generator, so a failure can be repeated.
+    let seed = 12345;
+    const next = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    const pieces = ["a", "bb", " ", "  ", "\n", "\n\n", ". ", "汉", "\u{1F600}", "x".repeat(7), "."];
+    for (let run = 0; run < 200; run++) {
+      const text = Array.from({ length: 1 + next(400) }, () => pieces[next(pieces.length)]!).join("");
+      const size = 2 + next(60);
+      const overlap = next(size);
+      const chunks = chunkText(text, { size, overlap, maxChunks: 100_000 });
+      for (const chunk of chunks) {
+        expect(chunk.length).toBeGreaterThan(0);
+        expect(chunk.length).toBeLessThanOrEqual(size);
+        expect(chunk).toBe(chunk.trim());
+        expect(chunk).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+      }
+      const squash = (s: string) => s.replace(/\s/g, "");
+      const source = squash(text);
+      if (chunks.length > 0) expect(source.endsWith(squash(chunks[chunks.length - 1]!))).toBe(true);
+      // With no overlap, nothing is lost or repeated: the chunks rebuild the text.
+      const exact = chunkText(text, { size, overlap: 0, maxChunks: 100_000 });
+      expect(squash(exact.join(""))).toBe(source);
+    }
+  });
+
   it("rejects an overlap that is not smaller than the size", () => {
     expect(() => chunkText("abc", { size: 10, overlap: 10 })).toThrow(RangeError);
     expect(() => chunkText("abc", { size: 0 })).toThrow(RangeError);
