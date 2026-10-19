@@ -87,6 +87,60 @@ describe.skipIf(!configured)("row-level security (live Supabase)", () => {
     expect(direct.error).not.toBeNull();
   });
 
+  // Uses tiny amounts and gives them back, so the test project's counters barely move.
+  describe("global spend guard", () => {
+    const caps = { p_day_cap: 1_000_000, p_period_cap: 20_000_000, p_user_day_cap: 250_000 };
+    const reserve = (client: SupabaseClient, amount: number) =>
+      client.rpc("reserve_provider_spend", { p_provider: "nebius", p_amount: amount, ...caps });
+
+    it("does not let a user read or write the spend tables directly", async () => {
+      for (const [table, change] of [
+        ["spend_counters", { used: 0 }],
+        ["spend_reservations", { charged: 0 }],
+      ] as const) {
+        const read = await a.client.from(table).select("*").limit(1);
+        expect(read.error).not.toBeNull();
+        const update = await a.client.from(table).update(change).neq("provider", "");
+        expect(update.error).not.toBeNull();
+        const remove = await a.client.from(table).delete().neq("provider", "");
+        expect(remove.error).not.toBeNull();
+      }
+      const insert = await a.client
+        .from("spend_counters")
+        .insert({ provider: "nebius", period_kind: "day", period_start: "2001-01-01", used: 0 });
+      expect(insert.error).not.toBeNull();
+    });
+
+    it("does not let a user lower the totals through the functions", async () => {
+      const held = await reserve(a.client, 3);
+      expect(held.error).toBeNull();
+      expect(held.data?.[0]?.allowed).toBe(true);
+      const id = held.data?.[0]?.reservation_id as string;
+
+      // Negative and above-hold amounts are rejected.
+      expect((await a.client.rpc("settle_provider_spend", { p_reservation: id, p_amount: -1_000_000 })).error).not.toBeNull();
+      expect((await a.client.rpc("settle_provider_spend", { p_reservation: id, p_amount: 4 })).error).not.toBeNull();
+      // Another user cannot settle it.
+      expect((await b.client.rpc("settle_provider_spend", { p_reservation: id, p_amount: 0 })).data).toBe(false);
+      // The owner can settle it once, and only down to 0 of its own hold.
+      expect((await a.client.rpc("settle_provider_spend", { p_reservation: id, p_amount: 0 })).data).toBe(true);
+      expect((await a.client.rpc("settle_provider_spend", { p_reservation: id, p_amount: 0 })).data).toBe(false);
+    });
+
+    it("rejects out-of-bound caps and amounts", async () => {
+      expect((await reserve(a.client, 0)).error).not.toBeNull();
+      expect((await reserve(a.client, 250_001)).error).not.toBeNull();
+      const bigCap = await a.client.rpc("reserve_provider_spend", {
+        p_provider: "nebius",
+        p_amount: 1,
+        p_day_cap: 1_000_000,
+        p_period_cap: 20_000_000,
+        p_user_day_cap: 500_001,
+      });
+      expect(bigCap.error).not.toBeNull();
+    });
+  });
+
   it("lets a user rename only their own conversation, and change nothing else", async () => {
     const repoA = createConversationRepository(a.client);
     const renamed = await repoA.renameConversation(a.userId, conversationId, "Renamed by owner");

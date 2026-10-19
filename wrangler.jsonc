@@ -22,7 +22,15 @@
   // Non-secret runtime settings. Secrets (NEBIUS_API_KEY, TAVILY_API_KEY)
   // are set with `npx wrangler secret put` and never stored here.
   "vars": {
-    "SITE_URL": "https://pdot.iampatelom.com"
+    "SITE_URL": "https://pdot.iampatelom.com",
+    "NEBIUS_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+    // Global spend caps for all users together. See docs/decisions/0006-global-spend-guard.md.
+    "NEBIUS_DAILY_CAP_USD": "1.00",
+    "NEBIUS_TOTAL_CAP_USD": "20.00",
+    "NEBIUS_USER_DAILY_CAP_USD": "0.25",
+    "TAVILY_DAILY_CREDITS": "40",
+    "TAVILY_MONTHLY_CREDITS": "800",
+    "TAVILY_USER_DAILY_CREDITS": "10"
   },
   // Keep variables set in the dashboard when a deploy runs. Prefer adding settings here,
   // in both vars and previews.vars (a unit test checks that the names match).
@@ -32,7 +40,15 @@
   // (Preview base config), not the production secrets.
   "previews": {
     "vars": {
-      "SITE_URL": "https://pdot.iampatelom.com"
+      "SITE_URL": "https://pdot.iampatelom.com",
+    "NEBIUS_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+    // Global spend caps for all users together. See docs/decisions/0006-global-spend-guard.md.
+    "NEBIUS_DAILY_CAP_USD": "1.00",
+    "NEBIUS_TOTAL_CAP_USD": "20.00",
+    "NEBIUS_USER_DAILY_CAP_USD": "0.25",
+    "TAVILY_DAILY_CREDITS": "40",
+    "TAVILY_MONTHLY_CREDITS": "800",
+    "TAVILY_USER_DAILY_CREDITS": "10"
     }
   },
   "observability": {
