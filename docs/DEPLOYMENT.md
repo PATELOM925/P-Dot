@@ -13,7 +13,7 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 
 - Hosting: one Cloudflare Worker named `pdot`, built with the OpenNext adapter. Decision: [0004](decisions/0004-cloudflare-workers-deployment.md).
 - Database and accounts: one hosted Supabase project. Production and previews use the **same** database.
-- The `workers.dev` address for production is off (`workers_dev: false`). Production is served only on the custom domain.
+- The `workers.dev` address for production is off (`workers_dev: false`). Production is served only on the custom domain. `preview_urls: true` turns on `workers.dev` links for Previews and for each uploaded version.
 
 ## The normal flow
 
@@ -62,15 +62,20 @@ Rules:
 
 - Never commit a secret. Never put a secret in `wrangler.jsonc`, in a build variable, or in a `NEXT_PUBLIC_` variable.
 - Never add the Supabase secret key (service role key), a database password or a connection string to the Worker.
-- **The OpenNext build copies every value from `.env`, `.env.local` and `.env.production` into the Worker bundle** (`.open-next/cloudflare/next-env.mjs`). `npm run deploy` and `npm run upload` run `scripts/check-worker-env.mjs` after the build. It stops the deploy if a secret-like variable (for example `NEBIUS_API_KEY`) has a value in that file. Workers Builds has no `.env` file, so this problem does not occur there.
-- Previews use their own secrets (`npx wrangler preview secret`) and the preview base config in the dashboard. Until the owner adds preview secrets, chat in a preview says "This service is not configured yet."
+- **The OpenNext build copies every value from `.env`, `.env.local`, `.env.production` and `.env.production.local` (and the `development` versions) into the Worker bundle** (`.open-next/cloudflare/next-env.mjs`). `npm run deploy` and `npm run upload` run `scripts/check-worker-env.mjs` after the build. It stops the deploy if a secret-like variable (for example `NEBIUS_API_KEY`, or any `NEXT_PUBLIC_` name other than the two Supabase values) has a value in that file. The rules are in `scripts/worker-env-rules.mjs`. Workers Builds has no `.env` file, so this problem does not occur there.
+- Previews do not get the production secrets. They use the `previews` block in `wrangler.jsonc` for variables, and the Preview base config for secrets (`npx wrangler preview base-config secret put NAME`, owner only). Until the owner adds them, chat in a preview says "This service is not configured yet."
 
 ## Previews: what to know
 
-- A preview link works like the live site, but it is a different address on `workers.dev`.
-- A preview uses the **production Supabase database**. If you sign up or chat in a preview, the data is real. Use a test account. Never run a migration from a branch.
+- Each pull request branch gets a Preview at `<branch>-pdot.<account subdomain>.workers.dev`. Later pushes to the branch update the same link. Cloudflare posts it on the pull request.
+- `wrangler preview` needs the `previews` block in `wrangler.jsonc` (it can be empty). Keep it there.
+- The `preview_urls: true` setting takes effect at the first production deploy after it is merged. Previews have no link before then.
+- A Preview uses the **production Supabase database**. If you sign up or chat in a Preview, the data is real. Use a test account. Never run a migration from a branch.
 - Email links (confirm sign-up, reset password) always go to `SITE_URL`, which is the production address.
-- `wrangler preview` is in open beta. Check that the first pull request after setup gets a working preview link. If it does not, record what happened in this file.
+- The `WORKER_SELF_REFERENCE` service binding in a Preview calls the **production** Worker, not the Preview. OpenNext uses it only for cache work, and this app has no cache, so it has no effect today. Do not add a cache without a fix for this.
+- Version links (`<version>-pdot.<account subdomain>.workers.dev`) also open each uploaded production version. They need the same sign-in as the live site.
+- Workers Previews are in open beta. The Cloudflare documentation does not give a price for them. The owner checks the Workers plan page before turning on branch builds. Check that the first pull request after setup gets a working Preview link. If it does not, record what happened in this file.
+- Preview logs do not appear in `wrangler tail`.
 - To test the Workers runtime without Cloudflare access, run `npm run preview` on your computer. It uses your `.env.local` and your local or hosted Supabase. Stop `npm run dev` first.
 
 ## Database changes
