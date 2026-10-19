@@ -73,8 +73,20 @@ const messageRow = z.object({
 });
 
 const CONVERSATION_COLUMNS = "id, title, mode, updated_at";
+const LEGACY_MESSAGE_COLUMNS = "id, role, content, web_search, sources, created_at";
 const MESSAGE_COLUMNS =
   "id, role, content, web_search, sources, model, model_tier, route_reason, model_fallback, created_at";
+
+/**
+ * True when a database error says that a model routing column does not exist
+ * yet: Postgres 42703 ("column messages.model does not exist") or PostgREST
+ * PGRST204 ("Could not find the 'model' column ..."). This happens when new
+ * code runs before the additive routing migration. Other errors return false.
+ */
+export function isMissingRouteColumn(error: { code?: string; message?: string } | null): boolean {
+  if (!error || (error.code !== "42703" && error.code !== "PGRST204")) return false;
+  return /\b(model|model_tier|route_reason|model_fallback)\b/.test(error.message ?? "");
+}
 
 function toConversation(row: unknown): ConversationSummary {
   const parsed = conversationRow.parse(row);
@@ -112,6 +124,11 @@ function toMessage(row: unknown): MessageDTO {
 }
 
 export function createConversationRepository(supabase: SupabaseClient): ConversationRepository {
+  // False after the database said the routing columns do not exist yet. Then
+  // messages are read and written without them, and `route` is null. Each
+  // request makes a new repository, so this ends when the migration is applied.
+  let routeColumns = true;
+
   return {
     async getConversation(userId, conversationId) {
       const { data, error } = await supabase
@@ -168,40 +185,55 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
     },
 
     async listRecentMessages(userId, conversationId, limit) {
-      const { data, error } = await supabase
-        .from("messages")
-        .select(MESSAGE_COLUMNS)
-        .eq("conversation_id", conversationId)
-        .eq("user_id", userId)
-        .order("created_at", { ascending: false })
-        .limit(limit);
-      if (error) throw new RepositoryError("listRecentMessages");
-      return (data ?? []).map(toMessage).reverse();
+      const query = (columns: string) =>
+        supabase
+          .from("messages")
+          .select(columns)
+          .eq("conversation_id", conversationId)
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false })
+          .limit(limit);
+      let result = await query(routeColumns ? MESSAGE_COLUMNS : LEGACY_MESSAGE_COLUMNS);
+      if (result.error && routeColumns && isMissingRouteColumn(result.error)) {
+        routeColumns = false;
+        result = await query(LEGACY_MESSAGE_COLUMNS);
+      }
+      if (result.error) throw new RepositoryError("listRecentMessages");
+      return ((result.data ?? []) as unknown[]).map(toMessage).reverse();
     },
 
     async insertMessage(userId, message) {
-      const { data, error } = await supabase
-        .from("messages")
-        .insert({
-          conversation_id: message.conversationId,
-          user_id: userId,
-          role: message.role,
-          content: message.content,
-          web_search: message.webSearch ?? "off",
-          sources: message.sources ?? [],
-          ...(message.route
-            ? {
-                model: message.route.model,
-                model_tier: message.route.tier,
-                route_reason: message.route.reason,
-                model_fallback: message.route.fallback,
-              }
-            : {}),
-        })
-        .select(MESSAGE_COLUMNS)
-        .single();
-      if (error || !data) throw new RepositoryError("insertMessage");
-      return toMessage(data);
+      const base = {
+        conversation_id: message.conversationId,
+        user_id: userId,
+        role: message.role,
+        content: message.content,
+        web_search: message.webSearch ?? "off",
+        sources: message.sources ?? [],
+      };
+      const route = message.route
+        ? {
+            model: message.route.model,
+            model_tier: message.route.tier,
+            route_reason: message.route.reason,
+            model_fallback: message.route.fallback,
+          }
+        : {};
+      const insert = (withRoute: boolean) =>
+        supabase
+          .from("messages")
+          .insert(withRoute ? { ...base, ...route } : base)
+          .select(withRoute ? MESSAGE_COLUMNS : LEGACY_MESSAGE_COLUMNS)
+          .single();
+      // A missing column fails the statement before any row is written, so
+      // the second insert cannot make a duplicate.
+      let result = await insert(routeColumns);
+      if (result.error && routeColumns && isMissingRouteColumn(result.error)) {
+        routeColumns = false;
+        result = await insert(false);
+      }
+      if (result.error || !result.data) throw new RepositoryError("insertMessage");
+      return toMessage(result.data);
     },
   };
 }

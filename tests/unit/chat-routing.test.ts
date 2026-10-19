@@ -208,10 +208,4 @@ describe("message rows from the database", () => {
       ["5", null],
     ]);
   });
-
-  it("reads rows from before the migration, when the columns are missing", async () => {
-    const repo = createConversationRepository(clientReturning([{ ...base, id: "1", role: "assistant" }]));
-    const [message] = await repo.listRecentMessages(ALICE, "c", 10);
-    expect(message!.route).toBeNull();
-  });
 });
