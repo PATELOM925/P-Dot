@@ -6,7 +6,7 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 
 | Where | Address | How it updates |
 | --- | --- | --- |
-| Production | https://pdot.iampatelom.com | A merge to `main` deploys it (after the owner connects Workers Builds, see [One-time setup](#one-time-setup-owner-only)) |
+| Production | https://pdot.iampatelom.com | A merge to `main` deploys it through Workers Builds (connected on 2026-10-19) |
 | Pull request preview | A `*.workers.dev` link that Cloudflare posts on the pull request | Each push to a pull request branch |
 | Your computer, Node.js | http://localhost:3000 | `npm run dev` |
 | Your computer, Workers runtime | The address that `npm run preview` prints | `npm run preview` |
@@ -30,7 +30,18 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 
    Expected: `{"status":"ok","configured":{"auth":true,...}}`. The health check shows which settings exist. It does not call Nebius or Tavily.
 
-Until the owner connects Workers Builds, a merge to `main` does **not** deploy. Only the owner can deploy, with `npm run deploy` from a computer that is logged in to Cloudflare.
+Workers Builds was connected on 2026-10-19. Each push to `main` starts one production build. Each push to another branch starts one preview build. If Workers Builds is down, only the owner can deploy, with [a manual deploy](#manual-deploy-owner-only-fallback).
+
+### Merging several pull requests
+
+When two or more pull requests, or a stack of pull requests, are ready at about the same time, merge them all first and deploy once. Each build costs build minutes and CI time, and a build of an in-between state is replaced minutes later.
+
+- Merge the whole stack in one sitting, bottom first, with no pause between merges. Change the base of the next pull request to `main` right after each merge.
+- Only the build of the last merge matters. Cancel any older build that is still running (Workers & Pages → `pdot` → Deployments → View build history → Cancel build).
+- Do not push small follow-up fixes to `main` one by one. Put them in one pull request.
+- Do not run a manual deploy after each merge. If the builds are broken, fix the build first, then run one deploy for the final `main`.
+- Each merge still applies its own migration (Supabase GitHub integration), so every migration must be safe on its own.
+- Check the live site once, after the last build.
 
 ## What runs in Workers Builds
 
@@ -86,7 +97,8 @@ Migrations are in `supabase/migrations/`. The hosted Supabase project has the Gi
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
 
-1. **Connect Workers Builds.** Dashboard → Workers & Pages → `pdot` → Settings → Build → Connect. Choose GitHub, install the Cloudflare app on `PATELOM925/P-Dot` only, then enter the values from [What runs in Workers Builds](#what-runs-in-workers-builds). The Free plan includes 3,000 build minutes each month.
+1. **Connect Workers Builds.** Done on 2026-10-19. Dashboard → Workers & Pages → `pdot` → Settings → Build → Connect. Choose GitHub, install the Cloudflare app on `PATELOM925/P-Dot` only, then enter the values from [What runs in Workers Builds](#what-runs-in-workers-builds) on **both** tabs, Production and Previews Base. The Free plan includes 3,000 build minutes each month.
+   - **Known failure:** if the command fields stay empty, Cloudflare uses `npm run build` and `npx wrangler deploy`. The plain Next.js build does not make `.open-next/worker.js`, so the deploy fails after about 45 seconds. This happened on the first three builds on 2026-10-19. The fix was to enter the commands and the two build variables on both tabs.
 2. **Set provider secrets** when the Nebius and Tavily accounts exist:
 
    ```bash
@@ -94,7 +106,7 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    npx wrangler secret put TAVILY_API_KEY
    ```
 
-   Set a spending limit on both provider accounts first.
+   Set a spending limit on both provider accounts first. Production secrets were set on 2026-10-19. Provider spending limits are not confirmed yet.
 3. **Models and spend caps.** `wrangler.jsonc` sets the model chain for each tier (`NEBIUS_FAST_MODELS` and the others) and the global spend caps in both `vars` and `previews.vars`. To change one, open a pull request. Every model in a chain must have a price in `src/server/providers/nebius/pricing.ts`. If one does not, chat says "This service is not configured yet." and no provider is called. Add the price in the same pull request. See [decision 0006](decisions/0006-global-spend-guard.md) and [decision 0007](decisions/0007-model-routing.md). If `NEBIUS_MODEL` was set in the dashboard, you can delete it there: the code no longer reads it.
 4. **Preview secrets (optional).** To let Previews call Nebius and Tavily, set them in the Preview base config. Use a separate key with a low spending limit if the provider allows it:
 
@@ -104,8 +116,8 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    ```
 
    Changes to base secrets apply only to Previews created after the change.
-5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Use the email templates from the README "Setup" section.
-6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP.
+5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Done on 2026-10-19. The free plan does not allow email template changes without custom SMTP, so the templates from the README "Setup" section are not applied yet.
+6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP. On 2026-10-19 "Confirm email" was turned off for the hackathon, so sign-up works without an email. Password reset emails still reach only team members.
 
 ## Manual deploy (owner only, fallback)
 
