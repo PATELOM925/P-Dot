@@ -16,7 +16,7 @@ const idSchema = z.uuid();
 
 const memoryNotFound = (requestId: string) => errorResponse(404, "not_found", "Memory not found.", requestId);
 
-/** PATCH /api/memories/:id — edit the text or mode, or approve a proposed memory. */
+/** PATCH /api/memories/:id: edit the text or mode, or approve a proposed memory. */
 export async function PATCH(request: Request, context: Context): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "memories.update", sameOrigin: true }, async ({ auth, requestId }) => {
     const id = idSchema.safeParse((await context.params).id);
@@ -46,7 +46,7 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
   });
 }
 
-/** DELETE /api/memories/:id — remove a memory and its vector. */
+/** DELETE /api/memories/:id: remove a memory and its vector. */
 export async function DELETE(request: Request, context: Context): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "memories.delete", sameOrigin: true }, async ({ auth, requestId }) => {
     const id = idSchema.safeParse((await context.params).id);

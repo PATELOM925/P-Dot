@@ -11,7 +11,7 @@ import type { MemoryStatus } from "@/types/api";
 
 const statusFilterSchema = z.enum(["proposed", "active"]);
 
-/** GET /api/memories?mode=personal|work&status=proposed|active — the user's memories. */
+/** GET /api/memories?mode=personal|work&status=proposed|active: the user's memories. */
 export async function GET(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "memories.list" }, async ({ auth, requestId }) => {
     const params = new URL(request.url).searchParams;
@@ -40,7 +40,7 @@ export async function GET(request: Request): Promise<Response> {
   });
 }
 
-/** POST /api/memories — save a memory the user typed. Body: { mode, content }. */
+/** POST /api/memories: save a memory the user typed. Body: { mode, content }. */
 export async function POST(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "memories.create", sameOrigin: true }, async ({ auth, requestId }) => {
     const body = await readJsonBody(request, MAX_CHAT_BODY_BYTES);
