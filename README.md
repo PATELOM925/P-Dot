@@ -224,7 +224,7 @@ Short version:
 - Production: https://pdot.iampatelom.com, one Cloudflare Worker named `pdot` ([`wrangler.jsonc`](wrangler.jsonc), [`open-next.config.ts`](open-next.config.ts), [decision 0004](docs/decisions/0004-cloudflare-workers-deployment.md)).
 - Every change goes through a pull request into `main` with an adversarial review. When the owner merges, Cloudflare Workers Builds deploys `main`. Each pull request branch gets a preview link. (Workers Builds must first be connected by the owner; until then only the owner deploys, with `npm run deploy`.)
 - `npm run preview` runs the built Worker on your computer in the Workers runtime, with no Cloudflare account. Stop `npm run dev` first.
-- `NEXT_PUBLIC_*` values are put into the bundle at build time. Provider keys are Worker secrets. The OpenNext build copies `.env.local` values into the Worker bundle, so `npm run deploy` and `npm run upload` stop if a secret has a value there (`scripts/check-worker-env.mjs`).
+- `NEXT_PUBLIC_*` values are put into the bundle at build time. Provider keys are Worker secrets. The OpenNext build copies `.env.local` values into the Worker bundle, so `npm run deploy` and `npm run upload` stop if a name that is not on the allow list (for example a key or password) has a value there (`scripts/check-worker-env.mjs`).
 - Build and deploy from macOS, Linux, WSL or Workers Builds. Native Windows is not supported by OpenNext.
 
 ## Verification status

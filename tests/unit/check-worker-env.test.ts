@@ -3,38 +3,38 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findBakedSecrets, isSecretName } from "../../scripts/worker-env-rules.mjs";
+import { findBakedSecrets } from "../../scripts/worker-env-rules.mjs";
 
 const SCRIPT = resolve("scripts/check-worker-env.mjs");
 const FAKE = "fake-secret-value-123";
 
 describe("findBakedSecrets", () => {
-  it("flags secret-like names that have a value", () => {
+  it("flags every name with a value that is not on the allow list", () => {
     const found = findBakedSecrets({
       production: {
         NEBIUS_API_KEY: "abc",
         TAVILY_API_KEY: "def",
-        SUPABASE_DB_PASSWORD: "x",
-        GITHUB_TOKEN: "y",
-        DATABASE_URL: "z",
         SUPABASE_SERVICE_ROLE: "s",
         NEXT_PUBLIC_NEBIUS_API_KEY: "p",
+        PGPASSWORD: "pg",
+        POSTGRES_URL: "postgres://u:p@h/db",
+        SOME_NEW_SETTING: "x",
       },
       development: { NEBIUS_API_KEY: "abc" },
     });
     expect(found).toEqual([
       "production.NEBIUS_API_KEY",
       "production.TAVILY_API_KEY",
-      "production.SUPABASE_DB_PASSWORD",
-      "production.GITHUB_TOKEN",
-      "production.DATABASE_URL",
       "production.SUPABASE_SERVICE_ROLE",
       "production.NEXT_PUBLIC_NEBIUS_API_KEY",
+      "production.PGPASSWORD",
+      "production.POSTGRES_URL",
+      "production.SOME_NEW_SETTING",
       "development.NEBIUS_API_KEY",
     ]);
   });
 
-  it("allows empty secrets, the two public Supabase values and plain settings", () => {
+  it("allows empty values and the allowed settings", () => {
     const found = findBakedSecrets({
       production: {
         NEBIUS_API_KEY: "",
@@ -42,19 +42,15 @@ describe("findBakedSecrets", () => {
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "public",
         NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
         SITE_URL: "https://pdot.iampatelom.com",
-        CHAT_WINDOW_SECONDS: "3600",
-        NEBIUS_MAX_OUTPUT_TOKENS: "1024",
         NEBIUS_BASE_URL: "https://api.tokenfactory.nebius.com/v1",
-        KEYBOARD_LAYOUT: "us",
+        NEBIUS_MODEL: "nvidia/example",
+        NEBIUS_MAX_OUTPUT_TOKENS: "1024",
+        CHAT_REQUESTS_PER_WINDOW: "30",
+        CHAT_WINDOW_SECONDS: "3600",
       },
       test: {},
     });
     expect(found).toEqual([]);
-  });
-
-  it("treats only the two known public names as public", () => {
-    expect(isSecretName("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")).toBe(false);
-    expect(isSecretName("NEXT_PUBLIC_OTHER_KEY")).toBe(true);
   });
 });
 
@@ -80,6 +76,15 @@ describe("check-worker-env command", () => {
     const result = run(project(withSecret));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("production.NEBIUS_API_KEY");
+    expect(result.stdout + result.stderr).not.toContain(FAKE);
+  });
+
+  it("fails on database credentials such as PGPASSWORD and POSTGRES_URL", () => {
+    const env = `export const production = {"PGPASSWORD":"${FAKE}","POSTGRES_URL":"postgres://u:${FAKE}@h/db"};\nexport const development = {};\nexport const test = {};\n`;
+    const result = run(project(env));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("production.PGPASSWORD");
+    expect(result.stderr).toContain("production.POSTGRES_URL");
     expect(result.stdout + result.stderr).not.toContain(FAKE);
   });
 
