@@ -129,5 +129,5 @@ Use this only when Workers Builds is not available. You need macOS, Linux or WSL
 
 - Next.js is pinned to 16.3.8 and `@opennextjs/cloudflare` to 1.20.11. Next 16.4.1 broke every page in the Workers runtime. Test a preview before you upgrade either one.
 - `src/proxy.ts` uses Node.js middleware, which OpenNext supports only as experimental. Watch the session redirects after each deploy.
-- The Worker must stay under 3 MiB compressed on the Workers Free plan. The first deploy (2026-10-19) was 2,344 KiB compressed (11,728 KiB before compression).
+- Worker size limit: 64 MiB **uncompressed** on the Free and Paid plans. There is no compressed limit; the gzip number from Wrangler is for reference only. Check the `Total Upload` value from `npx wrangler deploy --dry-run --outdir <folder>`. The first deploy (2026-10-19) was 11,728 KiB uncompressed (2,344 KiB gzip). Source: https://developers.cloudflare.com/workers/platform/limits/#worker-size
 - Logs: `npx wrangler tail pdot --format json` (owner account). Preview versions do not appear in `wrangler tail`.
