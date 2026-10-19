@@ -12,6 +12,12 @@ export const ALLOWED_NAMES = new Set([
   "NEBIUS_MAX_OUTPUT_TOKENS",
   "CHAT_REQUESTS_PER_WINDOW",
   "CHAT_WINDOW_SECONDS",
+  "NEBIUS_DAILY_CAP_USD",
+  "NEBIUS_TOTAL_CAP_USD",
+  "NEBIUS_USER_DAILY_CAP_USD",
+  "TAVILY_DAILY_CREDITS",
+  "TAVILY_MONTHLY_CREDITS",
+  "TAVILY_USER_DAILY_CREDITS",
 ]);
 
 /** Returns "mode.NAME" for each variable that has a value but is not allowed. Names only, never values. */

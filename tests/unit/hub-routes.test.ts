@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuthContext } from "@/server/auth/session";
 import { readChatStream } from "@/features/chat/stream";
-import { MemoryRepository, MemoryTasks, fakeDeps } from "../support/fakes";
+import { MemoryRepository, MemoryTasks, TEST_SPEND_CAPS, fakeDeps } from "../support/fakes";
 import { collect } from "../support/streams";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
@@ -63,6 +63,7 @@ beforeEach(() => {
     nebius: { apiKey: "k", baseUrl: "https://nebius.test/v1", model: "m", maxOutputTokens: 256 },
     tavily: null,
     quota: { requestsPerWindow: 30, windowSeconds: 3600 },
+    spend: TEST_SPEND_CAPS,
   });
   vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo }).deps);
 });

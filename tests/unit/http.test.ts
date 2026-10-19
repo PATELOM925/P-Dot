@@ -87,6 +87,59 @@ describe("getAssistantConfig", () => {
     });
     expect(config.tavily).toBeNull();
     expect(config.quota).toEqual({ requestsPerWindow: 30, windowSeconds: 3600 });
+    expect(config.spend).toEqual({
+      nebius: { day: 1_000_000, period: 20_000_000, userDay: 250_000 },
+      tavily: { day: 40, period: 800, userDay: 10 },
+    });
+  });
+
+  it("reads spend caps in dollars and credits", () => {
+    const config = getAssistantConfig({
+      NEBIUS_API_KEY: "k",
+      NEBIUS_MODEL: "m",
+      NEBIUS_DAILY_CAP_USD: "2.5",
+      NEBIUS_TOTAL_CAP_USD: "15",
+      NEBIUS_USER_DAILY_CAP_USD: "0.1",
+      TAVILY_DAILY_CREDITS: "20",
+      TAVILY_MONTHLY_CREDITS: "500",
+      TAVILY_USER_DAILY_CREDITS: "5",
+      NODE_ENV: "test",
+    });
+    expect(config.spend).toEqual({
+      nebius: { day: 2_500_000, period: 15_000_000, userDay: 100_000 },
+      tavily: { day: 20, period: 500, userDay: 5 },
+    });
+  });
+
+  it("never lets the per-user cap pass the cap for all users", () => {
+    const config = getAssistantConfig({
+      NEBIUS_API_KEY: "k",
+      NEBIUS_MODEL: "m",
+      NEBIUS_DAILY_CAP_USD: "0.1",
+      TAVILY_DAILY_CREDITS: "3",
+      NODE_ENV: "test",
+    });
+    expect(config.spend.nebius).toMatchObject({ day: 100_000, userDay: 100_000 });
+    expect(config.spend.tavily).toMatchObject({ day: 3, userDay: 3 });
+  });
+
+  it.each([
+    ["NEBIUS_DAILY_CAP_USD", "0"],
+    ["NEBIUS_DAILY_CAP_USD", "101"],
+    ["NEBIUS_TOTAL_CAP_USD", "-1"],
+    ["NEBIUS_USER_DAILY_CAP_USD", "0.6"],
+    ["TAVILY_DAILY_CREDITS", "1.5"],
+    ["TAVILY_MONTHLY_CREDITS", "0"],
+    ["TAVILY_USER_DAILY_CREDITS", "21"],
+    ["NEBIUS_TOTAL_CAP_USD", "abc"],
+  ])("rejects %s=%s and names only the variable", (name, value) => {
+    try {
+      getAssistantConfig({ NEBIUS_API_KEY: "k", NEBIUS_MODEL: "m", [name]: value, NODE_ENV: "test" });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).missing).toEqual([name]);
+    }
   });
 
   it("rejects out-of-range limits", () => {

@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { getAssistantConfig } from "@/server/config";
+import { priceForModel } from "@/server/providers/nebius/pricing";
+import { ALLOWED_NAMES } from "../../scripts/worker-env-rules.mjs";
 
 // Removes // and /* */ comments outside strings, so wrangler.jsonc can be read with JSON.parse.
 function stripJsonComments(text: string): string {
@@ -37,6 +40,22 @@ describe("wrangler.jsonc", () => {
   // makes Previews behave differently from production (for example no NEBIUS_MODEL).
   it("gives Previews the same variable names as production", () => {
     expect(Object.keys(config.previews?.vars ?? {}).sort()).toEqual(Object.keys(config.vars ?? {}).sort());
+  });
+
+  it("puts every runtime variable on the Worker env allow list", () => {
+    for (const name of Object.keys(config.vars ?? {})) expect(ALLOWED_NAMES.has(name), name).toBe(true);
+  });
+
+  it("uses a model with a known price and spend caps that the config accepts", () => {
+    const model = config.vars?.NEBIUS_MODEL ?? "";
+    expect(priceForModel(model).known).toBe(true);
+    for (const vars of [config.vars, config.previews?.vars]) {
+      const parsed = getAssistantConfig({ ...vars, NEBIUS_API_KEY: "k", NODE_ENV: "test" });
+      expect(parsed.spend).toEqual({
+        nebius: { day: 1_000_000, period: 20_000_000, userDay: 250_000 },
+        tavily: { day: 40, period: 800, userDay: 10 },
+      });
+    }
   });
 
   it("keeps the production workers.dev address off", () => {

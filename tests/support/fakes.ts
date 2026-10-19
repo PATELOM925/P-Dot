@@ -1,5 +1,6 @@
 import type { ConversationRepository, NewMessage } from "@/server/db/conversations";
 import type { QuotaGate } from "@/server/db/quota";
+import type { SpendCaps, SpendProvider } from "@/server/db/spend";
 import type { AssistantDeps } from "@/server/assistant/service";
 import type { ChatMessage, CompletionChunk } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
@@ -144,6 +145,12 @@ export class MemoryTasks implements TaskRepository {
     return this.tasks.length < before;
   }
 }
+
+/** The default caps from config, in micro-dollars (Nebius) and credits (Tavily). */
+export const TEST_SPEND_CAPS: Record<SpendProvider, SpendCaps> = {
+  nebius: { day: 1_000_000, period: 20_000_000, userDay: 250_000 },
+  tavily: { day: 40, period: 800, userDay: 10 },
+};
 
 export class FakeQuota implements QuotaGate {
   calls = 0;
