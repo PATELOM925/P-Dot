@@ -5,6 +5,7 @@ import type { AuthContext } from "@/server/auth/session";
 import { readChatStream } from "@/features/chat/stream";
 import { FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps, testRouting } from "../support/fakes";
 import { collect } from "../support/streams";
+import { WriteFaults, describeCase, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -164,6 +165,105 @@ describe("POST /api/chat", () => {
     const response = await chatRoute.POST(chatRequest({ action: "send", message: "hi", webSearch: false }));
     expect(response.status).toBe(500);
     expect(repo.messages).toHaveLength(0);
+  });
+});
+
+describe("POST /api/chat when one write fails", () => {
+  const MESSAGE = "Plan my week";
+
+  /**
+   * Cases that leave a duplicate today (see the it.fails tests below). The sweep
+   * still checks that they leave no stuck row and answer with an error.
+   */
+  const KNOWN_DUPLICATES = new Set([
+    "new:refused:MemoryRepository.insertMessage:user",
+    "new:lost:MemoryRepository.createConversation",
+    "new:lost:MemoryRepository.insertMessage:user",
+    "existing:lost:MemoryRepository.insertMessage:user",
+  ]);
+
+  async function chatScenario(
+    variant: "new" | "existing",
+    faults: WriteFaults,
+    sweepCase: SweepCase | null,
+    checkDuplicates = !KNOWN_DUPLICATES.has(`${variant}:${sweepCase?.fault}:${sweepCase?.label}`),
+  ) {
+    const at = `${variant} conversation, ${describeCase(sweepCase)}`;
+    repo = new MemoryRepository();
+    const spend = new FakeSpend();
+    const quota = new FakeQuota();
+    const existing = variant === "existing" ? await repo.createConversation(ALICE, "Earlier", "personal") : null;
+    faults.wrap(repo, ["createConversation", "insertMessage"], {
+      detail: (method, args) => (method === "insertMessage" ? String((args[1] as { role: string }).role) : ""),
+    });
+    faults.wrap(spend, ["reserve", "settle"], { detail: (_m, args) => String(args[0]).replace(/^res-\d+$/, "hold") });
+    faults.wrap(quota, ["consume"]);
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo, spend, quota }).deps);
+    signInAs(ALICE);
+
+    const send = () =>
+      chatRoute.POST(
+        chatRequest({ action: "send", message: MESSAGE, webSearch: false, ...(existing ? { conversationId: existing.id } : {}) }),
+      );
+    const events = async (response: Response) => (response.status === 200 ? collect(readChatStream(response.body!)) : []);
+
+    const first = await send();
+    const firstEvents = await events(first);
+    faults.disarm();
+    const started = firstEvents.find((e) => e.type === "start");
+    const done = firstEvents.some((e) => e.type === "done");
+    if (!started) expect(first.status, `${at}: an error before the stream`).toBeGreaterThanOrEqual(500);
+    if (started && !done) expect(firstEvents.at(-1)?.type, at).toBe("error");
+
+    // Recover like the chat screen: no start means the draft comes back and the user sends
+    // again; a start without done means the screen offers "Retry reply".
+    if (!started) {
+      const again = await events(await send());
+      expect(again.at(-1)?.type, `${at}: resend`).toBe("done");
+    } else if (!done) {
+      const conversationId = started.type === "start" ? started.conversation.id : "";
+      const retry = await chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch: false }));
+      const retried = await events(retry);
+      if (retry.status !== 409) expect(retried.at(-1)?.type, `${at}: retry`).toBe("done");
+    }
+
+    const settledOrHit = spend.reservations.filter((r) => r.settled === null);
+    const spendHit = faults.fired.some((f) => f.label.startsWith("FakeSpend"));
+    expect(settledOrHit.length, `${at}: only a failed spend write leaves its full hold counted`).toBeLessThanOrEqual(
+      spendHit ? 1 : 0,
+    );
+
+    const mine = repo.conversations.filter((c) => c.userId === ALICE);
+    const target = existing ?? mine.at(-1);
+    const roles = repo.messages.filter((m) => m.conversationId === target?.id).map((m) => m.role);
+    const last = roles.at(-1);
+    expect(last, `${at}: the last message has its reply`).toBe("assistant");
+    if (!checkDuplicates) return;
+    expect(mine, `${at}: no extra conversation`).toHaveLength(1);
+    expect(roles, `${at}: one message and one reply`).toEqual(["user", "assistant"]);
+  }
+
+  it.each(["new", "existing"] as const)(
+    "%s conversation: every write and both faults end with one message and its reply",
+    async (variant) => {
+      const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase));
+      expect(cases.map((c) => c.label)).toContain("MemoryRepository.insertMessage:assistant");
+    },
+  );
+
+  // Defect: these writes happen before the stream starts, so the route answers 500 and the
+  // screen gives the draft back. A resend then repeats work the first request already saved.
+  it.fails.each([
+    ["new", "refused", "MemoryRepository.insertMessage:user", "leaves an empty conversation"],
+    ["new", "lost", "MemoryRepository.createConversation", "leaves an empty conversation"],
+    ["new", "lost", "MemoryRepository.insertMessage:user", "leaves a second conversation with the same message"],
+    ["existing", "lost", "MemoryRepository.insertMessage:user", "saves the user message twice"],
+  ] as const)("%s conversation, %s %s, then a resend: %s", async (variant, fault, label) => {
+    const dry = new WriteFaults();
+    await chatScenario(variant, dry, null);
+    const step = dry.calls.indexOf(label) + 1;
+    expect(step).toBeGreaterThan(0);
+    await chatScenario(variant, new WriteFaults().fail(fault, step), { step, fault, label }, true);
   });
 });
 
