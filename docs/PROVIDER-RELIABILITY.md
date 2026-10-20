@@ -104,7 +104,7 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - **Fix:** `src/server/assistant/spend.ts` is the one owner of the worst-case hold. Above the ceiling it throws `NebiusHoldTooLargeError` before any reserve call. Chat answers 413 and the documents route answers 413. `tests/unit/spend-hold-owner.test.ts` fails when another file uses the ceiling or `costMicroUsd`.
 - **Rule:** Never reduce a required hold. If the hold is too large, refuse the call. Compute holds only through the owner functions.
 - **Numbers (2026-10-20):** the largest valid chat turn (41 messages of 3-byte characters, search on, Ultra, 8,192 output tokens) holds 138,188 micro-dollars. A test keeps it under 150,000.
-- **Sources:** PR #2 commit 1945dda and fix eab3260; PR #6 commit 0dce68a; PR #13.
+- **Sources:** PR #2 commit 1945dda and fix eab3260; PR #6 commit 0dce68a; [PR #14](https://github.com/PATELOM925/P-Dot/pull/14).
 
 ## Checklists
 

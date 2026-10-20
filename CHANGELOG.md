@@ -45,7 +45,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
 
 ### Fixed
-- **One owner for the worst-case Nebius hold, and no hold is reduced to fit the ceiling.** PR: not opened yet.
+- **One owner for the worst-case Nebius hold, and no hold is reduced to fit the ceiling.** PR: [#14](https://github.com/PATELOM925/P-Dot/pull/14).
   - Problem: the spend hold was less than the real worst-case cost three times. A fallback price was below real prices and negative usage became zero (PR #2, 1945dda). The embedder copied the chat clamp and cut a hold down to the $0.25 ceiling (PR #6, 0dce68a). Chat still clamped, and the embedder kept its own copy of the hold math.
   - Resolution:
     - `src/server/assistant/spend.ts` owns the hold: `nebiusHoldMicroUsd` (chat) and `nebiusEmbeddingHoldMicroUsd` (embeddings). Above the ceiling they throw `NebiusHoldTooLargeError`. The embedder settles through `nebiusSettleMicroUsd`.
