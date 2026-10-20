@@ -56,6 +56,7 @@ Only rules with a real check are listed. Level 1: one owner in the code. Level 3
 | Rule | Enforced by | Level |
 | --- | --- | --- |
 | Only `src/server/assistant/spend.ts` computes a worst-case Nebius hold. It refuses a hold above the ceiling and never reduces it. | `nebiusHoldMicroUsd`, `nebiusEmbeddingHoldMicroUsd` and `tests/unit/spend-hold-owner.test.ts` | 1 and 3 |
+| Every entry under "Unreleased" in `CHANGELOG.md` has a bold title, a "Problem:" line, a "Resolution:" line and a pull request link (a commit link only when there was no pull request). "PR: not opened yet" fails. | `scripts/check-changelog.mjs` in `npm run lint`, and `tests/unit/check-changelog.test.ts` | 3 (lint): a check that reads `CHANGELOG.md`, not source code, and fails on a bad entry |
 
 ## Validation and handoff
 

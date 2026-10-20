@@ -193,7 +193,7 @@ The 10 tests in `tests/integration/rls.test.ts` should then run instead of being
 | `npm run deploy` | Owner only. Build for Cloudflare, check that no secret is in the bundle, and deploy (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)) |
 | `npm run upload` | Owner only. Same as deploy, but uploads a new version without sending traffic to it |
 | `npm run check:worker-env` | Check the last OpenNext build for secret values copied from `.env` files |
-| `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules) |
+| `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules), then `scripts/check-changelog.mjs` on the Unreleased entries |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest unit tests and the database gate (in-memory Postgres, no setup); the live RLS integration test is skipped unless configured |
 | `npm run check` | Lint, type-check, and tests |
@@ -240,7 +240,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `tests/` | Unit tests (`unit/`), the database gate and the live Supabase RLS test (`integration/`), shared fakes (`support/`) |
 | `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
 | `CHANGELOG.md` | What changed, the problem, and how it was resolved, for each pull request |
-| `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle |
+| `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle. `check-changelog.mjs` and `changelog-rules.mjs`: changelog entry check |
 | `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the indigo-to-violet accent); the app icons in `public/icons/` use the same mark |
 
 ## Deploying to Cloudflare
