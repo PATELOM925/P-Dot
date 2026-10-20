@@ -402,3 +402,74 @@ describe("records the app must be able to trust", () => {
     expect(stored.rows[0]!.status).toBe("approved");
   });
 });
+
+describe("legacy proposals left approved (decision 0009)", () => {
+  async function legacyApproved(owner: string, title: string): Promise<string> {
+    const row = await gate.admin<{ id: string }>(
+      `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
+       values ($1, 'create_task', jsonb_build_object('kind', 'create_task', 'mode', 'personal', 'title', $2::text), 'x', 'approved', now())
+       returning id`,
+      [owner, title],
+    );
+    return row.rows[0]!.id;
+  }
+
+  it("the decision function answers already_decided, runs nothing and leaves the row approved", async () => {
+    const owner = await gate.createUser();
+    const id = await legacyApproved(owner, "Legacy task");
+    const answer = await gate.as<{ answer: { outcome: string } }>(
+      user(owner),
+      "select public.decide_action_proposal($1, 'approve') as answer",
+      [id],
+    );
+    expect(answer.rows[0]!.answer.outcome).toBe("already_decided");
+    const stored = await gate.admin<{ status: string }>("select status from action_proposals where id = $1", [id]);
+    expect(stored.rows[0]!.status).toBe("approved");
+    expect(await countOwnedBy("tasks", owner)).toBe(0);
+  });
+
+  it("the documented steps find the row and settle it as executed or failed, with a log row", async () => {
+    const owner = await gate.createUser();
+    const ran = await legacyApproved(owner, "Ran before the stop");
+    const notRun = await legacyApproved(owner, "Stopped before the insert");
+    const task = await gate.admin<{ id: string }>(
+      "insert into tasks (user_id, mode, title) values ($1, 'personal', 'Ran before the stop') returning id",
+      [owner],
+    );
+
+    const found = await gate.admin<{ id: string }>(
+      "select id, user_id, kind, payload, decided_at from public.action_proposals where status = 'approved' and user_id = $1 order by decided_at",
+      [owner],
+    );
+    expect(found.rows.map((r) => r.id).sort()).toEqual([ran, notRun].sort());
+    const effect = await gate.admin<{ id: string }>(
+      `select t.id from public.tasks t join public.action_proposals p on p.id = $1
+       where t.user_id = p.user_id and t.title = p.payload ->> 'title' and t.mode = p.payload ->> 'mode'
+         and t.created_at between p.decided_at - interval '1 minute' and p.decided_at + interval '10 minutes'`,
+      [ran],
+    );
+    expect(effect.rows.map((r) => r.id)).toEqual([task.rows[0]!.id]);
+
+    await gate.admin(
+      "update public.action_proposals set status = 'executed', result = jsonb_build_object('taskId', $2::text) where id = $1 and status = 'approved'",
+      [ran, task.rows[0]!.id],
+    );
+    await gate.admin(
+      `update public.action_proposals set status = 'failed', result = '{"error":"execution_failed"}' where id = $1 and status = 'approved'`,
+      [notRun],
+    );
+
+    const proposals = await createActionProposalRepository(sqlGateClient(gate, owner)).listProposals(owner, undefined, 50);
+    expect(proposals.map((p) => [p.id, p.status, p.result]).sort()).toEqual(
+      [
+        [ran, "executed", { taskId: task.rows[0]!.id }],
+        [notRun, "failed", { error: "execution_failed" }],
+      ].sort(),
+    );
+    const log = await gate.admin<{ event: string; proposal_id: string }>(
+      "select event, proposal_id from action_log where user_id = $1 and event in ('executed', 'failed')",
+      [owner],
+    );
+    expect(log.rows.map((r) => `${r.proposal_id}:${r.event}`).sort()).toEqual([`${notRun}:failed`, `${ran}:executed`].sort());
+  });
+});

@@ -81,10 +81,23 @@ The reviews of PRs #6 and #12 found that a signed-in user could use the public A
 A status that means work is in progress must name how a row leaves it when a request stops halfway (`AGENTS.md`, "Rules and what enforces them").
 
 - **`documents.status = 'processing'`.** The upload creates the row as `processing`, saves all chunks in one statement, then writes `ready`, or `failed` after an error. If those final writes fail or the Worker stops, the row stays `processing`. Recovery: `GET /api/documents` first settles up to 5 of the user's documents that are `processing` and older than 10 minutes (`DOCUMENT_PROCESSING_STALE_MS`, `STALE_DOCUMENT_SETTLE_LIMIT`). A document with chunks that all have a vector becomes `ready`; any other becomes `failed`. Settling makes no embedding call. If settling fails, the list is still returned and the next list tries again. Search uses only `ready` documents, so a row that waits for settling is never searched. Known limit: after an upload that answered 500 and was then sent again, the first copy can settle `ready`, so the user has two ready copies (an `it.fails` test in `tests/unit/documents-routes.test.ts`).
-- **`action_proposals.status = 'approved'`.** It exists only inside the transaction of `decide_action_proposal`, which always ends in `executed` or `failed`. No committed row keeps it, so it needs no recovery.
+- **`action_proposals.status = 'approved'`.** A new decision goes through `decide_action_proposal`. Its transaction ends in `executed` or `failed`, so a new decision cannot stay `approved`. This does not change older rows. The route before PR #13 could commit `approved` and then stop. The hardening migration keeps those rows, and the function answers `already_decided` for them and does not change them. The action may or may not have run. Never run it again without checking, because the task, reminder or memory can already exist. The owner reconciles these rows by hand:
+  1. Find them. This query only reads:
+     ```sql
+     select id, user_id, kind, payload, decided_at
+     from public.action_proposals
+     where status = 'approved'
+     order by decided_at;
+     ```
+  2. For each row, look for the effect of the same user near `decided_at` (these queries also only read). A reminder links back: `select id from public.reminders where proposal_id = '<id>';`. For a task, look for `public.tasks` with the payload `title` and `mode`. For a memory, look for `public.memories` with the payload `content` and `source = 'assistant'`. Use `created_at` between `decided_at - interval '1 minute'` and `decided_at + interval '10 minutes'`.
+  3. If you find exactly one row, store it as the result, as the database owner in the SQL editor: `update public.action_proposals set status = 'executed', result = jsonb_build_object('taskId', '<row id>') where id = '<id>' and status = 'approved';` Use `reminderId` or `memoryId` for the other kinds.
+  4. If you find none: `update public.action_proposals set status = 'failed', result = '{"error":"execution_failed"}' where id = '<id>' and status = 'approved';` The user can ask again.
+  5. If you find more than one, or you are not sure, do not change the row. Ask the user.
+
+  The trigger writes the `executed` or `failed` action log row for each update. `tests/integration/sql-gate.test.ts` runs these statements on a legacy row in the test database.
 - **Spend holds.** A reservation that is not settled keeps its full hold counted, which is the safe side ([0006](0006-global-spend-guard.md)).
 
-`tests/support/write-faults.ts` makes each write of a request fail, refused or lost after it commits, and the route tests check these paths.
+`tests/support/write-faults.ts` makes the writes of a request fail, refused or lost after they commit. It also makes a write fail that runs only after an earlier write failed (up to two faults in one run), and it counts only the fakes a test wraps. The route tests check these paths, including the settle writes of `GET /api/documents`.
 
 ## Not in this change
 
