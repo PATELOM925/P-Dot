@@ -331,5 +331,114 @@ describe("Autonomous Tool Calling (AI-04)", () => {
       expect(doneEvent.message.content).toContain("4000 mAh");
     }
   });
+
+  it("executes autonomous search_documents tool and cites personal document excerpts", async () => {
+    const repo = new MemoryRepository();
+    const { createMockDocumentRepository } = await import("@/server/db/documents");
+    const docRepo = createMockDocumentRepository(
+      [
+        {
+          id: "doc_office",
+          userId: USER_ID,
+          filename: "office-handbook.pdf",
+          filePath: null,
+          fileSize: 1200,
+          mimeType: "application/pdf",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      [
+        {
+          id: "chunk_wifi",
+          userId: USER_ID,
+          documentId: "doc_office",
+          filename: "office-handbook.pdf",
+          chunkIndex: 0,
+          content: "The guest Wi-Fi network is 'PDot-Guest' with password 'supersecret2026'.",
+          embedding: [1, 0, 0, 0],
+        },
+      ],
+    );
+
+    let pass = 0;
+    const { deps } = fakeDeps({
+      repo,
+      documentRepo: docRepo,
+      embed: async () => [0.99, 0.01, 0, 0],
+      reply: async function* (messages, _signal, options) {
+        pass += 1;
+        if (pass === 1) {
+          // Verify search_documents tool is offered
+          expect(options?.tools?.some((t) => t.function.name === "search_documents")).toBe(true);
+          yield {
+            type: "tool_calls" as const,
+            calls: [
+              {
+                id: "call_rag_01",
+                type: "function" as const,
+                function: {
+                  name: "search_documents",
+                  arguments: JSON.stringify({ query: "office wifi password" }),
+                },
+              },
+            ],
+          };
+          yield { type: "finish" as const, finishReason: "tool_calls", usage: null };
+        } else {
+          // Tool feedback pass
+          const toolMsg = messages.find((m) => m.role === "tool" && m.tool_call_id === "call_rag_01");
+          expect(toolMsg).toBeDefined();
+          expect(toolMsg?.content).toContain("office-handbook.pdf");
+          expect(toolMsg?.content).toContain("supersecret2026");
+
+          yield {
+            type: "text" as const,
+            text: "According to your office handbook, the guest Wi-Fi password is 'supersecret2026' [1].",
+          };
+          yield { type: "finish" as const, finishReason: "stop", usage: null };
+        }
+      },
+    });
+
+    const { events } = await runTurn(deps, {
+      action: "send",
+      message: "What is the office wifi password?",
+      webSearch: false,
+    });
+
+    // Check thought event
+    const thoughtEvent = events.find((e) => e.type === "thought");
+    expect(thoughtEvent).toBeDefined();
+    expect(thoughtEvent).toMatchObject({
+      type: "thought",
+      text: expect.stringContaining("Searching personal documents"),
+    });
+
+    // Check search event with document source
+    const searchEvent = events.find((e) => e.type === "search");
+    expect(searchEvent).toBeDefined();
+    expect(searchEvent).toMatchObject({
+      type: "search",
+      status: "used",
+      sources: [
+        {
+          title: "office-handbook.pdf (Section 1)",
+          url: "doc://doc_office#chunk-0",
+        },
+      ],
+    });
+
+    // Check done event and saved message
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+    if (doneEvent && doneEvent.type === "done") {
+      expect(doneEvent.message.content).toContain("supersecret2026");
+      expect(doneEvent.message.sources).toHaveLength(1);
+      expect(doneEvent.message.sources[0]?.title).toBe("office-handbook.pdf (Section 1)");
+    }
+
+    expect(repo.messages[1]?.sources[0]?.title).toBe("office-handbook.pdf (Section 1)");
+  });
 });
 

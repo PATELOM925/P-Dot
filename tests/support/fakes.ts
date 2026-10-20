@@ -113,6 +113,8 @@ export interface FakeDepsOptions {
   repo?: MemoryRepository;
   quota?: FakeQuota;
   search?: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
+  documentRepo?: import("@/server/db/documents").DocumentRepository;
+  embed?: (text: string, signal?: AbortSignal) => Promise<number[]>;
   reply?:
     | string[]
     | ((
@@ -138,6 +140,8 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
             searches.push(query);
             return options.search ? options.search(query, signal) : [];
           },
+    documentRepo: options.documentRepo,
+    embed: options.embed,
     complete: (messages, signal, completeOptions) => {
       prompts.push(messages);
       if (typeof reply === "function") return reply(messages, signal ?? new AbortController().signal, completeOptions);

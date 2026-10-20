@@ -22,9 +22,11 @@ import type { ChatMessage, CompletionChunk, TokenUsage } from "@/server/provider
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import { buildCompactedContextWindow, generateSmartTitle, titleFromMessage, type HistoryMessage } from "./context";
 import { publicSearchFailureMessage, toPublicCompletionError } from "./errors";
-import { buildPromptMessages, formatSearchResults } from "./prompt";
+import type { DocumentRepository } from "@/server/db/documents";
+import { formatDocumentMatches, buildPromptMessages, formatSearchResults } from "./prompt";
 import {
   WEB_SEARCH_TOOL,
+  SEARCH_DOCUMENTS_TOOL,
   PROPOSE_REMINDER_TOOL,
   PROPOSE_TASK_TOOL,
   type ToolDefinition,
@@ -46,6 +48,10 @@ export interface AssistantDeps {
     signal?: AbortSignal,
     options?: CompleteOptions,
   ) => AsyncIterable<CompletionChunk>;
+  /** Document repository for personal RAG */
+  documentRepo?: DocumentRepository;
+  /** Embedding generator for personal RAG */
+  embed?: (text: string, signal?: AbortSignal) => Promise<number[]>;
   now: () => Date;
   log: Logger;
 }
@@ -174,6 +180,7 @@ export async function* streamChatTurn(
   // 1. Optional web retrieval. Search is never called unless requested.
   let webSearch: WebSearchStatus = "off";
   let results: WebSearchResult[] = [];
+  let allSources: SourceRef[] = [];
   if (turn.webSearch) {
     if (!deps.search) {
       webSearch = "failed";
@@ -187,10 +194,11 @@ export async function* streamChatTurn(
       try {
         results = await deps.search(turn.userMessage.content, signal);
         webSearch = results.length > 0 ? "used" : "no_results";
+        allSources = [...toSourceRefs(results)];
         yield {
           type: "search",
           status: webSearch,
-          sources: toSourceRefs(results),
+          sources: allSources,
           ...(webSearch === "no_results"
             ? { message: "Web search found no usable results, so this answer is not based on web sources." }
             : {}),
@@ -222,6 +230,7 @@ export async function* streamChatTurn(
 
   const availableTools: ToolDefinition[] = [
     ...(deps.search && webSearch === "off" ? [WEB_SEARCH_TOOL] : []),
+    ...(deps.documentRepo && deps.embed ? [SEARCH_DOCUMENTS_TOOL] : []),
     PROPOSE_REMINDER_TOOL,
     PROPOSE_TASK_TOOL,
   ];
@@ -281,11 +290,12 @@ export async function* streamChatTurn(
         break;
       }
 
-      // Check if model called web_search, propose_reminder, or propose_task
+      // Check if model called web_search, search_documents, propose_reminder, or propose_task
       const searchCall = pendingToolCalls.find((call) => call.function.name === "web_search");
+      const docCall = pendingToolCalls.find((call) => call.function.name === "search_documents");
       const reminderCall = pendingToolCalls.find((call) => call.function.name === "propose_reminder");
       const taskCall = pendingToolCalls.find((call) => call.function.name === "propose_task");
-      const activeCall = searchCall ?? reminderCall ?? taskCall ?? pendingToolCalls[0]!;
+      const activeCall = searchCall ?? docCall ?? reminderCall ?? taskCall ?? pendingToolCalls[0]!;
 
       // Chain of Thought event: emit the model's reasoning or plan for this hop
       const rawThought = content.trim();
@@ -298,6 +308,13 @@ export async function* streamChatTurn(
             if (typeof p.query === "string" && p.query.trim()) q = p.query.trim();
           } catch {}
           planningThought = `Searching the web for "${q}" (Hop ${hop + 1} of ${MAX_TOOL_HOPS})...`;
+        } else if (docCall) {
+          let q = turn.userMessage.content;
+          try {
+            const p = JSON.parse(docCall.function.arguments);
+            if (typeof p.query === "string" && p.query.trim()) q = p.query.trim();
+          } catch {}
+          planningThought = `Searching personal documents for "${q}" (Hop ${hop + 1} of ${MAX_TOOL_HOPS})...`;
         } else if (reminderCall) {
           planningThought = `Preparing reminder proposal...`;
         } else if (taskCall) {
@@ -324,11 +341,12 @@ export async function* streamChatTurn(
         try {
           const newResults = await deps.search(query, signal);
           results = [...results, ...newResults];
+          allSources = [...allSources, ...toSourceRefs(newResults)];
           webSearch = results.length > 0 ? "used" : "no_results";
           yield {
             type: "search",
             status: webSearch,
-            sources: toSourceRefs(results),
+            sources: allSources,
             ...(webSearch === "no_results"
               ? { message: "Web search found no usable results, so this answer is not based on web sources." }
               : {}),
@@ -339,7 +357,7 @@ export async function* streamChatTurn(
             return;
           }
           webSearch = "failed";
-          yield { type: "search", status: "failed", sources: [], message: publicSearchFailureMessage(error) };
+          yield { type: "search", status: "failed", sources: allSources, message: publicSearchFailureMessage(error) };
         }
 
         // Add assistant tool invocation and tool response to context with remaining attempt guidance
@@ -356,6 +374,71 @@ export async function* streamChatTurn(
             ? `${formatSearchResults(results)}\n\n(Search attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. If you have sufficient information, answer now with [n] citations.)`
             : "No web search results found.",
         });
+      } else if (docCall && deps.documentRepo && deps.embed) {
+        let query = turn.userMessage.content;
+        try {
+          const parsed = JSON.parse(docCall.function.arguments);
+          if (typeof parsed.query === "string" && parsed.query.trim()) {
+            query = parsed.query.trim();
+          }
+        } catch {
+          // Fallback to original user query
+        }
+
+        try {
+          const queryEmbedding = await deps.embed(query, signal);
+          const matches = await deps.documentRepo.searchChunks(turn.userId, queryEmbedding, {
+            threshold: 0.2,
+            limit: 4,
+          });
+
+          if (matches.length > 0) {
+            const docSources: SourceRef[] = matches.map((m) => ({
+              title: `${m.filename} (Section ${m.chunkIndex + 1})`,
+              url: `doc://${m.documentId}#chunk-${m.chunkIndex}`,
+            }));
+            allSources = [...allSources, ...docSources];
+            yield {
+              type: "search",
+              status: "used",
+              sources: allSources,
+            };
+          }
+
+          messages.push({
+            role: "assistant",
+            content: null,
+            tool_calls: [docCall],
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: docCall.id,
+            name: "search_documents",
+            content: matches.length > 0
+              ? `${formatDocumentMatches(matches, allSources.length - matches.length + 1)}\n\n(Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. If you have sufficient information, answer now citing document sources with [n].)`
+              : `No relevant information found in personal documents for "${query}". (Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}.)`,
+          });
+        } catch (error) {
+          if (signal.aborted) {
+            deps.log("info", "chat_client_aborted", { ...logBase, stage: "search_documents" });
+            return;
+          }
+          deps.log("warn", "search_documents_failed", {
+            ...logBase,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          messages.push({
+            role: "assistant",
+            content: null,
+            tool_calls: [docCall],
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: docCall.id,
+            name: "search_documents",
+            content: "Document search unavailable. Please answer from other context or general knowledge.",
+          });
+        }
       } else if (reminderCall) {
         let title = "Reminder";
         let dueAt = "tomorrow";
@@ -513,7 +596,7 @@ export async function* streamChatTurn(
       role: "assistant",
       content,
       webSearch,
-      sources: webSearch === "used" ? toSourceRefs(results) : [],
+      sources: allSources.slice(0, 10),
     });
     if (proposedActions.length > 0) {
       saved = { ...saved, actions: proposedActions };

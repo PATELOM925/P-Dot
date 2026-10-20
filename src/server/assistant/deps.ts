@@ -2,9 +2,11 @@ import "server-only";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
 import { createConversationRepository } from "@/server/db/conversations";
+import { createDocumentRepository } from "@/server/db/documents";
 import { createQuotaGate } from "@/server/db/quota";
 import { logEvent } from "@/server/log";
 import { streamChatCompletion } from "@/server/providers/nebius/client";
+import { createSingleEmbedding } from "@/server/providers/nebius/embeddings";
 import { searchWeb } from "@/server/providers/tavily/client";
 import type { AssistantDeps } from "./service";
 
@@ -15,6 +17,17 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
+    documentRepo: createDocumentRepository(auth.supabase),
+    embed: (text, signal) =>
+      createSingleEmbedding(
+        {
+          apiKey: config.nebius.apiKey,
+          baseUrl: config.nebius.baseUrl,
+          model: config.nebius.embeddingModel,
+        },
+        text,
+        { signal },
+      ),
     complete: async function* (messages, signal, options) {
       const primarySettings = config.nebius;
       const fallbackModel = config.nebius.fallbackModel;

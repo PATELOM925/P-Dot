@@ -144,3 +144,34 @@ export const PROPOSE_TASK_TOOL: ToolDefinition = {
   },
 };
 
+/** Schema for validating search_documents arguments */
+export const searchDocumentsArgsSchema = z.object({
+  query: z.string().trim().min(1).max(400),
+});
+
+export type SearchDocumentsArgs = z.infer<typeof searchDocumentsArgsSchema>;
+
+/**
+ * Tool definition for searching personal documents and notes.
+ * The model invokes this autonomously when asked about personal files, uploaded documents,
+ * custom guides, or user-specific knowledge.
+ */
+export const SEARCH_DOCUMENTS_TOOL: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "search_documents",
+    description:
+      "Search the user's personal documents, notes, and uploaded files for relevant information using semantic vector search.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Targeted search keywords or question describing the information needed from personal documents.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+};
+

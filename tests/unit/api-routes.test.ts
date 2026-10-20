@@ -57,7 +57,13 @@ beforeEach(() => {
   repo = new MemoryRepository();
   vi.mocked(createConversationRepository).mockReturnValue(repo);
   vi.mocked(getAssistantConfig).mockReturnValue({
-    nebius: { apiKey: "k", baseUrl: "https://nebius.test/v1", model: "m", maxOutputTokens: 256 },
+    nebius: {
+      apiKey: "k",
+      baseUrl: "https://nebius.test/v1",
+      model: "m",
+      embeddingModel: "Qwen/Qwen3-Embedding-8B",
+      maxOutputTokens: 256,
+    },
     tavily: null,
     quota: { requestsPerWindow: 30, windowSeconds: 3600 },
   });

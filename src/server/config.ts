@@ -12,6 +12,7 @@ export interface AssistantConfig {
     baseUrl: string;
     model: string;
     fallbackModel?: string;
+    embeddingModel: string;
     maxOutputTokens: number;
   };
   /** Null when TAVILY_API_KEY is not set; search requests then report failure. */
@@ -27,6 +28,7 @@ const assistantEnvSchema = z.object({
   NEBIUS_BASE_URL: z.url().default("https://api.tokenfactory.nebius.com/v1"),
   NEBIUS_MODEL: z.string().trim().min(1),
   NEBIUS_FALLBACK_MODEL: z.string().trim().optional(),
+  NEBIUS_EMBEDDING_MODEL: z.string().trim().default("Qwen/Qwen3-Embedding-8B"),
   NEBIUS_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(8192).default(1024),
   TAVILY_API_KEY: z.string().trim().optional(),
   CHAT_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).max(10_000).default(30),
@@ -43,6 +45,7 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
     NEBIUS_BASE_URL: blankToUndefined(env.NEBIUS_BASE_URL),
     NEBIUS_MODEL: env.NEBIUS_MODEL,
     NEBIUS_FALLBACK_MODEL: blankToUndefined(env.NEBIUS_FALLBACK_MODEL),
+    NEBIUS_EMBEDDING_MODEL: blankToUndefined(env.NEBIUS_EMBEDDING_MODEL),
     NEBIUS_MAX_OUTPUT_TOKENS: blankToUndefined(env.NEBIUS_MAX_OUTPUT_TOKENS),
     TAVILY_API_KEY: blankToUndefined(env.TAVILY_API_KEY),
     CHAT_REQUESTS_PER_WINDOW: blankToUndefined(env.CHAT_REQUESTS_PER_WINDOW),
@@ -60,6 +63,7 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
       baseUrl: e.NEBIUS_BASE_URL.replace(/\/+$/, ""),
       model: e.NEBIUS_MODEL,
       fallbackModel: e.NEBIUS_FALLBACK_MODEL,
+      embeddingModel: e.NEBIUS_EMBEDDING_MODEL,
       maxOutputTokens: e.NEBIUS_MAX_OUTPUT_TOKENS,
     },
     tavily: e.TAVILY_API_KEY ? { apiKey: e.TAVILY_API_KEY } : null,

@@ -75,13 +75,18 @@ This document aligns Person A (Frontend), Person B (Backend/Database/Infra), and
   - Normalization of Unicode non-breaking spaces and Asian citation brackets `【n】` to standard `[n]`.
   - Added unit test suite in `tests/unit/assistant-tools.test.ts` (129/129 unit tests passing).
 
+- [x] **AI-05: Vector RAG (Personal Document Search & Ingestion)**
+  - Integrated Nebius `Qwen/Qwen3-Embedding-8B` (4096 dimensions, $0.01 / 1M tokens) via `src/server/providers/nebius/embeddings.ts`.
+  - Implemented recursive character text chunker with priority separators and overlap (`src/server/rag/chunker.ts`).
+  - Added Supabase migration `20261020000000_vector_rag_documents.sql` featuring `pgvector`, HNSW cosine index, and `match_document_chunks` RPC.
+  - Implemented `DocumentRepository` (`src/server/db/documents.ts`) and ingestion orchestrator (`src/server/rag/ingestion.ts`).
+  - Implemented autonomous `search_documents` tool in multi-hop assistant loop with document source citations `[n]` (`src/server/assistant/service.ts`).
+  - Implemented `/api/documents` REST endpoints for upload, listing, and deletion.
+  - Unit test suite expanded to 155 passing tests across 14 suites (`npm run check` 100% clean).
+
 ### Upcoming Steps:
-- [ ] **AI-05: Vector RAG (Document Search & Ingestion)**
-  - Integrate Nebius `Qwen/Qwen3-Embedding-8B` ($0.01 / 1M tokens).
-  - Implement document chunking (recursive character splitter, 500-token chunks with 50-token overlap).
-  - Implement vector similarity query against Supabase `document_chunks`.
-- [ ] **AI-06: Long-Term Memory System**
-  - Implement `save_memory` tool for autonomous fact extraction.
-  - Build hybrid retrieval: semantic search on `user_memories` + static `user_profiles` injection into system prompt.
-  - **AI-06b: Episodic Session Summarization**: Summarize key user takeaways at the end of a session into durable memories.
-  - Add memory recall tool to retrieve historical notes across past conversations.
+- [ ] **AI-06: Long-Term Memory System (Personal Fact Extraction & Retrieval)**
+  - Implement `save_memory` tool for autonomous fact extraction from conversations.
+  - Build hybrid memory retrieval: semantic search on `user_memories` table + static `user_profiles` system prompt injection.
+  - **AI-06b: Episodic Session Summarization**: Summarize key user takeaways at session conclusion into durable memory items.
+  - Add `search_memories` tool allowing P-Dot to recall historical facts across past conversations.

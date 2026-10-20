@@ -83,6 +83,8 @@ describe("getAssistantConfig", () => {
       apiKey: "secret",
       baseUrl: "https://api.tokenfactory.nebius.com/v1",
       model: "org/model",
+      fallbackModel: undefined,
+      embeddingModel: "Qwen/Qwen3-Embedding-8B",
       maxOutputTokens: 1024,
     });
     expect(config.tavily).toBeNull();

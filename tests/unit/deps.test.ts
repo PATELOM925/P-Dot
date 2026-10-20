@@ -22,6 +22,7 @@ const configWithFallback: AssistantConfig = {
     baseUrl: "https://api.test/v1",
     model: "primary-model",
     fallbackModel: "fallback-model",
+    embeddingModel: "Qwen/Qwen3-Embedding-8B",
     maxOutputTokens: 256,
   },
   tavily: null,
