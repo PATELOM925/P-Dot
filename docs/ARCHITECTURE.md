@@ -95,7 +95,7 @@ Defined in `supabase/migrations/20261014000000_initial_schema.sql`:
 - `usage_windows`: per-user request count per fixed window, written only by `consume_chat_quota()`.
 - `spend_counters` and `spend_reservations`: global spend for Nebius (micro-dollars) and Tavily (credits) per UTC day, month and all time, plus one row per held call. No user content. Users cannot read or write them; only `reserve_provider_spend()` and `settle_provider_spend()` do ([decision 0006](decisions/0006-global-spend-guard.md)).
 
-RLS allows each user to select and insert only their own rows and to delete only their own conversations (messages cascade). Updates are revoked. Repository methods also filter by the session user ID. Each chat request holds a worst-case Nebius cost (and one Tavily credit when search is on) before the paid call, and settles the real cost from the token usage after it. Global caps refuse a request with `budget_exhausted` before streaming ([decision 0006](decisions/0006-global-spend-guard.md)).
+RLS allows each user to select and insert only their own rows and to delete only their own conversations (messages cascade). Updates are revoked. Repository methods also filter by the session user ID. Each chat request holds a worst-case Nebius cost (and one Tavily credit when search is on) before the paid call, and settles the real cost from the token usage after it. A hold above $0.25 is refused, never reduced; `src/server/assistant/spend.ts` computes every hold. Global caps refuse a request with `budget_exhausted` before streaming ([decision 0006](decisions/0006-global-spend-guard.md)).
 
 ## Provider contracts
 

@@ -49,6 +49,14 @@ MVP implementation was authorized on 2026-10-14. The backend and a minimal front
 - Do not simulate successful authentication, saved data, provider responses, or deployment. Label mocks and unfinished behavior.
 - Preserve existing user changes. Never force-push or run destructive Git operations without explicit authorization.
 
+## Rules and what enforces them
+
+Only rules with a real check are listed. Level 1: one owner in the code. Level 3: a test that reads the source and fails on a copy.
+
+| Rule | Enforced by | Level |
+| --- | --- | --- |
+| Only `src/server/assistant/spend.ts` computes a worst-case Nebius hold. It refuses a hold above the ceiling and never reduces it. | `nebiusHoldMicroUsd`, `nebiusEmbeddingHoldMicroUsd` and `tests/unit/spend-hold-owner.test.ts` | 1 and 3 |
+
 ## Validation and handoff
 
 Once executable code exists, document and run the relevant lint, type-check, test, and build commands. Prioritize tests for authorization boundaries, request validation, provider failures, and core user flows. Never claim a check passed if it was not run.

@@ -45,6 +45,12 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
 
 ### Fixed
+- **One owner for the worst-case Nebius hold, and no hold is reduced to fit the ceiling.** PR: not opened yet.
+  - Problem: the spend hold was less than the real worst-case cost three times. A fallback price was below real prices and negative usage became zero (PR #2, 1945dda). The embedder copied the chat clamp and cut a hold down to the $0.25 ceiling (PR #6, 0dce68a). Chat still clamped, and the embedder kept its own copy of the hold math.
+  - Resolution:
+    - `src/server/assistant/spend.ts` owns the hold: `nebiusHoldMicroUsd` (chat) and `nebiusEmbeddingHoldMicroUsd` (embeddings). Above the ceiling they throw `NebiusHoldTooLargeError`. The embedder settles through `nebiusSettleMicroUsd`.
+    - Chat answers 413 before any reserve call. No valid chat turn reaches the ceiling: the largest one holds 138,188 micro-dollars.
+    - A test reads the source and fails when another file uses `MAX_NEBIUS_HOLD_MICRO_USD` or `costMicroUsd`. Boundary tests: 250,000 is reserved, 250,001 is refused.
 - **Only the database writes the action log and the outcome of an action** (decision [0009](docs/decisions/0009-memory-documents-actions.md), reviews of PR #6 and PR #12). PR: [#13](https://github.com/PATELOM925/P-Dot/pull/13).
   - Problem: a signed-in user could use the public API to forge an executed action or a log event, reset an action to "proposed" and run it twice, and store short private text or nested values in the log. The decision route ran the action and wrote its result in separate steps, so a lost write could store a false or missing outcome. The embedder cut a worst-case spend hold down to the ceiling instead of refusing.
   - Resolution:
