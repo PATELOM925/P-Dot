@@ -102,6 +102,18 @@ describe("WriteFaults", () => {
     ).rejects.toThrow("The sweep needs more than 5 cases");
   });
 
+  it("fails a sweep when a replay faults a different write than the plan", async () => {
+    let runs = 0;
+    await expect(
+      sweepWriteFaults(async (faults) => {
+        const label = runs === 0 ? "primary" : "unrelated";
+        runs += 1;
+        const store = faults.wrap(new Store(), ["add"], { label });
+        await store.add("x").catch(() => {});
+      }),
+    ).rejects.toThrow("the faults that fired do not match the plan");
+  });
+
   it("fails a sweep when a planned fault never fires", async () => {
     let first = true;
     await expect(

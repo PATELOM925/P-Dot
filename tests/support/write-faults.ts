@@ -101,8 +101,9 @@ export interface SweepOptions {
  *
  * The scenario builds fresh fakes, wraps them with the given WriteFaults, runs
  * the requests under test, calls `disarm()`, then recovers and asserts. Every
- * case runs. Then the sweep fails with a list of each case that failed or
- * whose planned faults did not all fire. Returns the cases with faults.
+ * case runs. Then the sweep fails with a list of each case that failed, or
+ * whose fired faults (step, fault and label) differ from the plan. Returns the
+ * cases with faults.
  */
 export async function sweepWriteFaults(
   scenario: (faults: WriteFaults, sweepCase: SweepCase) => Promise<void>,
@@ -117,7 +118,10 @@ export async function sweepWriteFaults(
     for (const planned of plan) run.fail(planned.fault, planned.step);
     try {
       await scenario(run, plan);
-      if (run.fired.length !== plan.length) throw new Error("a planned fault did not fire");
+      if (run.fired.length < plan.length) throw new Error("a planned fault did not fire");
+      if (describeCase(run.fired) !== describeCase(plan)) {
+        throw new Error(`the faults that fired do not match the plan: ${describeCase(run.fired)}`);
+      }
     } catch (error) {
       const message = error instanceof Error ? (error.message.split("\n")[0] ?? "") : String(error);
       const name = describeCase(plan);
