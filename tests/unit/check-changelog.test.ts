@@ -89,6 +89,21 @@ describe("findChangelogErrors", () => {
     ]);
   });
 
+  it("refuses an inline Problem whose only text is the next label", () => {
+    const found = messages(changelog(`- **Fix.** Problem: Resolution: fixed. [PR](${PR})\n`));
+    expect(found).toEqual([expect.stringContaining('the "Problem:" line is empty')]);
+  });
+
+  it("refuses a nested Problem whose only child bullet is empty", () => {
+    const found = messages(changelog([`- **Fix.** [PR](${PR})`, "  - Problem:", "    -", "  - Resolution: fixed."].join("\n")));
+    expect(found).toEqual([expect.stringContaining('the "Problem:" line is empty')]);
+  });
+
+  it("allows a blank line between Resolution and its nested bullet", () => {
+    const text = changelog([`- **Fix.** [PR](${PR})`, "  - Problem: bad.", "  - Resolution:", "", "    - Fixed."].join("\n"));
+    expect(messages(text)).toEqual([]);
+  });
+
   it("fails when the Unreleased section is missing", () => {
     expect(messages("# Changelog\n\n## 2026-10-19\n")[0]).toContain('no "## Unreleased" section');
   });

@@ -5,19 +5,34 @@ const REPO = "https://github.com/PATELOM925/P-Dot";
 const PR_LINK = /https:\/\/github\.com\/PATELOM925\/P-Dot\/pull\/\d+(?![\d#])/;
 const COMMIT_LINK = /https:\/\/github\.com\/PATELOM925\/P-Dot\/commit\/[0-9a-f]{7,40}(?![0-9a-zA-Z])/;
 const TITLE = /^- \*\*(.+?)\*\*/;
+const LABEL = /\b(?:Problem|Resolution):/;
+const HAS_TEXT = /[\p{L}\p{N}]/u;
+
+function fieldText(text, label) {
+  const at = text.search(new RegExp(`\\b${label}:`));
+  if (at === -1) return null;
+  const rest = text.slice(at + label.length + 1);
+  const next = rest.search(LABEL);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+function hasTextChild(lines, index) {
+  const indent = lines[index].text.search(/\S/);
+  const child = lines.slice(index + 1).find((line) => line.text.trim() !== "");
+  if (!child || child.text.search(/\S/) <= indent) return false;
+  const match = /^\s*[-*+]\s+(.*)$/.exec(child.text);
+  return Boolean(match && HAS_TEXT.test(match[1]));
+}
 
 function labelStatus(lines, label) {
-  const [first, ...rest] = lines;
-  const onTitleLine = new RegExp(`\\*\\*.*\\s${label}:\\s*(\\S?)`).exec(first.text);
-  if (onTitleLine) return onTitleLine[1] ? null : "empty";
-  const index = rest.findIndex((line) => new RegExp(`^\\s+- ${label}:`).test(line.text));
+  const afterTitle = lines[0].text.replace(TITLE, "");
+  const inline = fieldText(afterTitle, label);
+  if (inline !== null) return HAS_TEXT.test(inline) ? null : "empty";
+  const index = lines.findIndex((line, i) => i > 0 && new RegExp(`^\\s+- ${label}:`).test(line.text));
   if (index === -1) return "missing";
-  const line = rest[index];
-  const text = line.text.replace(new RegExp(`^\\s+- ${label}:`), "").trim();
-  if (text) return null;
-  const indent = line.text.search(/\S/);
-  const child = rest[index + 1];
-  return child && child.text.search(/\S/) > indent && child.text.trim().startsWith("-") ? null : "empty";
+  const text = fieldText(lines[index].text, label) ?? "";
+  if (HAS_TEXT.test(text)) return null;
+  return hasTextChild(lines, index) ? null : "empty";
 }
 
 function checkEntry(lines) {
