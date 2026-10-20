@@ -9,17 +9,17 @@ The pitch is a private assistant that remembers what you let it, shows what it s
 
 ## Storage
 
-Migration `supabase/migrations/20261020000000_memory_documents_actions.sql`. Every table has `user_id = auth.uid()` with RLS, no access for `anon`, and column-level update grants.
+Migrations `supabase/migrations/20261020000000_memory_documents_actions.sql` and `20261021000000_memory_hardening.sql` (review fixes, see below). Every table has `user_id = auth.uid()` with RLS, no access for `anon`, and column-level update grants.
 
 | Table | Purpose | Notes |
 | --- | --- | --- |
 | `memories` | Facts the user can see, edit and delete | `status`: `proposed` (from the assistant, waiting) or `active` (used in replies). `source`: `user` or `assistant`. `embedding vector(1024)`. Optional link to the source message (same user only; deleting the message keeps the memory). |
 | `documents` | Uploaded plain text or Markdown | `status`: `processing`, `ready`, `failed`. Up to 100,000 characters. |
 | `document_chunks` | Searchable parts of a document | About 2,000 characters with 200 overlap. Deleted with the document. |
-| `action_proposals` | Actions the assistant proposes | `kind`: `create_task`, `create_reminder`, `save_memory`. Inserted only as `proposed`. Cannot be deleted by the user (audit). |
-| `action_log` | Append-only record of what happened | No update or delete. IDs, kinds and counts only, never message or memory text. |
+| `action_proposals` | Actions the assistant proposes | `kind`: `create_task`, `create_reminder`, `save_memory`. Inserted only as `proposed`, with no decision and no result. The payload names the same kind. The user cannot update or delete one; only `decide_action_proposal` changes it. |
+| `action_log` | Record of what happened | Written only by database triggers. The user can read it but cannot insert, update or delete a row. The detail is a flat object of IDs, kinds, modes, counts and flags, never message or memory text. |
 | `reminders` | Reminders with a due time | Delivery (scheduled jobs, notifications) is a later change. |
-| `context_records` | "What was sent" for each assistant reply | Model, history size, memory IDs, document chunk IDs, web source count, prompt version, token counts. No copied text. |
+| `context_records` | "What was sent" for each assistant reply | Model, history size, memory IDs, document chunk IDs, web source count, prompt version, token counts. No copied text. The app writes it with the user's session, so it is the user's own record of what the app sent, not proof that a model received it. |
 
 Similarity search: `match_memories(query, mode, count)` and `match_document_chunks(query, mode, count)`. Both are `SECURITY INVOKER`, so RLS applies, and both cap the count at 20.
 
@@ -53,16 +53,28 @@ All routes need a session. Write routes need a same-origin request. Errors use t
 | `DELETE /api/reminders/:id` | | 204 |
 | `GET /api/messages/:id/context` | | `ContextRecordDTO` |
 
-Every change through these routes also writes one `action_log` row.
+The routes do not write the action log. Database triggers write one row for each change to a memory, a document, a reminder or an action proposal, whatever the path of the change.
 
 ## Rules
 
 - **Approval first.** The AI layer creates `action_proposals` only. An action runs only after `POST /api/actions/:id/decision` with `approve`. The kinds today change only P-Dot's own data. A kind that changes an outside account (email, calendar, devices) needs its own decision.
-- **The user edits before approving.** The decision can carry an edited payload of the same kind, checked with `actionPayloadSchema`.
+- **The user edits before approving.** The decision can carry an edited payload of the same kind, checked with `actionPayloadSchema` in the route and with the same limits again in the database.
 - **Memory from the assistant starts as `proposed`.** It is not used in replies until the user approves it.
 - **Retrieved text is untrusted.** Memories and document chunks go into the prompt inside delimiters, like web results, and cannot authorize actions.
-- **Privacy.** The log and context records hold IDs and counts, not text. Deleting a memory or a document removes its text and vector at once.
+- **Privacy.** The log and context records hold IDs and counts, not text. Deleting a memory or a document removes its text and vector at once. Deleting a memory does not remove a copy of its text inside a `save_memory` proposal payload: the user cannot delete proposals, so that copy stays until the account is deleted.
 - **Cost.** Every embedding goes through the spend guard. A document upload is limited to 100,000 characters (under $0.001 to embed).
+
+## Review fixes (2026-10-21)
+
+The reviews of PRs #6 and #12 found that a signed-in user could use the public API to forge an executed proposal or a log event, reset a proposal to `proposed` and run it twice, and store short private text or nested values in the log detail. A route that ran the action and then wrote the result in a second step could also store a false or missing outcome. All writes still use the user's own session; there is no service role key. Migration `20261021000000_memory_hardening.sql` is additive and safe on a database that already has `20261020000000`.
+
+- **The database writes the action log.** SECURITY DEFINER trigger functions on `memories`, `documents`, `reminders` and `action_proposals` write each row. They have an empty search path, and no API role can call them. The detail holds only IDs, kinds, modes, counts and flags. A check (`is_flat_log_detail`) refuses any detail that is not a flat object of at most 16 keys with string values of at most 64 characters, numbers, booleans or null. The `authenticated` role has no insert grant and no insert policy on the log. A change that only writes a vector is not logged. Events: `proposed`, `approved`, `rejected`, `executed`, `failed`, `memory_added`, `memory_edited`, `memory_deleted`, `document_added`, `document_ready`, `document_failed`, `document_deleted`, `reminder_added`, `reminder_changed`, `reminder_deleted`. The deletes during an account deletion are not logged.
+- **One function decides a proposal.** `decide_action_proposal(p_id, p_decision, p_payload)` is SECURITY DEFINER with an empty search path and is granted only to `authenticated`. In one transaction it reads `auth.uid()`, claims only a `proposed` row of that user, checks the payload (the same limits as `actionPayloadSchema`) and refuses a kind change, stores an edited payload, inserts the task, reminder or memory as that user, and stores `executed` with the new row's ID as the result. If the insert fails, it stores `failed` with `{ error: "execution_failed", code: <SQLSTATE> }`; it never leaves `approved`. It answers `{ outcome, proposal }`, where `outcome` is `not_found`, `already_decided`, `invalid`, `kind_mismatch`, `rejected`, `executed` or `failed`. Another user's proposal gets the same `not_found` answer as a missing one. A second decision gets `already_decided` and runs nothing. The user has no update grant or update policy on proposals.
+- **The decision route** calls the function once and maps the outcome to 200, 404, 409, 400 or 502. The database saves an approved memory with no vector; the route embeds it after the response with `waitUntil`. A failure there only leaves the memory without a vector.
+- **Context records stay user-written.** Without a server secret they cannot be made unforgeable. A record is the user's own record of what the app sent, not proof that a model received it.
+- **The embedder refuses a batch whose worst-case hold is above the ceiling** (`EmbeddingTooLargeError`). It checks every batch before the first reservation and never reduces a required hold. The documents route answers 413. The current upload and memory limits are far below the ceiling.
+- **Existing rows.** The new checks start as NOT VALID. The migration validates each one when every existing row passes it. If an older row fails, that check stays NOT VALID for older rows, a notice says so, and every new row is still checked. The app skips a log row that does not parse and logs its ID only.
+- **Proof.** The migrations ran in order in a throwaway in-memory Postgres 18 (PGlite) with pgvector, stand-ins for `auth.users`, `auth.uid()`, `anon` and `authenticated`, and the legacy Supabase default grants on tables and functions. It is not a check of the hosted project. Checked there: users cannot insert log rows or update proposals; the triggers write the right events with no text; nested, long and wide details are refused; a double approval runs once; a kind change and an invalid payload are refused and change nothing; a failed insert records `failed`; another user's proposal gets the same answer as a missing one; an account can still be deleted; and the migration applies on top of older bad rows.
 
 ## Not in this change
 

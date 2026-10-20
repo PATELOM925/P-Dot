@@ -216,7 +216,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `GET /api/memories?mode=&status=`, `POST /api/memories`, `PATCH`/`DELETE /api/memories/:id` | Memories the user can see, edit and delete ([decision 0009](docs/decisions/0009-memory-documents-actions.md)) |
 | `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | Plain text and Markdown documents, split and embedded on upload |
 | `GET /api/actions?status=`, `POST /api/actions/:id/decision` | Action proposals; `{ decision: "approve" \| "reject", payload? }` runs an approved action once |
-| `GET /api/action-log` | The append-only action log (IDs, kinds and counts only) |
+| `GET /api/action-log` | The action log, written only by the database (IDs, kinds, modes, counts and flags only) |
 | `GET /api/reminders?mode=`, `POST /api/reminders`, `PATCH`/`DELETE /api/reminders/:id` | Reminders (no delivery yet) |
 | `GET /api/messages/:id/context` | "What was sent" for one assistant reply (404 when it has no record) |
 | `GET /api/health` | Liveness and configured integrations (booleans only) |
