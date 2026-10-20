@@ -49,6 +49,15 @@ MVP implementation was authorized on 2026-10-14. The backend and a minimal front
 - Do not simulate successful authentication, saved data, provider responses, or deployment. Label mocks and unfinished behavior.
 - Preserve existing user changes. Never force-push or run destructive Git operations without explicit authorization.
 
+## Rules and what enforces them
+
+Level 1: one owner in the code. Level 3: a test that reads the source and fails on a copy. Level 4: a test that runs the code and fails on the mistake. Level 5: review only, because no check can decide it.
+
+| Rule | Enforced by | Level |
+| --- | --- | --- |
+| A status that means work is in progress names its recovery path in the decision record. | review only | 5 |
+| A route that does more than one write in one request has a test that makes each write fail, refused and lost after it commits. The test checks that no row stays in an in-between status, that the HTTP status is correct and that a retry does not repeat the effect. A new route needs its own sweep. | `sweepWriteFaults` in `tests/support/write-faults.ts`, used in the documents, actions, chat and memories route tests | 4 |
+
 ## Validation and handoff
 
 Once executable code exists, document and run the relevant lint, type-check, test, and build commands. Prioritize tests for authorization boundaries, request validation, provider failures, and core user flows. Never claim a check passed if it was not run.

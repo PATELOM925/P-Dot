@@ -76,6 +76,16 @@ The reviews of PRs #6 and #12 found that a signed-in user could use the public A
 - **Existing rows.** The new checks start as NOT VALID. The migration validates each one when every existing row passes it. If an older row fails, that check stays NOT VALID for older rows, a notice says so, and every new row is still checked. The app skips a log row that does not parse and logs its ID only.
 - **Proof.** The migrations ran in order in a throwaway in-memory Postgres 18 (PGlite) with pgvector, stand-ins for `auth.users`, `auth.uid()`, `anon` and `authenticated`, and the legacy Supabase default grants on tables and functions. It is not a check of the hosted project. Checked there: users cannot insert log rows or update proposals; the triggers write the right events with no text; nested, long and wide details are refused; a double approval runs once; a kind change and an invalid payload are refused and change nothing; a failed insert records `failed`; another user's proposal gets the same answer as a missing one; an account can still be deleted; and the migration applies on top of older bad rows.
 
+## Recovery of in-progress statuses
+
+A status that means work is in progress must name how a row leaves it when a request stops halfway (`AGENTS.md`, "Rules and what enforces them").
+
+- **`documents.status = 'processing'`.** The upload creates the row as `processing`, saves all chunks in one statement, then writes `ready`, or `failed` after an error. If those final writes fail or the Worker stops, the row stays `processing`. Recovery: `GET /api/documents` first settles up to 5 of the user's documents that are `processing` and older than 10 minutes (`DOCUMENT_PROCESSING_STALE_MS`, `STALE_DOCUMENT_SETTLE_LIMIT`). A document with chunks that all have a vector becomes `ready`; any other becomes `failed`. Settling makes no embedding call. If settling fails, the list is still returned and the next list tries again. Search uses only `ready` documents, so a row that waits for settling is never searched. Known limit: after an upload that answered 500 and was then sent again, the first copy can settle `ready`, so the user has two ready copies (an `it.fails` test in `tests/unit/documents-routes.test.ts`).
+- **`action_proposals.status = 'approved'`.** It exists only inside the transaction of `decide_action_proposal`, which always ends in `executed` or `failed`. No committed row keeps it, so it needs no recovery.
+- **Spend holds.** A reservation that is not settled keeps its full hold counted, which is the safe side ([0006](0006-global-spend-guard.md)).
+
+`tests/support/write-faults.ts` makes each write of a request fail, refused or lost after it commits, and the route tests check these paths.
+
 ## Not in this change
 
 Scheduled reminder delivery and push notifications, the tool loop that creates proposals, using memories and documents in the chat prompt, and the frontend screens. They build on these shapes.
