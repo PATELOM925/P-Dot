@@ -77,6 +77,6 @@ describe("WriteFaults", () => {
         if (first) await store.add("only in the dry run");
         first = false;
       }),
-    ).rejects.toThrow("did not fire");
+    ).rejects.toThrow("the planned fault did not fire");
   });
 });

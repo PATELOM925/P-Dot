@@ -90,7 +90,8 @@ export interface SweepCase {
  * Runs `scenario` once with no fault to count its writes, then once for each
  * write and each fault. The scenario builds fresh fakes, wraps them with the
  * given WriteFaults, sends the request, calls `disarm()`, then recovers and
- * asserts. Returns the cases that were run. Fails if a planned fault did not fire.
+ * asserts. Returns the cases that were run. Runs every case, then fails with
+ * a list of each case that failed or whose planned fault did not fire.
  */
 export async function sweepWriteFaults(
   scenario: (faults: WriteFaults, sweepCase: SweepCase | null) => Promise<void>,
@@ -101,14 +102,24 @@ export async function sweepWriteFaults(
   if (dry.calls.length === 0) throw new Error("The scenario made no counted write.");
 
   const cases: SweepCase[] = [];
+  const failures: string[] = [];
   for (const [index, label] of dry.calls.entries()) {
     for (const fault of faults) {
       const sweepCase = { step: index + 1, fault, label };
       const run = new WriteFaults().fail(fault, sweepCase.step);
-      await scenario(run, sweepCase);
-      if (run.fired.length !== 1) throw new Error(`The planned fault did not fire: ${describeCase(sweepCase)}`);
+      try {
+        await scenario(run, sweepCase);
+        if (run.fired.length !== 1) throw new Error("the planned fault did not fire");
+      } catch (error) {
+        const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+        const name = describeCase(sweepCase);
+        failures.push(message.startsWith(name) ? message : `${name}: ${message}`);
+      }
       cases.push(sweepCase);
     }
+  }
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} of ${cases.length} cases failed:\n${failures.join("\n")}`);
   }
   return cases;
 }
