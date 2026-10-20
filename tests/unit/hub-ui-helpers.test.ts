@@ -32,6 +32,7 @@ function proposal(overrides: Partial<ActionProposalDTO> & { payload?: ActionPayl
     result: null,
     createdAt: "2026-10-19T10:00:00+00:00",
     decidedAt: null,
+    verified: false,
     ...overrides,
   };
 }

@@ -107,7 +107,7 @@ class FakeDb {
 
     if (decision === "reject") {
       if (!claim()) return answer("already_decided", row);
-      Object.assign(row, { status: "rejected", decided_at: this.nextTimestamp() });
+      Object.assign(row, { status: "rejected", decided_at: this.nextTimestamp(), decided_by_function: true });
       return answer("rejected", row);
     }
 
@@ -115,7 +115,7 @@ class FakeDb {
     const parsed = actionPayloadSchema.safeParse(payload ?? row.payload);
     if (!parsed.success || parsed.data.kind !== row.kind) return answer("invalid", row);
     if (!claim()) return answer("already_decided", row);
-    Object.assign(row, { status: "approved", decided_at: this.nextTimestamp(), payload: parsed.data });
+    Object.assign(row, { status: "approved", decided_at: this.nextTimestamp(), payload: parsed.data, decided_by_function: true });
 
     const action = parsed.data;
     const table = action.kind === "create_task" ? "tasks" : action.kind === "create_reminder" ? "reminders" : "memories";
@@ -505,6 +505,7 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(task).toMatchObject({ mode: "personal", title: "Pay the invoice", done: false });
     expect(body).toMatchObject({ id: row.id, status: "executed", result: { taskId: task.id }, decidedAt: expect.any(String) });
     expect(body).not.toHaveProperty("user_id");
+    expect(body.verified).toBe(true);
     expect(storedProposal(row.id as string)).toMatchObject({ status: "executed", result: { taskId: task.id } });
   });
 
@@ -687,6 +688,25 @@ describe("POST /api/actions/:id/decision: reject", () => {
   });
 });
 
+describe("POST /api/actions/:id/decision: an older row with a payload that cannot be shown", () => {
+  it("answers 200 with the ID and status after a reject, not 500", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, { kind: "save_memory", mode: "personal", content: "x" }, { kind: "create_task" });
+    const response = await decide(row.id as string, { decision: "reject" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: row.id, status: "rejected" });
+    expect(storedProposal(row.id as string)?.status).toBe("rejected");
+  });
+
+  it("never runs it: an approval answers 404 and changes nothing", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, { kind: "save_memory", mode: "personal", content: "x" }, { kind: "create_task" });
+    expect((await decide(row.id as string, { decision: "approve" })).status).toBe(404);
+    expect(storedProposal(row.id as string)?.status).toBe("proposed");
+    expect(rowsOf("tasks")).toHaveLength(0);
+  });
+});
+
 describe("POST /api/actions/:id/decision: failures", () => {
   it("answers 502 when the database records the action as failed", async () => {
     signInAs(ALICE);
@@ -779,8 +799,8 @@ describe("the proposal repository", () => {
   it("gives the same answer for another user's proposal and a missing one", async () => {
     db.uid = ALICE;
     const bobs = seedProposal(BOB, taskPayload());
-    expect(await repo().decide(bobs.id as string, "approve")).toEqual({ outcome: "not_found", proposal: null });
-    expect(await repo().decide(MISSING_ID, "approve")).toEqual({ outcome: "not_found", proposal: null });
+    expect(await repo().decide(bobs.id as string, "approve")).toEqual({ outcome: "not_found", proposal: null, row: null });
+    expect(await repo().decide(MISSING_ID, "approve")).toEqual({ outcome: "not_found", proposal: null, row: null });
   });
 
   it.each([

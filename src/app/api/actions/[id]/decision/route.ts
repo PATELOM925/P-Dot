@@ -42,7 +42,9 @@ export async function POST(request: Request, context: Context): Promise<Response
     }
     const { decision, payload: edited } = parsed.data;
 
-    const { outcome, proposal } = await createActionProposalRepository(auth.supabase).decide(id.data, decision, edited);
+    const { outcome, proposal, row } = await createActionProposalRepository(auth.supabase).decide(id.data, decision, edited);
+    // A committed decision on an older row whose payload cannot be shown answers with its ID and status only.
+    const decided = proposal ?? row;
 
     switch (outcome) {
       case "not_found":
@@ -64,11 +66,11 @@ export async function POST(request: Request, context: Context): Promise<Response
         });
         return errorResponse(502, "internal_error", "The action could not be completed.", requestId);
       case "rejected":
-        return jsonResponse(proposal, requestId);
+        return jsonResponse(decided, requestId);
       case "executed":
         // The answer does not wait for the vector. waitUntil keeps the work alive after the response.
         if (proposal?.payload.kind === "save_memory") waitUntil(embedSavedMemory(auth, requestId, proposal));
-        return jsonResponse(proposal, requestId);
+        return jsonResponse(decided, requestId);
     }
   });
 }
