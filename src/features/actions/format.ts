@@ -1,6 +1,14 @@
 // Display helpers for action proposals and the action log. Pure functions, so they are unit-tested.
 import { MODE_LABELS } from "@/lib/mode";
-import type { ActionKind, ActionLogEntryDTO, ActionLogEvent, ActionPayload, ActionProposalDTO, Mode } from "@/types/api";
+import type {
+  ActionKind,
+  ActionLogEntryDTO,
+  ActionLogEvent,
+  ActionPayload,
+  ActionProposalDTO,
+  ActionStatus,
+  Mode,
+} from "@/types/api";
 
 export const KIND_LABELS: Record<ActionKind, string> = {
   create_task: "Add a task",
@@ -14,6 +22,49 @@ export const KIND_RESULT_LINKS: Record<ActionKind, { href: string; label: string
   create_reminder: { href: "/workflows", label: "Open your reminders" },
   save_memory: { href: "/memory", label: "Open what P-Dot remembers" },
 };
+
+/**
+ * Said next to an action that is marked done but that the database did not
+ * confirm: decide_action_proposal did not decide it (decision 0009). Older
+ * history, or an outcome a caller wrote, looks like this.
+ */
+export const UNCONFIRMED_HINT = "P-Dot did not confirm this action.";
+
+/** True when a proposal is marked done but the database did not confirm it. */
+export function isUnconfirmedDone(proposal: Pick<ActionProposalDTO, "status" | "verified">): boolean {
+  return proposal.status === "executed" && proposal.verified !== true;
+}
+
+export interface PastProposalView {
+  label: string;
+  /** CSS class of the status pill. */
+  pill: string;
+  note: string;
+  /** Show the link to where the result can be seen. Only for a confirmed result. */
+  showResult: boolean;
+}
+
+// "Approved" rather than "you approved": until the server records who decided (decision 0011),
+// an approval made by Auto mode looks the same as one made with a click.
+const PAST: Record<Exclude<ActionStatus, "proposed">, PastProposalView> = {
+  approved: { label: "Running", pill: "status-approved", note: "Approved. It is still running.", showResult: false },
+  executed: { label: "Done", pill: "status-executed", note: "Approved and done.", showResult: true },
+  rejected: { label: "Cancelled", pill: "status-rejected", note: "You cancelled it. Nothing was changed.", showResult: false },
+  failed: { label: "Failed", pill: "status-failed", note: "Approved, but it could not be completed.", showResult: false },
+};
+
+const UNCONFIRMED_PAST: PastProposalView = {
+  label: "Marked done",
+  pill: "status-unconfirmed",
+  note: UNCONFIRMED_HINT,
+  showResult: false,
+};
+
+/** How chat shows a decided proposal. A done action that the database did not confirm is "Marked done". */
+export function pastProposalView(proposal: ActionProposalDTO): PastProposalView | null {
+  if (proposal.status === "proposed") return null;
+  return isUnconfirmedDone(proposal) ? UNCONFIRMED_PAST : PAST[proposal.status];
+}
 
 /** The fields that will be used when the action runs, as label/value pairs. Built from the payload, never the summary. */
 export function payloadDetails(payload: ActionPayload, formatDate: (iso: string) => string): [string, string][] {
@@ -140,6 +191,11 @@ export function describeLogEntry(entry: ActionLogEntryDTO): LogEntryView {
   }
   if (detail.edited === true) facts.push("Edited before approval");
   if (typeof detail.error === "string") facts.push("Could not be completed");
+
+  // Only a row the database wrote for a confirmed outcome says "completed".
+  if (entry.event === "executed" && entry.verified !== true) {
+    return { title: "Marked as completed", facts: [...facts, UNCONFIRMED_HINT], tone: "neutral" };
+  }
 
   const tone: LogTone =
     entry.event === "executed"

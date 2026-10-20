@@ -636,16 +636,27 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       expect((await decideAs(gate, owner, approved, "approve")).proposal!.decided_by_function).toBe(true);
       expect((await decideAs(gate, owner, rejected, "reject")).proposal!.decided_by_function).toBe(true);
       const log = await gate.admin<{ event: string; verified: boolean | null }>(
-        `select event, (detail ->> 'verified')::boolean as verified from action_log
+        `select event, verified from action_log
           where proposal_id in ($1, $2) order by created_at`,
         [approved, rejected],
       );
       expect(log.rows).toEqual([
-        { event: "proposed", verified: null },
-        { event: "proposed", verified: null },
+        { event: "proposed", verified: true },
+        { event: "proposed", verified: true },
         { event: "approved", verified: true },
         { event: "executed", verified: true },
         { event: "rejected", verified: true },
+      ]);
+    });
+
+    it("marks a log row that a trigger wrote as verified, and one the owner role inserted directly as not verified", async () => {
+      const owner = await gate.createUser();
+      await gate.as(user(owner), "insert into memories (user_id, mode, content, source) values ($1, 'personal', 'x', 'user')", [owner]);
+      await gate.admin(`insert into action_log (user_id, event, detail) values ($1, 'executed', '{"verified":true}')`, [owner]);
+      const rows = await gate.admin("select event, verified, detail ? 'verified' as has_key from action_log where user_id = $1 order by created_at", [owner]);
+      expect(rows.rows).toEqual([
+        { event: "memory_added", verified: true, has_key: false },
+        { event: "executed", verified: false, has_key: false },
       ]);
     });
 
@@ -764,6 +775,7 @@ describe("contract step over the expand window", () => {
   const FORGED = "33333333-3333-4333-8333-000000000001";
   const IN_FLIGHT = "33333333-3333-4333-8333-000000000002";
   const FAKE_TASK = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const FORGED_LOG = "33333333-3333-4333-8333-000000000003";
   let db: SqlGate;
 
   beforeAll(async () => {
@@ -781,6 +793,9 @@ describe("contract step over the expand window", () => {
             ('${IN_FLIGHT}', '${OWNER}', 'create_task', '{"kind":"create_task","mode":"personal","title":"Old"}', 'x');
           update action_proposals set status = 'approved', decided_at = now() where id = '${FORGED}';
           update action_proposals set status = 'executed', result = '{"taskId":"${FAKE_TASK}"}' where id = '${FORGED}';
+          -- The reviewer's case: a direct log insert that claims verification.
+          insert into action_log (id, user_id, event, detail) values
+            ('${FORGED_LOG}', '${OWNER}', 'executed', '{"kind":"create_task","verified":true,"taskId":"${FAKE_TASK}"}');
           -- An older request claimed this one and has not stored its result yet.
           update action_proposals set status = 'approved', decided_at = now() where id = '${IN_FLIGHT}';
           reset role;
@@ -800,7 +815,7 @@ describe("contract step over the expand window", () => {
     const listed = await createActionProposalRepository(sqlGateClient(db, OWNER)).listProposals(OWNER, undefined, 10);
     expect(listed.find((proposal) => proposal.id === FORGED)).toMatchObject({ status: "executed", verified: false });
     const log = await db.admin<{ event: string; verified: boolean }>(
-      `select event, (detail ->> 'verified')::boolean as verified from action_log
+      `select event, verified from action_log
         where proposal_id = $1 and event in ('approved', 'executed') order by created_at`,
       [FORGED],
     );
@@ -809,6 +824,13 @@ describe("contract step over the expand window", () => {
       { event: "executed", verified: false },
     ]);
     expect((await db.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(0);
+  });
+
+  it("keeps a log row a caller inserted before the contract as not verified, with no verified key", async () => {
+    const row = await db.admin("select verified, detail ? 'verified' as has_key from action_log where id = $1", [FORGED_LOG]);
+    expect(row.rows).toEqual([{ verified: false, has_key: false }]);
+    const entries = await createActionLogRepository(sqlGateClient(db, OWNER)).list(OWNER, 50);
+    expect(entries.find((entry) => entry.id === FORGED_LOG)).toMatchObject({ event: "executed", verified: false });
   });
 
   it("leaves an older request's claim approved and not verified when the contract removes its result write, and never runs it again", async () => {

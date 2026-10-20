@@ -195,6 +195,12 @@ export interface ActionLogEntryDTO {
   /** IDs, kinds, modes, counts and flags only. Never message or memory text. Strings are at most 64 characters. */
   detail: Record<string, string | number | boolean | null>;
   createdAt: string;
+  /**
+   * True only for a row that the database log triggers wrote; for an action
+   * outcome, only when decide_action_proposal decided it. False for a row an
+   * app or a user inserted, and for older rows. A caller cannot set it.
+   */
+  verified: boolean;
 }
 
 export type ReminderStatus = "scheduled" | "done" | "cancelled";

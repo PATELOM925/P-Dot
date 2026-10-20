@@ -40,6 +40,7 @@ const logRow = z.object({
   event: z.enum(ACTION_LOG_EVENTS),
   detail: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
   created_at: z.string(),
+  verified: z.boolean().optional(),
 });
 
 const rowId = z.object({ id: z.string() });
@@ -53,7 +54,14 @@ function toEntry(row: unknown): ActionLogEntryDTO | null {
     return null;
   }
   const r = parsed.data;
-  return { id: r.id, proposalId: r.proposal_id, event: r.event, detail: r.detail, createdAt: r.created_at };
+  return {
+    id: r.id,
+    proposalId: r.proposal_id,
+    event: r.event,
+    detail: r.detail,
+    createdAt: r.created_at,
+    verified: r.verified === true,
+  };
 }
 
 export function createActionLogRepository(supabase: SupabaseClient): ActionLogRepository {
@@ -61,7 +69,7 @@ export function createActionLogRepository(supabase: SupabaseClient): ActionLogRe
     async list(userId, limit) {
       const { data, error } = await supabase
         .from("action_log")
-        .select("id, proposal_id, event, detail, created_at")
+        .select("id, proposal_id, event, detail, created_at, verified")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(limit);

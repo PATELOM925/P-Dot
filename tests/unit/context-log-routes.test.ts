@@ -401,9 +401,10 @@ describe("GET /api/action-log", () => {
       event: "approved",
       detail: {},
       createdAt: "2026-10-19T09:00:00.000Z",
+      verified: false,
     });
     for (const entry of body.entries) {
-      expect(Object.keys(entry).sort()).toEqual(["createdAt", "detail", "event", "id", "proposalId"]);
+      expect(Object.keys(entry).sort()).toEqual(["createdAt", "detail", "event", "id", "proposalId", "verified"]);
     }
     expect(JSON.stringify(body)).not.toContain("must never be returned");
   });
@@ -425,7 +426,7 @@ describe("GET /api/action-log", () => {
     };
     expect(body.entries).toHaveLength(ACTION_LOG_LIMIT);
     expect(fake.db.selects.find((s) => s.table === "action_log")?.columns).toBe(
-      "id, proposal_id, event, detail, created_at",
+      "id, proposal_id, event, detail, created_at, verified",
     );
   });
 
