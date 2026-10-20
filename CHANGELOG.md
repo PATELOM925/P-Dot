@@ -9,7 +9,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
-- **Tests that make each write of a request fail, to find rows left halfway.** PR: not opened yet.
+- **Tests that make each write of a request fail, to find rows left halfway.** ([PR #16](https://github.com/PATELOM925/P-Dot/pull/16))
   - Problem: the same mistake reached review twice. A request that failed after its first write left a row in an in-between status: a document stuck `processing` (PR #10), a proposal stuck `approved`, and an action that ran but was stored as `failed` (PR #12). Each test covered only the one step a reviewer found.
   - Resolution:
     - `tests/support/write-faults.ts` wraps the existing fakes. A test can make the Nth write fail as refused (nothing saved) or lost (saved, then the call fails). `sweepWriteFaults` runs a request once for each write and each fault, so a write added later is covered.
