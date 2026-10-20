@@ -12,9 +12,6 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 - **Storage and shared code for memory, documents, action proposals, the action log, reminders and "what was sent"** (decision [0009](docs/decisions/0009-memory-documents-actions.md)).
   - Problem: the pitch needs memory the user can see and edit, search over their own documents, actions that run only after approval, a record of what happened, and a view of what was sent to the model. None of this had storage.
   - Resolution: one additive migration with pgvector, RLS on every table, append-only log and context records, and similarity search that runs as the caller. Embeddings use Qwen3-Embedding-8B at 1,024 dimensions through the spend guard. Shared types, request schemas and limits for the API routes that follow.
-- **Memory routes: list, add, edit, approve and delete** ([PR #9](https://github.com/PATELOM925/P-Dot/pull/9)).
-  - Problem: the memory storage had no API, so the user could not see, edit or delete what the assistant remembers.
-  - Resolution: `GET` and `POST /api/memories`, `PATCH` and `DELETE /api/memories/:id`, all scoped to the session user with a same-origin check on writes. A foreign or missing ID gets 404 before any embedding work. `PATCH` embeds only when the text changes, so the same text keeps its stored vector.
 
 ## 2026-10-19
 
