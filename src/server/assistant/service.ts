@@ -231,7 +231,7 @@ export async function* streamChatTurn(
   let finishReason: string | null = null;
   let usage: TokenUsage | null = null;
   const proposedActions: ProposedAction[] = [];
-  const MAX_TOOL_HOPS = 2; // Strict budget of up to 2 tool execution attempts per turn
+  const MAX_TOOL_HOPS = 3; // Strict budget of up to 3 tool execution attempts per turn
   let hop = 0;
 
   try {
@@ -287,6 +287,29 @@ export async function* streamChatTurn(
       const taskCall = pendingToolCalls.find((call) => call.function.name === "propose_task");
       const activeCall = searchCall ?? reminderCall ?? taskCall ?? pendingToolCalls[0]!;
 
+      // Chain of Thought event: emit the model's reasoning or plan for this hop
+      const rawThought = content.trim();
+      let planningThought = rawThought;
+      if (!planningThought) {
+        if (searchCall) {
+          let q = turn.userMessage.content;
+          try {
+            const p = JSON.parse(searchCall.function.arguments);
+            if (typeof p.query === "string" && p.query.trim()) q = p.query.trim();
+          } catch {}
+          planningThought = `Searching the web for "${q}" (Hop ${hop + 1} of ${MAX_TOOL_HOPS})...`;
+        } else if (reminderCall) {
+          planningThought = `Preparing reminder proposal...`;
+        } else if (taskCall) {
+          planningThought = `Preparing task proposal...`;
+        } else {
+          planningThought = `Executing ${activeCall.function.name}...`;
+        }
+      }
+
+      yield { type: "thought", text: planningThought };
+      content = ""; // Clear content buffer so intermediate thought doesn't contaminate final response
+
       if (searchCall && deps.search) {
         let query = turn.userMessage.content;
         try {
@@ -330,7 +353,7 @@ export async function* streamChatTurn(
           tool_call_id: searchCall.id,
           name: "web_search",
           content: results.length > 0
-            ? `${formatSearchResults(results)}\n\n(Search attempts remaining: ${remainingAttempts - 1}. If you have sufficient information, answer now with [n] citations.)`
+            ? `${formatSearchResults(results)}\n\n(Search attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. If you have sufficient information, answer now with [n] citations.)`
             : "No web search results found.",
         });
       } else if (reminderCall) {

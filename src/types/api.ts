@@ -94,6 +94,7 @@ export type ChatStreamEvent =
       sources: SourceRef[];
       message?: string;
     }
+  | { type: "thought"; text: string }
   | { type: "action"; action: ProposedAction }
   | { type: "delta"; text: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }

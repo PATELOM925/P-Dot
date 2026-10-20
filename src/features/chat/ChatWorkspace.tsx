@@ -192,6 +192,9 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
             }));
             setStatus(event.status === "used" ? "Web search complete. P-Dot is replying…" : (event.message ?? ""));
             break;
+          case "thought":
+            setStatus(`💭 ${event.text}`);
+            break;
           case "action":
             setStatus(`Proposed ${event.action.kind}: "${event.action.title}"`);
             break;

@@ -256,7 +256,7 @@ describe("Autonomous Tool Calling (AI-04)", () => {
     });
   });
 
-  it("executes multi-hop search when first search requires follow-up, respecting attempt limits", async () => {
+  it("executes multi-hop search when first search requires follow-up, respecting 3-attempt limit and emitting thought events", async () => {
     const repo = new MemoryRepository();
     let pass = 0;
 
@@ -287,9 +287,26 @@ describe("Autonomous Tool Calling (AI-04)", () => {
           };
           yield { type: "finish" as const, finishReason: "tool_calls", usage: null };
         } else if (pass === 2) {
-          // Hop 1: Tools are disabled because max hops budget is reached
+          // Hop 1: Tools are still available; model searches for Galaxy S24
+          expect(options?.tools).toBeDefined();
+          yield {
+            type: "tool_calls" as const,
+            calls: [
+              {
+                id: "call_hop_2",
+                type: "function" as const,
+                function: {
+                  name: "web_search",
+                  arguments: JSON.stringify({ query: "Galaxy S24 battery" }),
+                },
+              },
+            ],
+          };
+          yield { type: "finish" as const, finishReason: "tool_calls", usage: null };
+        } else if (pass === 3) {
+          // Hop 2: Final attempt reached, tools are disabled
           expect(options?.tools).toBeUndefined();
-          yield { type: "text" as const, text: "The iPhone 16 has a 3582 mAh battery [1]." };
+          yield { type: "text" as const, text: "iPhone 16 has 3582 mAh [1] while Galaxy S24 has 4000 mAh [2]." };
           yield { type: "finish" as const, finishReason: "stop", usage: null };
         }
       },
@@ -297,15 +314,21 @@ describe("Autonomous Tool Calling (AI-04)", () => {
 
     const { events } = await runTurn(deps, {
       action: "send",
-      message: "What is the battery of iPhone 16?",
+      message: "Compare iPhone 16 and Galaxy S24 battery",
       webSearch: false,
     });
 
-    expect(searches).toEqual(["iPhone 16 battery"]);
+    expect(searches).toEqual(["iPhone 16 battery", "Galaxy S24 battery"]);
+
+    // Verify thought events were emitted for both hops
+    const thoughtEvents = events.filter((e) => e.type === "thought");
+    expect(thoughtEvents.length).toBeGreaterThanOrEqual(2);
+
     const doneEvent = events.find((e) => e.type === "done");
     expect(doneEvent).toBeDefined();
     if (doneEvent && doneEvent.type === "done") {
       expect(doneEvent.message.content).toContain("3582 mAh");
+      expect(doneEvent.message.content).toContain("4000 mAh");
     }
   });
 });
