@@ -34,14 +34,23 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
     const existing = await memories.getMemory(auth.userId, id.data);
     if (!existing) return memoryNotFound(requestId);
 
-    // Only a changed text needs a new vector. The same text, a mode change or a
-    // status change keeps the stored vector and model, so it does not embed.
-    const changes = parsed.data;
-    const newText = changes.content !== undefined && changes.content !== existing.content ? changes.content : undefined;
-    const embedding = newText === undefined ? undefined : await embedMemoryText(auth, requestId, newText);
+    // Only a changed text needs a new vector. The same text is not written at
+    // all, so it cannot put old text back next to a newer text's vector. A
+    // mode or status change keeps the stored vector and model.
+    const changes = { ...parsed.data };
+    if (changes.content === existing.content) delete changes.content;
+    const embedding = changes.content === undefined ? undefined : await embedMemoryText(auth, requestId, changes.content);
+    if (changes.content === undefined && changes.mode === undefined && changes.status === undefined) {
+      return jsonResponse(existing, requestId);
+    }
 
-    const memory = await memories.updateMemory(auth.userId, id.data, changes, embedding);
-    if (!memory) return memoryNotFound(requestId);
+    // The update applies only while the text is still the one read above.
+    // If another edit came first, the client reloads instead.
+    const memory = await memories.updateMemory(auth.userId, id.data, changes, embedding, existing.content);
+    if (!memory) {
+      if (!(await memories.getMemory(auth.userId, id.data))) return memoryNotFound(requestId);
+      return errorResponse(409, "conflict", "This memory changed. Reload it and try again.", requestId);
+    }
 
     return jsonResponse(memory, requestId);
   });

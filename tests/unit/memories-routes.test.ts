@@ -44,6 +44,8 @@ interface QueryRecord {
 class FakeDb {
   tables: Record<string, Row[]> = { memories: [], action_log: [] };
   queries: QueryRecord[] = [];
+  /** Runs once, just before the next update (to simulate another request that writes first). */
+  beforeNextUpdate: (() => void) | null = null;
   private seq = 0;
 
   nextTimestamp(): string {
@@ -131,6 +133,11 @@ class FakeQuery implements PromiseLike<FakeResult> {
   }
 
   private execute(): FakeResult {
+    if (this.op === "update" && this.db.beforeNextUpdate) {
+      const hook = this.db.beforeNextUpdate;
+      this.db.beforeNextUpdate = null;
+      hook();
+    }
     const rows = this.db.tables[this.table] ?? [];
     const matches = rows.filter((row) => this.filters.every((f) => row[f.column] === f.value));
     const scopedToUser =
@@ -424,6 +431,38 @@ describe("PATCH /api/memories/:id", () => {
 
     expect(embed).not.toHaveBeenCalled();
     expect(storedRow(row.id as string)).toMatchObject({ embedding: OLD_VECTOR, status: "active", mode: "work" });
+  });
+
+  it("never puts old text next to a newer text's vector when the text is unchanged", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    // Another edit saves new text with its vector after this request read the row.
+    db.beforeNextUpdate = () => Object.assign(row, { content: "Likes coffee", embedding: "[0.9]" });
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes tea", mode: "work" }), params(row.id as string));
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("conflict");
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes coffee", embedding: "[0.9]", mode: "personal" });
+    expect(embed).not.toHaveBeenCalled();
+  });
+
+  it("does not write the text when it is unchanged, and answers with the stored row", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    const before = db.queries.length;
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes tea" }), params(row.id as string));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ content: "Likes tea" });
+    expect(db.queries.slice(before).some((q) => q.op === "update")).toBe(false);
+    expect(storedRow(row.id as string)).toMatchObject({ embedding: OLD_VECTOR });
+  });
+
+  it("answers 409 when the text changed between the read and a new-text update", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    db.beforeNextUpdate = () => Object.assign(row, { content: "Likes coffee", embedding: "[0.9]" });
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes green tea" }), params(row.id as string));
+    expect(response.status).toBe(409);
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes coffee", embedding: "[0.9]" });
   });
 
   it("answers 404 for another user's memory and changes nothing", async () => {

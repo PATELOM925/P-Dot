@@ -30,12 +30,15 @@ export interface MemoryRepository {
   /**
    * Returns null when no memory with that ID belongs to the user. When
    * `embedding` is passed (even null), the stored vector and model are replaced.
+   * When `ifContent` is passed, the update applies only while the stored text
+   * still equals it (the comparison is in the update); otherwise it returns null.
    */
   updateMemory(
     userId: string,
     memoryId: string,
     changes: { content?: string; mode?: Mode; status?: MemoryStatus },
     embedding?: number[] | null,
+    ifContent?: string,
   ): Promise<MemoryDTO | null>;
   /**
    * Writes a vector only if the memory still has `content`, the text that was
@@ -126,15 +129,11 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
       return toMemory(data);
     },
 
-    async updateMemory(userId, memoryId, changes, embedding) {
+    async updateMemory(userId, memoryId, changes, embedding, ifContent) {
       const update = embedding === undefined ? { ...changes } : { ...changes, ...embeddingColumns(embedding) };
-      const { data, error } = await supabase
-        .from("memories")
-        .update(update)
-        .eq("id", memoryId)
-        .eq("user_id", userId)
-        .select(MEMORY_COLUMNS)
-        .maybeSingle();
+      let query = supabase.from("memories").update(update).eq("id", memoryId).eq("user_id", userId);
+      if (ifContent !== undefined) query = query.eq("content", ifContent);
+      const { data, error } = await query.select(MEMORY_COLUMNS).maybeSingle();
       if (error) throw new RepositoryError("updateMemory");
       return data ? toMemory(data) : null;
     },
