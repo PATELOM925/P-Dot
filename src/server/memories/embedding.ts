@@ -3,7 +3,8 @@ import type { AuthContext } from "@/server/auth/session";
 import { getAssistantConfig } from "@/server/config";
 import { logEvent } from "@/server/log";
 import { createEmbedderForRequest } from "@/server/assistant/deps";
-import { EmbeddingBudgetError, EmbeddingTooLargeError } from "@/server/assistant/embed";
+import { EmbeddingBudgetError } from "@/server/assistant/embed";
+import { NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import { ProviderError } from "@/server/providers/errors";
 
 /**
@@ -20,7 +21,7 @@ export async function embedMemoryText(auth: AuthContext, requestId: string, text
     const [vector] = await createEmbedderForRequest(auth, getAssistantConfig()).embed([text]);
     return vector ?? null;
   } catch (error) {
-    if (error instanceof EmbeddingBudgetError || error instanceof EmbeddingTooLargeError || error instanceof ProviderError) {
+    if (error instanceof EmbeddingBudgetError || error instanceof NebiusHoldTooLargeError || error instanceof ProviderError) {
       logEvent("warn", "memory_embedding_failed", { requestId, errorName: error.name });
       return null;
     }

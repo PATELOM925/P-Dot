@@ -4,8 +4,8 @@ import { MAX_DOCUMENT_BODY_BYTES, MAX_DOCUMENT_CHARS } from "@/lib/limits";
 import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
-import type { Embedder } from "@/server/assistant/embed";
-import { EmbeddingBudgetError, EmbeddingTooLargeError } from "@/server/assistant/embed";
+import { EmbeddingBudgetError, type Embedder } from "@/server/assistant/embed";
+import { NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import type { DocumentRepository, NewChunk, NewDocument } from "@/server/db/documents";
 import { ProviderError } from "@/server/providers/errors";
 import type { DocumentDTO, DocumentStatus, Mode } from "@/types/api";
@@ -314,7 +314,7 @@ describe("POST /api/documents", () => {
 
   it("marks the document failed and answers 413 when a batch is too large for one spend hold", async () => {
     signInAs(ALICE);
-    embedder.embed.mockRejectedValueOnce(new EmbeddingTooLargeError());
+    embedder.embed.mockRejectedValueOnce(new NebiusHoldTooLargeError());
     const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error: { code: "payload_too_large" } });

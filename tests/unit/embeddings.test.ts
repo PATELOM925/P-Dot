@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
-import { EmbeddingBudgetError, EmbeddingTooLargeError, createBudgetedEmbedder } from "@/server/assistant/embed";
-import { MAX_NEBIUS_HOLD_MICRO_USD } from "@/server/assistant/spend";
+import { EmbeddingBudgetError, createBudgetedEmbedder } from "@/server/assistant/embed";
+import { MAX_NEBIUS_HOLD_MICRO_USD, NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import type { SpendGuard } from "@/server/db/spend";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL, createEmbeddings, toPgVector } from "@/server/providers/nebius/embeddings";
@@ -130,24 +130,26 @@ describe("createBudgetedEmbedder", () => {
     const embedder = createBudgetedEmbedder({ settings, spend, fetchImpl: fetchImpl as typeof fetch });
     // 32 texts of 800,000 bytes: a worst case of 256,006 micro-dollars, above the 250,000 ceiling.
     const big = Array.from({ length: 32 }, () => "a".repeat(800_000));
-    await expect(embedder.embed(big)).rejects.toBeInstanceOf(EmbeddingTooLargeError);
+    await expect(embedder.embed(big)).rejects.toBeInstanceOf(NebiusHoldTooLargeError);
     // A small first batch is not reserved either when a later batch is too large.
     await expect(embedder.embed([...Array.from({ length: 32 }, () => "small"), ...big])).rejects.toBeInstanceOf(
-      EmbeddingTooLargeError,
+      NebiusHoldTooLargeError,
     );
     expect(holds).toHaveLength(0);
     expect(settles).toHaveLength(0);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("reserves the full worst case just under the ceiling, without reducing it", async () => {
+  it("reserves a hold exactly at the ceiling and refuses one micro-dollar over it", async () => {
     const { spend, holds } = fakeSpend();
     const fetchImpl = vi.fn(async () => okResponse([vec(1)], 1));
     const embedder = createBudgetedEmbedder({ settings, spend, fetchImpl: fetchImpl as typeof fetch });
-    await embedder.embed(["a".repeat(24_999_000)]);
+    // 10 nano-dollars per token: (24,999,984 bytes + 16) / 100 = 250,000 micro-dollars.
+    await embedder.embed(["a".repeat(24_999_984)]);
+    expect(holds).toEqual([MAX_NEBIUS_HOLD_MICRO_USD]);
+    await expect(embedder.embed(["a".repeat(24_999_985)])).rejects.toBeInstanceOf(NebiusHoldTooLargeError);
     expect(holds).toHaveLength(1);
-    expect(holds[0]).toBeGreaterThan(249_000);
-    expect(holds[0]).toBeLessThanOrEqual(MAX_NEBIUS_HOLD_MICRO_USD);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("splits large inputs into batches, each with its own reservation", async () => {
