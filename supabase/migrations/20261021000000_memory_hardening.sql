@@ -1,48 +1,85 @@
--- Memory hardening (decision 0009, review of PRs #6 and #12).
+-- Memory hardening, EXPAND step (decision 0009, reviews of PRs #6, #12, #13).
 --
 -- 20261020000000_memory_documents_actions.sql is already on main and may be
--- applied, so this file changes that schema with additive steps. It is safe
--- to run after that file, with its grants, policies and rows in place.
+-- applied. This file only adds to it, and the code on main keeps working
+-- during and after it:
+-- - Triggers write the action log with IDs, kinds, modes, counts and flags.
+-- - public.decide_action_proposal claims, runs and records a decision in one
+--   transaction.
+-- - Validation triggers check new and changed rows only. An update that does
+--   not touch the checked columns (for example the foreign key that clears
+--   conversation_id) always works, also on older rows.
+-- - A proposal status moves only forward: proposed to approved or rejected,
+--   approved to executed or failed. A decided proposal cannot change again.
+--   main's decision route uses exactly these steps.
+-- - Explicit grants for every table and function the app uses, so a new
+--   project without automatic grants works. TRUNCATE, REFERENCES and TRIGGER
+--   are removed from the API roles.
 --
--- After this migration, two kinds of record are written only by the
--- database, never by the app:
--- - the action log: triggers on memories, documents, reminders and action
---   proposals write every row, with IDs, kinds, modes, counts and flags only;
--- - the outcome of an action proposal: public.decide_action_proposal claims,
---   runs and records a decision in one transaction.
--- A user cannot forge, reset or replay either one through the public API.
+-- The old insert grant and policy on action_log, and the old update grant
+-- and policy on action_proposals, stay until the CONTRACT step
+-- (20261021010000_memory_hardening_contract.sql). Apply that only after the
+-- code that uses decide_action_proposal is live. Until then, main's code may
+-- write a second log row for a change; the trigger row is the trusted one.
 -- All writes still use the signed-in user's session. No service role key.
 
 -- ---------------------------------------------------------------------------
--- Action proposals: no direct updates. Only decide_action_proposal changes a
--- proposal. The insert policy also refuses a decision or a result.
+-- Action proposals. The insert policy also refuses a decision or a result.
+-- (main's code inserts only 'proposed' rows with neither.)
 -- ---------------------------------------------------------------------------
-drop policy if exists action_proposals_update_own on public.action_proposals;
-revoke update (status, result, decided_at) on public.action_proposals from authenticated;
-revoke update on public.action_proposals from authenticated;
-
 drop policy if exists action_proposals_insert_own on public.action_proposals;
 create policy action_proposals_insert_own on public.action_proposals
   for insert to authenticated
   with check ((select auth.uid()) = user_id and status = 'proposed' and decided_at is null and result is null);
 
--- The payload names the row's kind, and a waiting proposal has no decision.
--- NOT VALID first, so existing rows do not block the migration; the block at
--- the end validates each check when every existing row passes.
-alter table public.action_proposals
-  add constraint action_proposals_payload_kind_check
-    check ((payload ->> 'kind') is not distinct from kind) not valid,
-  add constraint action_proposals_proposed_undecided_check
-    check (status <> 'proposed' or (decided_at is null and result is null)) not valid;
+-- Checks new rows, and changes to the checked columns of any row:
+-- - the payload names the row's kind (only when the payload or kind is written);
+-- - a waiting proposal has no decision and no result;
+-- - the status moves only forward, and a decided proposal does not change.
+-- Older rows that fail a rule stay as they are. They can still be rejected
+-- through decide_action_proposal, and their conversation can still be deleted.
+create or replace function public.check_action_proposal()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if (tg_op = 'INSERT' or new.payload is distinct from old.payload or new.kind is distinct from old.kind)
+    and (new.payload ->> 'kind') is distinct from new.kind then
+    raise exception 'action proposal payload must name the same kind' using errcode = '23514';
+  end if;
+  if new.status = 'proposed' and (new.decided_at is not null or new.result is not null) then
+    raise exception 'a waiting action proposal has no decision or result' using errcode = '23514';
+  end if;
+  if tg_op = 'UPDATE' then
+    if old.status in ('rejected', 'executed', 'failed') and (
+      new.status is distinct from old.status or new.payload is distinct from old.payload
+      or new.kind is distinct from old.kind or new.result is distinct from old.result
+      or new.decided_at is distinct from old.decided_at) then
+      raise exception 'a decided action proposal cannot change' using errcode = '23514';
+    end if;
+    if new.status is distinct from old.status and not (
+      (old.status = 'proposed' and new.status in ('approved', 'rejected'))
+      or (old.status = 'approved' and new.status in ('executed', 'failed'))) then
+      raise exception 'action proposal status cannot move from % to %', old.status, new.status using errcode = '23514';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+revoke execute on function public.check_action_proposal() from public, anon, authenticated;
+
+drop trigger if exists action_proposals_check on public.action_proposals;
+create trigger action_proposals_check
+  before insert or update of kind, payload, status, result, decided_at on public.action_proposals
+  for each row execute function public.check_action_proposal();
 
 -- ---------------------------------------------------------------------------
--- Action log: read-only for users. The detail is a flat object of short
--- values: at most 16 keys, and every value is a string of at most 64
--- characters, a number, a boolean or null.
+-- Action log. The detail of a new row is a flat object of short values: at
+-- most 16 keys, and every value is a string of at most 64 characters, a
+-- number, a boolean or null. main's code writes only such details.
 -- ---------------------------------------------------------------------------
-drop policy if exists action_log_insert_own on public.action_log;
-revoke insert on public.action_log from authenticated;
-
 create or replace function public.is_flat_log_detail(p_detail jsonb)
 returns boolean
 language sql
@@ -62,23 +99,40 @@ as $$
   end;
 $$;
 
-revoke execute on function public.is_flat_log_detail(jsonb) from public, anon, authenticated;
+-- SECURITY DEFINER: the inserting role cannot call is_flat_log_detail itself.
+create or replace function public.check_action_log_detail()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.is_flat_log_detail(new.detail) or pg_column_size(new.detail) > 2048 then
+    raise exception 'action log detail must be a flat object of short values' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
 
-alter table public.action_log
-  drop constraint if exists action_log_event_check,
-  drop constraint if exists action_log_detail_check;
+revoke execute on function public.is_flat_log_detail(jsonb) from public, anon, authenticated;
+revoke execute on function public.check_action_log_detail() from public, anon, authenticated;
+
+drop trigger if exists action_log_check_detail on public.action_log;
+create trigger action_log_check_detail
+  before insert or update of detail on public.action_log
+  for each row execute function public.check_action_log_detail();
+
+-- The new event names. Every older row uses a name from the old list, which
+-- is part of the new one, so this check is valid at once.
+alter table public.action_log drop constraint if exists action_log_event_check;
 alter table public.action_log
   add constraint action_log_event_check check (event in (
     'proposed', 'approved', 'rejected', 'executed', 'failed',
     'memory_added', 'memory_edited', 'memory_deleted',
     'document_added', 'document_ready', 'document_failed', 'document_deleted',
     'reminder_added', 'reminder_changed', 'reminder_deleted'
-  )),
-  add constraint action_log_detail_check
-    check (public.is_flat_log_detail(detail) and pg_column_size(detail) <= 2048) not valid;
+  ));
 
--- Only the trigger functions write the log now.
-alter table public.action_log alter column user_id drop default;
 -- clock_timestamp, so two events in one transaction keep their order.
 alter table public.action_log alter column created_at set default clock_timestamp();
 
@@ -497,38 +551,35 @@ revoke execute on function public.decide_action_proposal(uuid, text, jsonb) from
 grant execute on function public.decide_action_proposal(uuid, text, jsonb) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- Validate the new checks when every existing row passes. A row written
--- before this migration (by the app, with its own session) may hold a
--- nested value or a long string. Such a row stays, the check stays NOT VALID
--- for old rows, and every new row is still checked. The app skips a log row
--- that does not parse.
+-- Explicit grants. A new Supabase project no longer grants table privileges
+-- to the API roles automatically, so each table and function the app uses
+-- gets only the privileges the app needs. Earlier column grants for UPDATE
+-- stay as they are. These grants add nothing on a project that has the
+-- older automatic grants.
 -- ---------------------------------------------------------------------------
-do $$
-begin
-  if not exists (
-    select 1 from public.action_log l
-    where not (public.is_flat_log_detail(l.detail) and pg_column_size(l.detail) <= 2048)
-  ) then
-    alter table public.action_log validate constraint action_log_detail_check;
-  else
-    raise notice 'action_log_detail_check is NOT VALID: some existing log rows fail it';
-  end if;
+grant select, insert, delete on public.conversations to authenticated;
+grant select, insert on public.messages to authenticated;
+grant select, insert, delete on public.tasks to authenticated;
+grant select, insert, delete on public.memories to authenticated;
+grant select, insert, delete on public.documents to authenticated;
+grant select, insert on public.document_chunks to authenticated;
+grant select, insert on public.action_proposals to authenticated;
+grant select on public.action_log to authenticated;
+grant select, insert, delete on public.reminders to authenticated;
+grant select, insert on public.context_records to authenticated;
 
-  if not exists (
-    select 1 from public.action_proposals p where (p.payload ->> 'kind') is distinct from p.kind
-  ) then
-    alter table public.action_proposals validate constraint action_proposals_payload_kind_check;
-  else
-    raise notice 'action_proposals_payload_kind_check is NOT VALID: some existing proposals fail it';
-  end if;
+grant update (title) on public.conversations to authenticated;
+grant update (title, done) on public.tasks to authenticated;
+grant update (mode, content, status, embedding, embedding_model) on public.memories to authenticated;
+grant update (status) on public.documents to authenticated;
+grant update (mode, title, due_at, status) on public.reminders to authenticated;
 
-  if not exists (
-    select 1 from public.action_proposals p
-    where p.status = 'proposed' and (p.decided_at is not null or p.result is not null)
-  ) then
-    alter table public.action_proposals validate constraint action_proposals_proposed_undecided_check;
-  else
-    raise notice 'action_proposals_proposed_undecided_check is NOT VALID: some existing proposals fail it';
-  end if;
-end;
-$$;
+grant execute on function public.consume_chat_quota(integer, integer) to authenticated;
+grant execute on function public.match_memories(extensions.vector, text, integer) to authenticated;
+grant execute on function public.match_document_chunks(extensions.vector, text, integer) to authenticated;
+grant execute on function public.reserve_provider_spend(text, bigint, bigint, bigint, bigint) to authenticated;
+grant execute on function public.settle_provider_spend(uuid, bigint) to authenticated;
+
+-- No API role may empty a table, reference it from its own table or add a
+-- trigger to it. TRUNCATE skips row-level security and row triggers.
+revoke truncate, references, trigger on all tables in schema public from anon, authenticated;
