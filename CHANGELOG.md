@@ -12,6 +12,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 - **Storage and shared code for memory, documents, action proposals, the action log, reminders and "what was sent"** (decision [0009](docs/decisions/0009-memory-documents-actions.md)).
   - Problem: the pitch needs memory the user can see and edit, search over their own documents, actions that run only after approval, a record of what happened, and a view of what was sent to the model. None of this had storage.
   - Resolution: one additive migration with pgvector, RLS on every table, append-only log and context records, and similarity search that runs as the caller. Embeddings use Qwen3-Embedding-8B at 1,024 dimensions through the spend guard. Shared types, request schemas and limits for the API routes that follow.
+- **Document routes: upload, list and delete plain text or Markdown** ([PR #10](https://github.com/PATELOM925/P-Dot/pull/10)).
+  - Problem: the user needs to add documents for search, and an upload that stops before its final status write must not stay "processing" for ever.
+  - Resolution: the upload splits the text into chunks, embeds them through the spend guard and saves them in one statement. If both final status writes fail, the route logs the document ID only. A later list settles each of the user's documents that is still "processing" after 10 minutes: "ready" if all its chunks have embeddings, otherwise "failed". The update applies only while the status is still "processing", and it makes no embedding call.
 
 ## 2026-10-19
 

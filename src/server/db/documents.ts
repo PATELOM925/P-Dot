@@ -30,6 +30,15 @@ export interface DocumentRepository {
   createDocument(userId: string, document: NewDocument): Promise<DocumentDTO>;
   insertChunks(userId: string, documentId: string, chunks: NewChunk[]): Promise<void>;
   setStatus(userId: string, documentId: string, status: DocumentStatus): Promise<void>;
+  /**
+   * Settles at most `limit` of the user's documents that are still "processing"
+   * and were created before `createdBefore`. Chunks are saved in one statement,
+   * so a document has all its chunks or none. A document with chunks that all
+   * have an embedding becomes "ready"; any other becomes "failed". Each update
+   * applies only while the status is still "processing", so two requests cannot
+   * fight. No embedding call is made. Returns the number of documents changed.
+   */
+  settleStaleDocuments(userId: string, createdBefore: Date, limit: number): Promise<number>;
   /** Returns false when no document with that ID belongs to the user. Chunks go with it. */
   deleteDocument(userId: string, documentId: string): Promise<boolean>;
 }
@@ -113,6 +122,50 @@ export function createDocumentRepository(supabase: SupabaseClient): DocumentRepo
         .eq("id", documentId)
         .eq("user_id", userId);
       if (error) throw new RepositoryError("setDocumentStatus");
+    },
+
+    async settleStaleDocuments(userId, createdBefore, limit) {
+      const { data, error } = await supabase
+        .from("documents")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("status", "processing")
+        .lt("created_at", createdBefore.toISOString())
+        .order("created_at", { ascending: true })
+        .limit(limit);
+      if (error) throw new RepositoryError("findStaleDocuments");
+      const ids = z.array(z.object({ id: z.string() })).parse(data ?? []).map((row) => row.id);
+
+      let settled = 0;
+      for (const id of ids) {
+        const [all, missing] = await Promise.all([
+          supabase
+            .from("document_chunks")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId)
+            .eq("document_id", id),
+          supabase
+            .from("document_chunks")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId)
+            .eq("document_id", id)
+            .is("embedding", null),
+        ]);
+        if (all.error || missing.error || all.count == null || missing.count == null) {
+          throw new RepositoryError("countDocumentChunks");
+        }
+        const status: DocumentStatus = all.count > 0 && missing.count === 0 ? "ready" : "failed";
+
+        const { count, error: updateError } = await supabase
+          .from("documents")
+          .update({ status }, { count: "exact" })
+          .eq("id", id)
+          .eq("user_id", userId)
+          .eq("status", "processing");
+        if (updateError) throw new RepositoryError("settleStaleDocument");
+        settled += count ?? 0;
+      }
+      return settled;
     },
 
     async deleteDocument(userId, documentId) {
