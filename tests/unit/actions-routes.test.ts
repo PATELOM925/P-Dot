@@ -12,7 +12,14 @@ import { TEST_SPEND_CAPS, testRouting } from "../support/fakes";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
-vi.mock("@/server/assistant/deps", () => ({ createEmbedderForRequest: vi.fn() }));
+/** Work passed to waitUntil. Tests await it, as the Workers runtime would keep it alive. */
+const { pendingWork } = vi.hoisted(() => ({ pendingWork: [] as Promise<unknown>[] }));
+vi.mock("@/server/assistant/deps", () => ({
+  createEmbedderForRequest: vi.fn(),
+  waitUntil: (work: Promise<unknown>) => {
+    pendingWork.push(work);
+  },
+}));
 
 const { getAuthContext } = await import("@/server/auth/session");
 const { getAssistantConfig } = await import("@/server/config");
@@ -293,8 +300,15 @@ function plainRequest(url: string, method = "GET", headers: Record<string, strin
 
 const params = (id: string) => ({ params: Promise.resolve({ id }) });
 
-const decide = (id: string, body: unknown, headers: Record<string, string> = {}) =>
-  decisionRoute.POST(jsonRequest(`http://localhost/api/actions/${id}/decision`, "POST", body, headers), params(id));
+/** Sends a decision, then waits for any work the route passed to waitUntil. */
+async function decide(id: string, body: unknown, headers: Record<string, string> = {}) {
+  const response = await decisionRoute.POST(
+    jsonRequest(`http://localhost/api/actions/${id}/decision`, "POST", body, headers),
+    params(id),
+  );
+  await Promise.all(pendingWork.splice(0));
+  return response;
+}
 
 const taskPayload = (title = "Pay the invoice") => ({ kind: "create_task" as const, mode: "personal" as const, title });
 const reminderPayload = () => ({ kind: "create_reminder" as const, mode: "work" as const, title: "Call the supplier", dueAt: DUE });
@@ -331,6 +345,7 @@ function logEvents(): Row[] {
 }
 
 beforeEach(() => {
+  pendingWork.length = 0;
   db = new FakeDb();
   consoleLines = [];
   for (const level of ["info", "warn", "error"] as const) {
@@ -557,6 +572,26 @@ describe("POST /api/actions/:id/decision: approve", () => {
     const warning = consoleLines.find((l) => l.includes('"event":"action_embedding_failed"'));
     expect(warning).toContain(row.id as string);
     expect(consoleLines.join("\n")).not.toContain(SECRET_MEMORY);
+  });
+
+  it("answers before the vector is written, and hands the work to waitUntil", async () => {
+    signInAs(ALICE);
+    let release: () => void = () => {};
+    embed.mockImplementationOnce(
+      (texts: string[]) => new Promise((resolve) => (release = () => resolve(texts.map(() => VECTOR)))),
+    );
+    const row = seedProposal(ALICE, memoryPayload());
+    const response = await decisionRoute.POST(
+      jsonRequest(`http://localhost/api/actions/${row.id}/decision`, "POST", { decision: "approve" }),
+      params(row.id as string),
+    );
+    expect(response.status).toBe(200);
+    expect(pendingWork).toHaveLength(1);
+    expect(rowsOf("memories")[0]).toMatchObject({ embedding: null });
+
+    release();
+    await Promise.all(pendingWork.splice(0));
+    expect(rowsOf("memories")[0]).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL });
   });
 
   it("does not read the embedding settings for a task", async () => {

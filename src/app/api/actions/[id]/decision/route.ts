@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES } from "@/lib/limits";
 import { actionDecisionSchema } from "@/lib/schemas";
+import { waitUntil } from "@/server/assistant/deps";
 import type { AuthContext } from "@/server/auth/session";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createMemoryRepository } from "@/server/db/memories";
@@ -65,17 +66,18 @@ export async function POST(request: Request, context: Context): Promise<Response
       case "rejected":
         return jsonResponse(proposal, requestId);
       case "executed":
-        if (proposal) await embedSavedMemory(auth, requestId, proposal);
+        // The answer does not wait for the vector. waitUntil keeps the work alive after the response.
+        if (proposal?.payload.kind === "save_memory") waitUntil(embedSavedMemory(auth, requestId, proposal));
         return jsonResponse(proposal, requestId);
     }
   });
 }
 
 /**
- * The database saves an approved memory with no vector. Embed it now, so it
- * can be found by search. The action already ran, so any failure here only
- * leaves the memory without a vector; it never fails the request. The log
- * line holds IDs and the error name, never the text.
+ * The database saves an approved memory with no vector. Embed it after the
+ * response, so it can be found by search. The action already ran, so any
+ * failure here only leaves the memory without a vector. This promise never
+ * rejects. The log line holds IDs and the error name, never the text.
  */
 async function embedSavedMemory(auth: AuthContext, requestId: string, proposal: ActionProposalDTO): Promise<void> {
   if (proposal.payload.kind !== "save_memory") return;
