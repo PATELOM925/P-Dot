@@ -37,6 +37,13 @@ export interface MemoryRepository {
     changes: { content?: string; mode?: Mode; status?: MemoryStatus },
     embedding?: number[] | null,
   ): Promise<MemoryDTO | null>;
+  /**
+   * Writes a vector only if the memory still has `content`, the text that was
+   * embedded. The text comparison is part of the database update, so a late
+   * vector can never replace the vector of newer text. Returns false when no
+   * row matched (the text changed, or the memory is gone).
+   */
+  setEmbeddingIfContent(userId: string, memoryId: string, content: string, embedding: number[]): Promise<boolean>;
   /** Returns false when no memory with that ID belongs to the user. */
   deleteMemory(userId: string, memoryId: string): Promise<boolean>;
 }
@@ -130,6 +137,19 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
         .maybeSingle();
       if (error) throw new RepositoryError("updateMemory");
       return data ? toMemory(data) : null;
+    },
+
+    async setEmbeddingIfContent(userId, memoryId, content, embedding) {
+      const { data, error } = await supabase
+        .from("memories")
+        .update(embeddingColumns(embedding))
+        .eq("id", memoryId)
+        .eq("user_id", userId)
+        .eq("content", content)
+        .select("id")
+        .maybeSingle();
+      if (error) throw new RepositoryError("setMemoryEmbedding");
+      return data !== null;
     },
 
     async deleteMemory(userId, memoryId) {

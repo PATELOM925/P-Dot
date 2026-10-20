@@ -84,9 +84,12 @@ async function embedSavedMemory(auth: AuthContext, requestId: string, proposal: 
   const memoryId = proposal.result?.memoryId;
   if (typeof memoryId !== "string") return;
   try {
-    const embedding = await embedMemoryText(auth, requestId, proposal.payload.content);
+    const text = proposal.payload.content;
+    const embedding = await embedMemoryText(auth, requestId, text);
     if (!embedding) return;
-    await createMemoryRepository(auth.supabase).updateMemory(auth.userId, memoryId, {}, embedding);
+    // Only if the memory still has this text: an edit made meanwhile keeps its own vector.
+    const written = await createMemoryRepository(auth.supabase).setEmbeddingIfContent(auth.userId, memoryId, text, embedding);
+    if (!written) logEvent("info", "action_embedding_skipped", { requestId, proposalId: proposal.id });
   } catch (error) {
     logEvent("warn", "action_embedding_failed", {
       requestId,

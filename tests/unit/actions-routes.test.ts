@@ -594,6 +594,30 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(rowsOf("memories")[0]).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL });
   });
 
+  it("does not let a late vector replace the vector of text the user changed meanwhile", async () => {
+    signInAs(ALICE);
+    let release: () => void = () => {};
+    embed.mockImplementationOnce(
+      (texts: string[]) => new Promise((resolve) => (release = () => resolve(texts.map(() => VECTOR)))),
+    );
+    const row = seedProposal(ALICE, memoryPayload("Prefers tea"));
+    const response = await decisionRoute.POST(
+      jsonRequest(`http://localhost/api/actions/${row.id}/decision`, "POST", { decision: "approve" }),
+      params(row.id as string),
+    );
+    expect(response.status).toBe(200);
+
+    // The user edits the memory before the first vector arrives. The edit stores its own vector.
+    const memory = rowsOf("memories", ALICE)[0] as Row;
+    Object.assign(memory, { content: "Prefers coffee", embedding: "[0.9]", embedding_model: EMBEDDING_MODEL });
+
+    release();
+    await Promise.all(pendingWork.splice(0));
+    expect(rowsOf("memories", ALICE)[0]).toMatchObject({ content: "Prefers coffee", embedding: "[0.9]" });
+    expect(consoleLines.some((l) => l.includes('"event":"action_embedding_skipped"'))).toBe(true);
+    expect(consoleLines.join("\n")).not.toContain("Prefers");
+  });
+
   it("does not read the embedding settings for a task", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
