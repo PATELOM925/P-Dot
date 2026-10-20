@@ -361,13 +361,13 @@ export const EVAL_DATASET: EvalCase[] = [
     id: "ground-cite-11",
     category: "citation_grounding",
     description: "Distinguishing search results from unverified assumptions",
-    userPrompt: "What did the company report regarding Q3 earnings?",
+    userPrompt: "What did Acme Corp report regarding Q3 earnings?",
     expectedTool: "web_search",
     mockSearchResults: [
       {
-        title: "Earnings Release",
+        title: "Acme Corp Earnings Release",
         url: "https://news.example.com/earnings",
-        excerpt: "The company reported EPS of $2.45, beating estimates of $2.30.",
+        excerpt: "Acme Corp reported EPS of $2.45, beating estimates of $2.30.",
       },
     ],
     assertions: {

@@ -138,6 +138,12 @@ function toSourceRefs(results: WebSearchResult[]): SourceRef[] {
   return results.map(({ title, url }) => ({ title, url }));
 }
 
+function normalizeAssistantText(text: string): string {
+  return text
+    .replace(/[\u202F\u00A0]/g, " ")
+    .replace(/【([0-9]+)】/g, "[$1]");
+}
+
 /**
  * Runs retrieval (if requested) and inference, streaming events to the client.
  * The assistant reply is persisted only when it completes. Never throws:
@@ -227,9 +233,11 @@ export async function* streamChatTurn(
         pendingToolCalls = chunk.calls;
         continue;
       }
+
       if (chunk.type === "text") {
+        const normalized = normalizeAssistantText(chunk.text);
         const room = MAX_ASSISTANT_CHARS - content.length;
-        const text = chunk.text.slice(0, room);
+        const text = normalized.slice(0, room);
         if (text) {
           content += text;
           yield { type: "delta", text };
@@ -285,7 +293,7 @@ export async function* streamChatTurn(
         messages.push({
           role: "assistant",
           content: null,
-          tool_calls: pendingToolCalls,
+          tool_calls: [searchCall],
         });
         messages.push({
           role: "tool",
@@ -310,8 +318,9 @@ export async function* streamChatTurn(
             continue;
           }
           if (chunk.type === "text") {
+            const normalized = normalizeAssistantText(chunk.text);
             const room = MAX_ASSISTANT_CHARS - content.length;
-            const text = chunk.text.slice(0, room);
+            const text = normalized.slice(0, room);
             if (text) {
               content += text;
               yield { type: "delta", text };
@@ -319,6 +328,44 @@ export async function* streamChatTurn(
             if (content.length >= MAX_ASSISTANT_CHARS) {
               truncated = true;
               break;
+            }
+          }
+        }
+
+        // Fallback synthesis pass if the model attempted another tool call or returned empty text
+        if (content.trim().length === 0) {
+          const finalMessages: ChatMessage[] = [
+            ...messages,
+            {
+              role: "user",
+              content: "Based on the retrieved sources above, provide the direct answer now with citations.",
+            },
+          ];
+          for await (const chunk of deps.complete(finalMessages, signal)) {
+            if (chunk.type === "finish") {
+              finishReason = chunk.finishReason;
+              if (chunk.usage && usage) {
+                usage = {
+                  promptTokens: usage.promptTokens + chunk.usage.promptTokens,
+                  completionTokens: usage.completionTokens + chunk.usage.completionTokens,
+                };
+              } else if (chunk.usage) {
+                usage = chunk.usage;
+              }
+              continue;
+            }
+            if (chunk.type === "text") {
+              const normalized = normalizeAssistantText(chunk.text);
+              const room = MAX_ASSISTANT_CHARS - content.length;
+              const text = normalized.slice(0, room);
+              if (text) {
+                content += text;
+                yield { type: "delta", text };
+              }
+              if (content.length >= MAX_ASSISTANT_CHARS) {
+                truncated = true;
+                break;
+              }
             }
           }
         }

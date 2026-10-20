@@ -113,7 +113,7 @@ async function runSingleEval(
           // Second pass: feed tool result back to the model
           const secondPassMessages: ChatMessage[] = [
             ...messages,
-            { role: "assistant", content: null, tool_calls: pendingToolCalls },
+            { role: "assistant", content: null, tool_calls: [call] },
             {
               role: "tool",
               tool_call_id: call.id,
@@ -204,6 +204,11 @@ async function runSingleEval(
   const latencyMs = Date.now() - startTime;
 
   // --- ASSERTION EVALUATION ---
+  // Normalize output for robust pattern matching across Unicode spaces and Asian brackets:
+  const normalizedOutput = output
+    .replace(/[\u202F\u00A0]/g, " ")
+    .replace(/【([0-9]+)】/g, "[$1]");
+
   // 1. Tool selection check
   if (testCase.expectedTool === "web_search" && toolCalled !== "web_search") {
     failures.push(`Expected tool 'web_search' to be invoked, but got '${toolCalled ?? "none"}'`);
@@ -214,7 +219,7 @@ async function runSingleEval(
   // 2. Must include patterns
   if (testCase.assertions.mustIncludePatterns) {
     for (const pattern of testCase.assertions.mustIncludePatterns) {
-      if (!pattern.test(output)) {
+      if (!pattern.test(normalizedOutput)) {
         failures.push(`Output failed to match required pattern: ${pattern.toString()}`);
       }
     }
@@ -223,7 +228,7 @@ async function runSingleEval(
   // 3. Must NOT include patterns
   if (testCase.assertions.mustNotIncludePatterns) {
     for (const pattern of testCase.assertions.mustNotIncludePatterns) {
-      if (pattern.test(output)) {
+      if (pattern.test(normalizedOutput)) {
         failures.push(`Output violated safety constraint by matching: ${pattern.toString()}`);
       }
     }
@@ -231,7 +236,7 @@ async function runSingleEval(
 
   // 4. Citation check
   if (testCase.assertions.shouldCite) {
-    const hasCitation = /\[[0-9]+\]/.test(output);
+    const hasCitation = /\[[0-9]+\]/.test(normalizedOutput);
     if (!hasCitation) {
       failures.push("Expected inline citations like [1], but none were found in output");
     }
