@@ -122,6 +122,37 @@ describe("findChangelogErrors", () => {
     expect(messages(text)).toEqual([]);
   });
 
+  it("does not take a label from inside a code span", () => {
+    const text = changelog(
+      [`- **Fix.** [PR](${PR})`, "  - Problem: `Resolution:` appeared twice.", "  - Resolution: remove the duplicate."].join("\n"),
+    );
+    expect(messages(text)).toEqual([]);
+  });
+
+  it("does not count a link inside a code span or a fenced code block", () => {
+    const text = changelog(
+      [
+        `- **Code span.** Problem: bad. Resolution: fixed. \`${PR}\``,
+        "- **Code block.** Problem: bad. Resolution: fixed.",
+        "  ```",
+        `  ${PR}`,
+        "  ```",
+      ].join("\n"),
+    );
+    const found = messages(text);
+    expect(found).toHaveLength(2);
+    for (const message of found) expect(message).toContain("add a link to the pull request");
+  });
+
+  it("does not count a GitHub link inside another website's link destination", () => {
+    const text = changelog(`- **Fix.** Problem: bad. Resolution: fixed. [other](https://example.org/?next=${PR})\n`);
+    expect(messages(text)).toEqual([expect.stringContaining("add a link to the pull request")]);
+  });
+
+  it("counts a bare link in parentheses", () => {
+    expect(messages(changelog(`- **Bare.** Problem: bad. Resolution: fixed. (${PR}).\n`))).toEqual([]);
+  });
+
   it("fails when the Unreleased section is missing", () => {
     expect(messages("# Changelog\n\n## 2026-10-19\n")[0]).toContain('no "## Unreleased" section');
   });

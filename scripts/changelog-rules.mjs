@@ -2,14 +2,26 @@
 // Dated sections are not checked: entries from before this check use an older shape.
 
 const REPO = "https://github.com/PATELOM925/P-Dot";
-const LINK = /https:\/\/github\.com\/PATELOM925\/P-Dot\/(?:pull|commit)\/[^\s)\]>"'`]*/g;
 const ACCEPTED_LINK = /^https:\/\/github\.com\/PATELOM925\/P-Dot\/(?:pull\/\d+|commit\/[0-9a-f]{7,40})$/;
 const TITLE = /^- \*\*(.+?)\*\*/;
 const LABEL = /\b(?:Problem|Resolution):/;
 const HAS_TEXT = /[\p{L}\p{N}]/u;
 
 function hasAcceptedLink(body) {
-  return (body.match(LINK) ?? []).some((url) => ACCEPTED_LINK.test(url.replace(/[.,;:]+$/, "")));
+  const destinations = [...body.matchAll(/\]\(([^()\s]*)\)/g)].map((match) => match[1]);
+  const bare = body.replace(/\]\([^()\s]*\)/g, "]").match(/https?:\/\/[^\s<>()[\]]+/g) ?? [];
+  return [...destinations, ...bare].some((url) => ACCEPTED_LINK.test(url.replace(/[.,;:]+$/, "")));
+}
+
+function withoutCode(lines) {
+  let fenced = false;
+  return lines.map((line) => {
+    if (/^\s*(```|~~~)/.test(line.text)) {
+      fenced = !fenced;
+      return { ...line, text: "" };
+    }
+    return { ...line, text: fenced ? "" : line.text.replace(/(`+)[\s\S]*?\1/g, "code") };
+  });
 }
 
 function fieldText(text, label) {
@@ -39,8 +51,9 @@ function labelStatus(lines, label) {
   return hasTextChild(lines, index) ? null : "empty";
 }
 
-function checkEntry(lines) {
-  const first = lines[0];
+function checkEntry(entry) {
+  const first = entry[0];
+  const lines = withoutCode(entry);
   const title = TITLE.exec(first.text)?.[1] ?? first.text.slice(2, 62).trim();
   const at = `CHANGELOG entry "${title}" (line ${first.number})`;
   const errors = [];
