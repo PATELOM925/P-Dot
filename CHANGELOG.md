@@ -9,14 +9,14 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
-- **A database test gate that runs in `npm test`.** PR: not opened yet.
+- **A database test gate that runs in `npm test`.** ([PR #13](https://github.com/PATELOM925/P-Dot/pull/13))
   - Problem: the same kind of database defect reached review three times. Grants let a signed-in user write rows the app trusts (`action_log` inserts, `action_proposals` updates that can reset an approved action, `context_records`). The database also accepted a nested `action_log` detail that the app's log reader refuses, so one row broke the whole list. Each time, a reviewer proved it by hand in a throwaway database.
   - Resolution:
     - `tests/integration/sql-gate.test.ts` applies every migration, unchanged and in name order, to an in-memory Postgres (PGlite 0.5.10 with pgvector 0.0.11, dev dependencies only). Stand-ins model the Supabase roles, `auth.uid()` and the Supabase default grants. A check on a new table proves that the stand-in grants are live.
     - It checks that `anon` has no access to any table or function, that one user cannot read, change, delete or insert another user's rows in every table, that `id`, `user_id` and `created_at` cannot be updated, and that search returns only the caller's rows. A new table fails the gate until it is classified.
     - It reads stored `action_log` and `action_proposals` rows, NULLs included, through the app's own repositories.
-    - Three checks fail on `main` and are marked as expected failures until the memory hardening migration lands: the nested log detail, the `action_log` insert grant and the `action_proposals` update grant.
-    - `tests/integration/frozen-migrations.test.ts` fails when a migration that is on `main` changes, and tells the author to add a new migration.
+    - Three checks fail on `main` and pass with the memory hardening migration in this PR: the nested log detail, the `action_log` insert grant and the `action_proposals` update grant.
+    - `tests/integration/frozen-migrations.test.ts` fails when a migration is not listed in `frozen-migrations.sha256` or its file no longer matches its hash. The message tells the author what to do.
 - **Screens for approvals, memory, documents, "what was sent", the action log and reminders** (decisions [0009](docs/decisions/0009-memory-documents-actions.md) and [0005](docs/decisions/0005-assistant-hub-proposal.md)). PR: not opened yet.
   - Problem: the storage and routes from decision 0009 had no screens. Users could not see or edit what P-Dot keeps, approve an action, or check what went to the model.
   - Resolution:

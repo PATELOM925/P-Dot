@@ -329,8 +329,10 @@ describe("app parsers read every row the database accepts", () => {
       [owner, proposalId],
     );
     const entries = await createActionLogRepository(sqlGateClient(gate, owner)).list(owner, 50);
-    expect(entries).toHaveLength(2);
-    expect(entries.map((entry) => entry.proposalId).sort()).toEqual([proposalId, null].sort());
+    // The insert trigger on action_proposals adds the third row.
+    expect(entries).toHaveLength(3);
+    expect(entries.filter((entry) => entry.event === "proposed" && entry.proposalId === proposalId)).toHaveLength(2);
+    expect(entries.filter((entry) => entry.proposalId === null)).toHaveLength(1);
     expect(entries.every((entry) => typeof entry.createdAt === "string")).toBe(true);
   });
 
@@ -362,8 +364,7 @@ describe("app parsers read every row the database accepts", () => {
     expect(pending.decidedAt).toBeNull();
   });
 
-  // Turns green with the memory hardening migration
-  it.fails("does not accept an action log detail that the log reader refuses", async () => {
+  it("does not accept an action log detail that the log reader refuses", async () => {
     const owner = await gate.createUser();
     const code = await errorCode(() =>
       gate.admin(`insert into action_log (user_id, event, detail) values ($1, 'executed', '{"taskId":{"nested":"bad"}}')`, [
@@ -378,8 +379,7 @@ describe("app parsers read every row the database accepts", () => {
 });
 
 describe("records the app must be able to trust", () => {
-  // Turns green with the memory hardening migration
-  it.fails("authenticated cannot insert into action_log", async () => {
+  it("authenticated cannot insert into action_log", async () => {
     expect(
       await errorCode(() =>
         gate.as(user(userA), "insert into action_log (user_id, event, detail) values ($1, 'executed', '{}')", [userA]),
@@ -387,8 +387,7 @@ describe("records the app must be able to trust", () => {
     ).toBe(PERMISSION_DENIED);
   });
 
-  // Turns green with the memory hardening migration
-  it.fails("authenticated cannot update action_proposals, so an approved action cannot be reset and run again", async () => {
+  it("authenticated cannot update action_proposals, so an approved action cannot be reset and run again", async () => {
     const approved = await gate.admin<{ id: string }>(
       `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
        values ($1, 'create_task', '{"kind":"create_task","mode":"personal","title":"x"}', 'x', 'approved', now())
