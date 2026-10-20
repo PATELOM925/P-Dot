@@ -140,14 +140,16 @@ describe("createBudgetedEmbedder", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("reserves the full worst case just under the ceiling, without reducing it", async () => {
+  it("reserves a hold exactly at the ceiling and refuses one micro-dollar over it", async () => {
     const { spend, holds } = fakeSpend();
     const fetchImpl = vi.fn(async () => okResponse([vec(1)], 1));
     const embedder = createBudgetedEmbedder({ settings, spend, fetchImpl: fetchImpl as typeof fetch });
-    await embedder.embed(["a".repeat(24_999_000)]);
+    // 10 nano-dollars per token: (24,999,984 bytes + 16) / 100 = 250,000 micro-dollars.
+    await embedder.embed(["a".repeat(24_999_984)]);
+    expect(holds).toEqual([MAX_NEBIUS_HOLD_MICRO_USD]);
+    await expect(embedder.embed(["a".repeat(24_999_985)])).rejects.toBeInstanceOf(NebiusHoldTooLargeError);
     expect(holds).toHaveLength(1);
-    expect(holds[0]).toBeGreaterThan(249_000);
-    expect(holds[0]).toBeLessThanOrEqual(MAX_NEBIUS_HOLD_MICRO_USD);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("splits large inputs into batches, each with its own reservation", async () => {

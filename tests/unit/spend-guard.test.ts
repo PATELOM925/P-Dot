@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_ASSISTANT_CHARS } from "@/lib/limits";
+import { HISTORY_CHAR_BUDGET, HISTORY_MESSAGE_LIMIT, MAX_ASSISTANT_CHARS } from "@/lib/limits";
 import { ConfigError } from "@/lib/supabase-config";
+import { buildContextWindow } from "@/server/assistant/context";
+import { buildPromptMessages } from "@/server/assistant/prompt";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import {
   budgetRefusal,
   MAX_NEBIUS_HOLD_MICRO_USD,
   nebiusHoldMicroUsd,
   nebiusSettleMicroUsd,
+  NebiusHoldTooLargeError,
   SEARCH_BUDGET_MESSAGE,
+  SEARCH_RESULTS_MAX_BYTES,
 } from "@/server/assistant/spend";
+import { buildRoutingConfig, ULTRA } from "@/server/assistant/tiers";
 import { toNdjsonStream } from "@/server/http/ndjson";
 import { ProviderError } from "@/server/providers/errors";
 import { streamChatCompletion } from "@/server/providers/nebius/client";
@@ -41,9 +46,12 @@ describe("spend math", () => {
     expect(() => nebiusHoldMicroUsd("moonshotai/Kimi-K3", messages, 1024)).toThrow(ConfigError);
   });
 
-  it("never holds more than the database accepts", () => {
-    const huge = [{ role: "user" as const, content: "x".repeat(400_000) }];
-    expect(nebiusHoldMicroUsd("nvidia/Nemotron-3-Ultra-550b-a55b", huge, 8192)).toBe(MAX_NEBIUS_HOLD_MICRO_USD);
+  it("refuses a hold one micro-dollar above the ceiling and allows a hold exactly at it", () => {
+    // Ultra costs 1 micro-dollar per input token: 249,920 bytes + 16 + 64 = 250,000 tokens.
+    const at = [{ role: "user" as const, content: "x".repeat(249_920) }];
+    const over = [{ role: "user" as const, content: "x".repeat(249_921) }];
+    expect(nebiusHoldMicroUsd(ULTRA, at, 0)).toBe(MAX_NEBIUS_HOLD_MICRO_USD);
+    expect(() => nebiusHoldMicroUsd(ULTRA, over, 0)).toThrow(NebiusHoldTooLargeError);
   });
 
   it("settles the real cost with usage, and the full hold without it", () => {
@@ -76,6 +84,64 @@ describe("spend math", () => {
       code: "budget_exhausted",
       message: "P-Dot has reached its total usage limit. Try again later.",
     });
+  });
+});
+
+function ultraRouting(maxOutputTokens: number) {
+  return buildRoutingConfig({
+    chains: { fast: [ULTRA], standard: [ULTRA], heavy: [ULTRA], vision: [ULTRA] },
+    maxOutputTokens,
+    standardMaxOutputTokens: maxOutputTokens,
+    heavyMaxOutputTokens: maxOutputTokens,
+    heavyThinkingBudgetTokens: 0,
+    hedgeAfterMs: 0,
+  });
+}
+
+async function prepareUltra(message: string, maxOutputTokens: number) {
+  const spend = new FakeSpend();
+  const { deps } = fakeDeps({ spend, routing: ultraRouting(maxOutputTokens) });
+  const prepared = await prepareChatTurn(deps, {
+    userId: ALICE,
+    requestId: "req-1",
+    request: { action: "send", message, webSearch: false },
+  });
+  return { prepared, spend };
+}
+
+describe("chat hold ceiling", () => {
+  it("refuses a turn one micro-dollar over the ceiling with no reserve call, and allows one exactly at it", async () => {
+    // Ultra: 1 micro-dollar per input token, 3 per output token.
+    const probe = await prepareUltra("x".repeat(1000), 0);
+    const inputTokens = probe.spend.reservations[0]!.held;
+    const pad = (MAX_NEBIUS_HOLD_MICRO_USD - inputTokens) % 3;
+    const outputTokens = (MAX_NEBIUS_HOLD_MICRO_USD - inputTokens - pad) / 3;
+
+    const at = await prepareUltra("x".repeat(1000 + pad), outputTokens);
+    expect(at.prepared.ok).toBe(true);
+    expect(at.spend.reservations.map((r) => r.held)).toEqual([MAX_NEBIUS_HOLD_MICRO_USD]);
+
+    const over = await prepareUltra("x".repeat(1001 + pad), outputTokens);
+    expect(over.prepared).toMatchObject({ ok: false, status: 413, code: "payload_too_large" });
+    expect(over.spend.reservations).toHaveLength(0);
+  });
+
+  it("keeps the largest valid chat turn under the ceiling", () => {
+    // 41 messages of 3-byte characters fill the history budget; config allows at most 8,192 output tokens.
+    const count = HISTORY_MESSAGE_LIMIT + 1;
+    const history = Array.from({ length: count }, (_, i) => ({
+      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: "中".repeat(Math.floor(HISTORY_CHAR_BUDGET / count)),
+    }));
+    const prompt = buildPromptMessages({
+      history: buildContextWindow(history, HISTORY_CHAR_BUDGET),
+      webSearch: "failed",
+      results: [],
+      now: new Date(),
+      mode: "work",
+    });
+    expect(prompt).toHaveLength(count + 1);
+    expect(nebiusHoldMicroUsd(ULTRA, prompt, 8192, SEARCH_RESULTS_MAX_BYTES)).toBeLessThan(150_000);
   });
 });
 

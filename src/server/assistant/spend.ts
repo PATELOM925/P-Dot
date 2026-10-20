@@ -67,7 +67,8 @@ export function nebiusEmbeddingHoldMicroUsd(model: string, texts: string[]): num
 /**
  * Worst-case cost of one Nebius call, in micro-dollars: every input byte as a
  * token, plus the full output token limit, at the model's price. Throws a
- * ConfigError for a model that has no price, before any provider call.
+ * ConfigError for a model that has no price and NebiusHoldTooLargeError above
+ * the ceiling, before any provider call.
  */
 export function nebiusHoldMicroUsd(
   model: string,
@@ -75,11 +76,10 @@ export function nebiusHoldMicroUsd(
   maxOutputTokens: number,
   extraInputBytes = 0,
 ): number {
-  const cost = costMicroUsd(requirePrice(model), {
+  return requireHold(requirePrice(model), {
     promptTokens: inputTokenBound(messages, extraInputBytes),
     completionTokens: maxOutputTokens,
   });
-  return Math.max(1, Math.min(cost, MAX_NEBIUS_HOLD_MICRO_USD));
 }
 
 /**
