@@ -258,7 +258,8 @@ describe("POST /api/chat when one write fails", () => {
     ["new", "lost", "MemoryRepository.createConversation", "leaves an empty conversation"],
     ["new", "lost", "MemoryRepository.insertMessage:user", "leaves a second conversation with the same message"],
     ["existing", "lost", "MemoryRepository.insertMessage:user", "saves the user message twice"],
-  ] as const)("%s conversation, %s %s, then a resend: %s", async (variant, fault, label) => {
+  ] as const)("%s conversation, %s %s, then a resend: %s", async (variant, fault, label, _defect) => {
+    void _defect;
     const dry = new WriteFaults();
     await chatScenario(variant, dry, null);
     const step = dry.calls.indexOf(label) + 1;

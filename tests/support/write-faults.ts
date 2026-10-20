@@ -112,7 +112,7 @@ export async function sweepWriteFaults(
         await scenario(run, sweepCase);
         if (run.fired.length !== 1) throw new Error("the planned fault did not fire");
       } catch (error) {
-        const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+        const message = error instanceof Error ? (error.message.split("\n")[0] ?? "") : String(error);
         const name = describeCase(sweepCase);
         failures.push(message.startsWith(name) ? message : `${name}: ${message}`);
       }
