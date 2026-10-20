@@ -28,12 +28,19 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
       return errorResponse(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request.", requestId);
     }
 
-    // Only a new text needs a new vector. A mode or status change keeps the
-    // stored vector, so it does not call the embedder.
-    const changes = parsed.data;
-    const embedding = changes.content === undefined ? undefined : await embedMemoryText(auth, requestId, changes.content);
+    // Read the user's row first. A missing or foreign ID gets 404 before any
+    // embedder work, so it cannot use provider spend or budget.
+    const memories = createMemoryRepository(auth.supabase);
+    const existing = await memories.getMemory(auth.userId, id.data);
+    if (!existing) return memoryNotFound(requestId);
 
-    const memory = await createMemoryRepository(auth.supabase).updateMemory(auth.userId, id.data, changes, embedding);
+    // Only a changed text needs a new vector. The same text, a mode change or a
+    // status change keeps the stored vector and model, so it does not embed.
+    const changes = parsed.data;
+    const newText = changes.content !== undefined && changes.content !== existing.content ? changes.content : undefined;
+    const embedding = newText === undefined ? undefined : await embedMemoryText(auth, requestId, newText);
+
+    const memory = await memories.updateMemory(auth.userId, id.data, changes, embedding);
     if (!memory) return memoryNotFound(requestId);
 
     return jsonResponse(memory, requestId);
