@@ -32,18 +32,40 @@ create policy action_proposals_insert_own on public.action_proposals
   for insert to authenticated
   with check ((select auth.uid()) = user_id and status = 'proposed' and decided_at is null and result is null);
 
+-- Trust marker. decided_by_function is true only on a proposal that
+-- public.decide_action_proposal decided. Only such a row is a record of an
+-- action the database ran. A row decided by other updates (the older code,
+-- or a user with the older update grant) stays false: its outcome is only
+-- what a caller wrote. Rows from before this migration stay false.
+alter table public.action_proposals
+  add column if not exists decided_by_function boolean not null default false;
+
 -- Checks new rows, and changes to the checked columns of any row:
 -- - the payload names the row's kind (only when the payload or kind is written);
 -- - a waiting proposal has no decision and no result;
 -- - the status moves only forward, and a decided proposal does not change.
+-- - decided_by_function is set here, never by the caller. It becomes true
+--   only when public.decide_action_proposal writes the row: that function
+--   names the row in a transaction-local setting, and it runs as its owner,
+--   not as an API role. Any other write of the checked columns sets it false.
 -- Older rows that fail a rule stay as they are. They can still be rejected
 -- through decide_action_proposal, and their conversation can still be deleted.
+--
+-- SECURITY INVOKER on purpose: current_user is the role that wrote the row.
 create or replace function public.check_action_proposal()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 begin
+  if tg_op = 'INSERT' then
+    new.decided_by_function := false;
+  else
+    new.decided_by_function :=
+      current_setting('pdot.deciding_proposal', true) = new.id::text
+      and current_user not in ('anon', 'authenticated');
+  end if;
+
   if (tg_op = 'INSERT' or new.payload is distinct from old.payload or new.kind is distinct from old.kind)
     and (new.payload ->> 'kind') is distinct from new.kind then
     raise exception 'action proposal payload must name the same kind' using errcode = '23514';
@@ -72,7 +94,7 @@ revoke execute on function public.check_action_proposal() from public, anon, aut
 
 drop trigger if exists action_proposals_check on public.action_proposals;
 create trigger action_proposals_check
-  before insert or update of kind, payload, status, result, decided_at on public.action_proposals
+  before insert or update of kind, payload, status, result, decided_at, decided_by_function on public.action_proposals
   for each row execute function public.check_action_proposal();
 
 -- ---------------------------------------------------------------------------
@@ -261,6 +283,9 @@ begin
     perform public.write_action_log(new.user_id, 'proposed', new.id, v_detail);
     return new;
   end if;
+
+  -- verified: true only when decide_action_proposal wrote this change.
+  v_detail := v_detail || jsonb_build_object('verified', new.decided_by_function);
 
   if new.status = 'approved' then
     v_detail := v_detail || jsonb_build_object('edited', old.payload is distinct from new.payload);
@@ -481,6 +506,9 @@ begin
     return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id');
   end if;
 
+  -- Names this row for the trust marker until the function returns.
+  perform set_config('pdot.deciding_proposal', p_id::text, true);
+
   if p_decision = 'reject' then
     update public.action_proposals p
     set status = 'rejected', decided_at = now()
@@ -489,6 +517,7 @@ begin
     if not found then
       return public.decided_action_proposal(p_id, v_uid);
     end if;
+    perform set_config('pdot.deciding_proposal', '', true);
     return jsonb_build_object('outcome', 'rejected', 'proposal', to_jsonb(v_row) - 'user_id');
   end if;
 
@@ -535,6 +564,7 @@ begin
     set status = 'failed', result = jsonb_build_object('error', 'execution_failed', 'code', sqlstate)
     where p.id = p_id
     returning * into v_row;
+    perform set_config('pdot.deciding_proposal', '', true);
     return jsonb_build_object('outcome', 'failed', 'proposal', to_jsonb(v_row) - 'user_id');
   end;
 
@@ -542,6 +572,7 @@ begin
   set status = 'executed', result = v_result
   where p.id = p_id
   returning * into v_row;
+  perform set_config('pdot.deciding_proposal', '', true);
   return jsonb_build_object('outcome', 'executed', 'proposal', to_jsonb(v_row) - 'user_id');
 end;
 $$;
