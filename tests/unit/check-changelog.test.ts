@@ -153,6 +153,11 @@ describe("findChangelogErrors", () => {
     expect(messages(changelog(`- **Bare.** Problem: bad. Resolution: fixed. (${PR}).\n`))).toEqual([]);
   });
 
+  it("counts a commit link with uppercase hex", () => {
+    const link = "https://github.com/PATELOM925/P-Dot/commit/E78EBC7";
+    expect(messages(changelog(`- **Upper.** Problem: bad. Resolution: fixed. [commit](${link})\n`))).toEqual([]);
+  });
+
   it("fails when the Unreleased section is missing", () => {
     expect(messages("# Changelog\n\n## 2026-10-19\n")[0]).toContain('no "## Unreleased" section');
   });
