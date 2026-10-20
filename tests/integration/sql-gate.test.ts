@@ -171,17 +171,20 @@ async function updatableColumns(table: string): Promise<string[]> {
   return result.rows.map((row) => row.column_name);
 }
 
+/** Starting PGlite and applying every migration can pass the default 10 s hook limit when other test files run in parallel. */
+const SQL_GATE_HOOK_TIMEOUT_MS = 60_000;
+
 beforeAll(async () => {
   gate = await startSqlGate();
   userA = await gate.createUser();
   userB = await gate.createUser();
   rowsA = await seedOwner(gate, userA);
   rowsB = await seedOwner(gate, userB);
-});
+}, SQL_GATE_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
   await gate?.close();
-});
+}, SQL_GATE_HOOK_TIMEOUT_MS);
 
 describe("Supabase stand-in", () => {
   it("gives a new public table the legacy Supabase default grants, so the checks below are not vacuous", async () => {
