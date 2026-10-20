@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuthContext } from "@/server/auth/session";
 import type { Embedder } from "@/server/assistant/embed";
+import { actionPayloadSchema } from "@/lib/schemas";
+import { RepositoryError } from "@/server/db/conversations";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
-import { executeAction } from "@/server/actions/execute";
-import type { ActionPayload } from "@/types/api";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
 import { TEST_SPEND_CAPS, testRouting } from "../support/fakes";
@@ -32,9 +32,14 @@ const SECRET_MEMORY = "Lives in Leeds with a dog";
 // ---------------------------------------------------------------------------
 // A small in-memory stand-in for the Supabase query builder. It runs the real
 // repositories and applies `eq`, `order`, `limit`, `select` (only the listed
-// columns, like PostgREST), `single` and `maybeSingle`. Tests can make inserts
-// fail for one table, and can run code just before an update (to simulate a
-// second request that wins a race).
+// columns, like PostgREST), `single` and `maybeSingle`.
+//
+// `rpc("decide_action_proposal")` follows the contract of the database
+// function in the migration: the same outcomes, the same claim on "proposed"
+// rows of the session user, and "failed" with a code when the insert fails.
+// The SQL itself is tested against a real Postgres (decision 0009). Tests can
+// make an insert fail for one table, make the call itself fail, and run code
+// just before the claim (to simulate a second request that wins a race).
 // ---------------------------------------------------------------------------
 
 type Row = Record<string, unknown>;
@@ -47,10 +52,15 @@ class FakeDb {
     reminders: [],
     memories: [],
   };
-  /** When set, every insert into this table returns an error. */
+  /** When set, every insert into this table fails (also inside the decision function). */
   failInsertInto: string | null = null;
-  /** Runs once, just before the next update on any table. */
+  /** Runs once, just before the next update on any table or the next claim. */
   beforeNextUpdate: (() => void) | null = null;
+  /** When set, the next rpc call returns this error (for example a lost connection). */
+  failRpc: { message: string } | null = null;
+  /** The session user, as auth.uid() in the database. */
+  uid: string | null = null;
+  rpcCalls: { name: string; args: Row }[] = [];
   private seq = 0;
 
   nextTimestamp(): string {
@@ -60,6 +70,75 @@ class FakeDb {
 
   from(table: string): FakeQuery {
     return new FakeQuery(this, table);
+  }
+
+  async rpc(name: string, args: Row): Promise<FakeResult> {
+    this.rpcCalls.push({ name, args });
+    if (this.failRpc) return { data: null, error: this.failRpc };
+    if (name !== "decide_action_proposal") return { data: null, error: { message: "unknown function" } };
+    return { data: this.decide(args.p_id as string, args.p_decision as string, args.p_payload as Row | null), error: null };
+  }
+
+  private decide(id: string, decision: string, payload: Row | null): Row {
+    const answer = (outcome: string, row: Row | null) => {
+      if (!row) return { outcome, proposal: null };
+      const proposal = { ...row };
+      delete proposal.user_id;
+      return { outcome, proposal };
+    };
+    const row = this.tables.action_proposals!.find((r) => r.id === id && r.user_id === this.uid) ?? null;
+    if (!row) return answer("not_found", null);
+    if (row.status !== "proposed") return answer("already_decided", row);
+    if (!["approve", "reject"].includes(decision) || (decision === "reject" && payload)) return answer("invalid", row);
+
+    const claim = (): boolean => {
+      const hook = this.beforeNextUpdate;
+      this.beforeNextUpdate = null;
+      hook?.();
+      return row.status === "proposed";
+    };
+
+    if (decision === "reject") {
+      if (!claim()) return answer("already_decided", row);
+      Object.assign(row, { status: "rejected", decided_at: this.nextTimestamp() });
+      return answer("rejected", row);
+    }
+
+    if (payload && payload.kind !== row.kind) return answer("kind_mismatch", row);
+    const parsed = actionPayloadSchema.safeParse(payload ?? row.payload);
+    if (!parsed.success || parsed.data.kind !== row.kind) return answer("invalid", row);
+    if (!claim()) return answer("already_decided", row);
+    Object.assign(row, { status: "approved", decided_at: this.nextTimestamp(), payload: parsed.data });
+
+    const action = parsed.data;
+    const table = action.kind === "create_task" ? "tasks" : action.kind === "create_reminder" ? "reminders" : "memories";
+    if (this.failInsertInto === table) {
+      Object.assign(row, { status: "failed", result: { error: "execution_failed", code: "23514" } });
+      return answer("failed", row);
+    }
+    const newId = randomUUID();
+    const base = { id: newId, user_id: this.uid, mode: action.mode, created_at: this.nextTimestamp() };
+    if (action.kind === "create_task") {
+      this.tables.tasks!.push({ ...base, title: action.title, done: false });
+      row.result = { taskId: newId };
+    } else if (action.kind === "create_reminder") {
+      this.tables.reminders!.push({ ...base, title: action.title, due_at: action.dueAt, status: "scheduled", proposal_id: id });
+      row.result = { reminderId: newId };
+    } else {
+      this.tables.memories!.push({
+        ...base,
+        content: action.content,
+        status: "active",
+        source: "assistant",
+        source_message_id: null,
+        embedding: null,
+        embedding_model: null,
+        updated_at: base.created_at,
+      });
+      row.result = { memoryId: newId };
+    }
+    row.status = "executed";
+    return answer("executed", row);
   }
 }
 
@@ -194,6 +273,7 @@ let embed: ReturnType<typeof vi.fn<(texts: string[], signal?: AbortSignal) => Pr
 let consoleLines: string[];
 
 function signInAs(userId: string | null) {
+  db.uid = userId;
   vi.mocked(getAuthContext).mockResolvedValue(
     userId ? ({ userId, email: `${userId}@example.com`, supabase: db as unknown as SupabaseClient } satisfies AuthContext) : null,
   );
@@ -396,6 +476,7 @@ describe("POST /api/actions/:id/decision: ownership and stored payloads", () => 
   });
 });
 
+
 describe("POST /api/actions/:id/decision: approve", () => {
   it("creates a task once and returns the executed proposal with the task ID", async () => {
     signInAs(ALICE);
@@ -408,7 +489,17 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(rowsOf("tasks")).toHaveLength(1);
     expect(task).toMatchObject({ mode: "personal", title: "Pay the invoice", done: false });
     expect(body).toMatchObject({ id: row.id, status: "executed", result: { taskId: task.id }, decidedAt: expect.any(String) });
+    expect(body).not.toHaveProperty("user_id");
     expect(storedProposal(row.id as string)).toMatchObject({ status: "executed", result: { taskId: task.id } });
+  });
+
+  it("sends one call to the database function, with no user ID", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, taskPayload());
+    await decide(row.id as string, { decision: "approve" });
+    expect(db.rpcCalls).toEqual([
+      { name: "decide_action_proposal", args: { p_id: row.id, p_decision: "approve", p_payload: null } },
+    ]);
   });
 
   it("creates a reminder once, linked to the proposal", async () => {
@@ -423,7 +514,7 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect((await response.json()).result).toEqual({ reminderId: reminder.id });
   });
 
-  it("saves a memory as active from the assistant, with its vector", async () => {
+  it("saves a memory as active from the assistant, then adds its vector", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, memoryPayload());
     const response = await decide(row.id as string, { decision: "approve" });
@@ -443,7 +534,7 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect((await response.json()).result).toEqual({ memoryId: memory.id });
   });
 
-  it("saves the memory without a vector when the provider fails, and still counts it as executed", async () => {
+  it("keeps the memory without a vector when the provider fails, and still counts it as executed", async () => {
     signInAs(ALICE);
     embed.mockRejectedValueOnce(new ProviderError("nebius", "unavailable"));
     const row = seedProposal(ALICE, memoryPayload());
@@ -454,6 +545,20 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(storedProposal(row.id as string)?.status).toBe("executed");
   });
 
+  it("still answers 200 when the embedding settings are missing, because the memory is already saved", async () => {
+    signInAs(ALICE);
+    vi.mocked(getAssistantConfig).mockImplementationOnce(() => {
+      throw new Error("missing settings");
+    });
+    const row = seedProposal(ALICE, memoryPayload(SECRET_MEMORY));
+    const response = await decide(row.id as string, { decision: "approve" });
+    expect(response.status).toBe(200);
+    expect(rowsOf("memories")).toHaveLength(1);
+    const warning = consoleLines.find((l) => l.includes('"event":"action_embedding_failed"'));
+    expect(warning).toContain(row.id as string);
+    expect(consoleLines.join("\n")).not.toContain(SECRET_MEMORY);
+  });
+
   it("does not read the embedding settings for a task", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
@@ -462,15 +567,17 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(embed).not.toHaveBeenCalled();
   });
 
-  it("uses the edited values when the user changes the payload before approving", async () => {
+  it("sends the edited values and stores them as the proposal payload", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload("Pay the invoice"));
     const response = await decide(row.id as string, {
       decision: "approve",
-      payload: taskPayload("Pay the invoice today"),
+      payload: taskPayload("  Pay the invoice today  "),
     });
     expect(response.status).toBe(200);
+    expect(db.rpcCalls[0]?.args.p_payload).toEqual(taskPayload("Pay the invoice today"));
     expect(rowsOf("tasks", ALICE)[0]).toMatchObject({ title: "Pay the invoice today" });
+    expect((await response.json()).payload).toEqual(taskPayload("Pay the invoice today"));
   });
 
   it("runs an action once, and a second approval gets 409 without running it again", async () => {
@@ -484,10 +591,9 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(rowsOf("tasks")).toHaveLength(1);
   });
 
-  it("runs nothing when the conditional update finds the proposal already decided", async () => {
+  it("runs nothing when another decision claims the proposal first", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
-    // Another request decides the proposal after this one has read it.
     db.beforeNextUpdate = () => {
       row.status = "rejected";
     };
@@ -523,32 +629,47 @@ describe("POST /api/actions/:id/decision: reject", () => {
 });
 
 describe("POST /api/actions/:id/decision: failures", () => {
-  it("marks the proposal failed and answers 502 when the action cannot run", async () => {
+  it("answers 502 when the database records the action as failed", async () => {
     signInAs(ALICE);
     db.failInsertInto = "tasks";
-    const row = seedProposal(ALICE, taskPayload());
+    const row = seedProposal(ALICE, taskPayload(SECRET_TITLE));
     const response = await decide(row.id as string, { decision: "approve" });
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({
       error: { code: "internal_error", message: "The action could not be completed." },
     });
 
-    expect(storedProposal(row.id as string)).toMatchObject({ status: "failed", result: { error: "execution_failed" } });
-    expect(consoleLines.some((l) => l.includes('"event":"action_execution_failed"'))).toBe(true);
+    expect(storedProposal(row.id as string)).toMatchObject({
+      status: "failed",
+      result: { error: "execution_failed", code: "23514" },
+    });
+    const line = consoleLines.find((l) => l.includes('"event":"action_execution_failed"'));
+    expect(line).toContain('"kind":"create_task"');
+    expect(line).toContain('"code":"23514"');
+    expect(consoleLines.join("\n")).not.toContain(SECRET_TITLE);
+    expect((await decide(row.id as string, { decision: "approve" })).status).toBe(409);
+  });
+
+  it("answers 500 and changes nothing when the database call fails", async () => {
+    signInAs(ALICE);
+    db.failRpc = { message: "connection lost" };
+    const row = seedProposal(ALICE, taskPayload());
+    const response = await decide(row.id as string, { decision: "approve" });
+    expect(response.status).toBe(500);
+    expect(storedProposal(row.id as string)?.status).toBe("proposed");
+    expect(rowsOf("tasks")).toHaveLength(0);
   });
 });
 
-describe("action log content", () => {
-  it("never writes task, reminder or memory text to the log or to the logger", async () => {
+describe("privacy", () => {
+  it("never writes task, reminder or memory text to the logger", async () => {
     signInAs(ALICE);
     const task = seedProposal(ALICE, taskPayload(SECRET_TITLE));
     const memory = seedProposal(ALICE, memoryPayload(SECRET_MEMORY));
+    embed.mockRejectedValueOnce(new ProviderError("nebius", "unavailable"));
     await decide(task.id as string, { decision: "approve" });
     await decide(memory.id as string, { decision: "approve" });
 
-    const logText = JSON.stringify(logEvents());
-    expect(logText).not.toContain(SECRET_TITLE);
-    expect(logText).not.toContain(SECRET_MEMORY);
     expect(consoleLines.join("\n")).not.toContain(SECRET_TITLE);
     expect(consoleLines.join("\n")).not.toContain(SECRET_MEMORY);
   });
@@ -561,7 +682,7 @@ describe("action log content", () => {
   });
 });
 
-describe("createProposal and finish", () => {
+describe("the proposal repository", () => {
   const repo = () => createActionProposalRepository(db as unknown as SupabaseClient);
 
   it("stores a valid proposal as proposed", async () => {
@@ -584,25 +705,34 @@ describe("createProposal and finish", () => {
     expect(db.tables.action_proposals).toHaveLength(0);
   });
 
-  it("finish refuses a proposal that is not approved", async () => {
-    const row = seedProposal(ALICE, taskPayload());
-    await expect(repo().finish(ALICE, row.id as string, "executed", { taskId: "x" })).rejects.toThrow();
-    expect(storedProposal(row.id as string)?.status).toBe("proposed");
+  it("returns the stored outcome when another decision came first", async () => {
+    db.uid = ALICE;
+    const row = seedProposal(ALICE, taskPayload(), {
+      status: "executed",
+      result: { taskId: MISSING_ID },
+      decided_at: "2026-10-19T10:00:00.000Z",
+    });
+    const answer = await repo().decide(row.id as string, "approve");
+    expect(answer.outcome).toBe("already_decided");
+    expect(answer.proposal).toMatchObject({ id: row.id, status: "executed", result: { taskId: MISSING_ID } });
   });
-});
 
-describe("executeAction", () => {
-  it("throws for a kind outside the three approved kinds, and changes nothing", async () => {
-    const createTask = vi.fn();
-    const createReminder = vi.fn();
-    const createMemory = vi.fn();
-    const outsideKind = { kind: "send_email", mode: "work", to: "someone@example.com" } as unknown as ActionPayload;
+  it("gives the same answer for another user's proposal and a missing one", async () => {
+    db.uid = ALICE;
+    const bobs = seedProposal(BOB, taskPayload());
+    expect(await repo().decide(bobs.id as string, "approve")).toEqual({ outcome: "not_found", proposal: null });
+    expect(await repo().decide(MISSING_ID, "approve")).toEqual({ outcome: "not_found", proposal: null });
+  });
 
-    await expect(
-      executeAction(ALICE, randomUUID(), outsideKind, { tasks: { createTask }, reminders: { createReminder }, memories: { createMemory } }),
-    ).rejects.toThrow("This kind of action is not supported.");
-    expect(createTask).not.toHaveBeenCalled();
-    expect(createReminder).not.toHaveBeenCalled();
-    expect(createMemory).not.toHaveBeenCalled();
+  it.each([
+    ["an error", { data: null, error: { message: "boom" } }],
+    ["an unknown outcome", { data: { outcome: "maybe", proposal: null }, error: null }],
+    ["no data", { data: null, error: null }],
+    ["an executed row that does not parse", { data: { outcome: "executed", proposal: { id: "x" } }, error: null }],
+  ])("throws RepositoryError for %s", async (_label, reply) => {
+    const client = { rpc: async () => reply } as unknown as SupabaseClient;
+    await expect(createActionProposalRepository(client).decide(MISSING_ID, "approve")).rejects.toThrow(
+      new RepositoryError("decideActionProposal"),
+    );
   });
 });

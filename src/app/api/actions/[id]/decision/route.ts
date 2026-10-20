@@ -2,18 +2,14 @@ import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES } from "@/lib/limits";
 import { actionDecisionSchema } from "@/lib/schemas";
 import type { AuthContext } from "@/server/auth/session";
-import { createEmbedderForRequest } from "@/server/assistant/deps";
-import type { Embedder } from "@/server/assistant/embed";
-import { getAssistantConfig } from "@/server/config";
-import { executeAction, type ActionDeps, type ActionResult } from "@/server/actions/execute";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createMemoryRepository } from "@/server/db/memories";
-import { createReminderRepository } from "@/server/db/reminders";
-import { createTaskRepository } from "@/server/db/tasks";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
 import { logEvent } from "@/server/log";
+import { embedMemoryText } from "@/server/memories/embedding";
+import type { ActionProposalDTO } from "@/types/api";
 
 interface Context {
   params: Promise<{ id: string }>;
@@ -25,8 +21,12 @@ const actionNotFound = (requestId: string) => errorResponse(404, "not_found", "A
 
 /**
  * POST /api/actions/:id/decision. Body: { decision: "approve" | "reject", payload? }.
- * Only an approval runs the action. An edited payload must keep the same kind.
- * A proposal can be decided once: a second decision gets 409 and runs nothing.
+ *
+ * The database function `decide_action_proposal` does the work in one
+ * transaction: it claims the proposal, runs an approved action as the user,
+ * stores the outcome and writes the action log. A proposal can be decided
+ * once: a second decision gets 409 and runs nothing. An edited payload must
+ * keep the same kind.
  */
 export async function POST(request: Request, context: Context): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "actions.decide", sameOrigin: true }, async ({ auth, requestId }) => {
@@ -40,61 +40,56 @@ export async function POST(request: Request, context: Context): Promise<Response
       return errorResponse(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request.", requestId);
     }
     const { decision, payload: edited } = parsed.data;
-    const proposalId = id.data;
 
-    const proposals = createActionProposalRepository(auth.supabase);
+    const { outcome, proposal } = await createActionProposalRepository(auth.supabase).decide(id.data, decision, edited);
 
-    const stored = await proposals.getProposal(auth.userId, proposalId);
-    if (!stored) return actionNotFound(requestId);
-    const kind = stored.payload.kind;
-
-    if (edited && edited.kind !== kind) {
-      return errorResponse(400, "invalid_request", "An edited action must keep the same kind.", requestId);
+    switch (outcome) {
+      case "not_found":
+        return actionNotFound(requestId);
+      case "already_decided":
+        return errorResponse(409, "conflict", "This action was already decided.", requestId);
+      case "kind_mismatch":
+        return errorResponse(400, "invalid_request", "An edited action must keep the same kind.", requestId);
+      case "invalid":
+        // A stored payload that does not parse is never shown or run, so it is "not found" to the user.
+        return edited
+          ? errorResponse(400, "invalid_request", "The edited action is not valid.", requestId)
+          : actionNotFound(requestId);
+      case "failed":
+        logEvent("error", "action_execution_failed", {
+          requestId,
+          kind: proposal?.payload.kind ?? null,
+          code: typeof proposal?.result?.code === "string" ? proposal.result.code : null,
+        });
+        return errorResponse(502, "internal_error", "The action could not be completed.", requestId);
+      case "rejected":
+        return jsonResponse(proposal, requestId);
+      case "executed":
+        if (proposal) await embedSavedMemory(auth, requestId, proposal);
+        return jsonResponse(proposal, requestId);
     }
-
-    // The single guard against double approval: only a "proposed" row changes.
-    const claimed = await proposals.claimForDecision(
-      auth.userId,
-      proposalId,
-      decision === "approve" ? "approved" : "rejected",
-    );
-    if (!claimed) return errorResponse(409, "conflict", "This action was already decided.", requestId);
-
-    // The database writes the action log rows for every status change.
-    if (decision === "reject") return jsonResponse(claimed, requestId);
-
-    let result: ActionResult;
-    try {
-      result = await executeAction(auth.userId, proposalId, edited ?? stored.payload, executionDeps(auth));
-    } catch (error) {
-      logEvent("error", "action_execution_failed", {
-        requestId,
-        kind,
-        errorName: error instanceof Error ? error.name : "unknown",
-      });
-      await proposals.finish(auth.userId, proposalId, "failed", { error: "execution_failed" });
-      return errorResponse(502, "internal_error", "The action could not be completed.", requestId);
-    }
-
-    const executed = await proposals.finish(auth.userId, proposalId, "executed", result);
-    return jsonResponse(executed, requestId);
   });
 }
 
-function executionDeps(auth: AuthContext): ActionDeps {
-  return {
-    tasks: createTaskRepository(auth.supabase),
-    reminders: createReminderRepository(auth.supabase),
-    memories: createMemoryRepository(auth.supabase),
-    embedder: lazyEmbedder(auth),
-  };
-}
-
-/** Reads the embedding settings only when a memory is saved, so other kinds never need them. */
-function lazyEmbedder(auth: AuthContext): Embedder {
-  return {
-    async embed(texts, signal) {
-      return createEmbedderForRequest(auth, getAssistantConfig()).embed(texts, signal);
-    },
-  };
+/**
+ * The database saves an approved memory with no vector. Embed it now, so it
+ * can be found by search. The action already ran, so any failure here only
+ * leaves the memory without a vector; it never fails the request. The log
+ * line holds IDs and the error name, never the text.
+ */
+async function embedSavedMemory(auth: AuthContext, requestId: string, proposal: ActionProposalDTO): Promise<void> {
+  if (proposal.payload.kind !== "save_memory") return;
+  const memoryId = proposal.result?.memoryId;
+  if (typeof memoryId !== "string") return;
+  try {
+    const embedding = await embedMemoryText(auth, requestId, proposal.payload.content);
+    if (!embedding) return;
+    await createMemoryRepository(auth.supabase).updateMemory(auth.userId, memoryId, {}, embedding);
+  } catch (error) {
+    logEvent("warn", "action_embedding_failed", {
+      requestId,
+      proposalId: proposal.id,
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
+  }
 }

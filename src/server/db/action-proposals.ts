@@ -10,8 +10,10 @@ import { RepositoryError } from "./conversations";
  * only after the user approves it. Every method filters by the authenticated
  * user's ID, and RLS enforces the same rule in the database.
  *
- * The database lets the user change only status, result and decided_at, so the
- * stored payload never changes after the proposal is created.
+ * Users cannot update a proposal. Only the database function
+ * `decide_action_proposal` changes one: in one transaction it claims the
+ * proposal, runs the action and stores the outcome, so an action runs at most
+ * once and a stored outcome is always the real one.
  */
 export interface NewActionProposal {
   conversationId: string | null;
@@ -24,25 +26,37 @@ export interface ActionProposalRepository {
   createProposal(userId: string, proposal: NewActionProposal): Promise<ActionProposalDTO>;
   /** Newest first. `status` filters; undefined returns every status. Rows whose payload does not parse are left out. */
   listProposals(userId: string, status: ActionStatus | undefined, limit: number): Promise<ActionProposalDTO[]>;
-  /** Returns null when the proposal is missing, belongs to another user, or its stored payload does not parse. */
-  getProposal(userId: string, proposalId: string): Promise<ActionProposalDTO | null>;
   /**
-   * One conditional update: moves a "proposed" proposal to "approved" or
-   * "rejected". Returns null when it was not "proposed" (already decided, or
-   * not the user's), so a second decision can never run the action again.
+   * Approves or rejects a proposal of the session user (the database reads
+   * the user from the session, not from an argument). An approval runs the
+   * action in the same transaction. `payload` is an edited payload of the
+   * same kind. Throws RepositoryError when the call fails.
    */
-  claimForDecision(
-    userId: string,
-    proposalId: string,
-    status: "approved" | "rejected",
-  ): Promise<ActionProposalDTO | null>;
-  /** Moves an "approved" proposal to "executed" or "failed" and stores the result. Throws when no row matches. */
-  finish(
-    userId: string,
-    proposalId: string,
-    status: "executed" | "failed",
-    result: Record<string, string | number | boolean | null>,
-  ): Promise<ActionProposalDTO>;
+  decide(proposalId: string, decision: "approve" | "reject", payload?: ActionPayload): Promise<DecisionResult>;
+}
+
+/**
+ * What `decide_action_proposal` answered.
+ * - not_found: no such proposal for this user (another user's proposal gives the same answer).
+ * - already_decided: another decision came first. `proposal` holds the stored outcome.
+ * - invalid: the stored or edited payload, or the decision, is not valid. Nothing changed.
+ * - kind_mismatch: the edited payload has another kind. Nothing changed.
+ * - rejected, executed, failed: the decision was stored. `failed` means the insert failed;
+ *   `result` holds { error: "execution_failed", code } and nothing was created.
+ */
+export type DecisionOutcome =
+  | "not_found"
+  | "already_decided"
+  | "invalid"
+  | "kind_mismatch"
+  | "rejected"
+  | "executed"
+  | "failed";
+
+export interface DecisionResult {
+  outcome: DecisionOutcome;
+  /** Null for not_found, and when a stored row does not parse. */
+  proposal: ActionProposalDTO | null;
 }
 
 const ACTION_STATUSES = ["proposed", "approved", "rejected", "executed", "failed"] as const;
@@ -59,6 +73,14 @@ const proposalRow = z.object({
   created_at: z.string(),
   decided_at: z.string().nullable(),
 });
+
+const decisionResponse = z.object({
+  outcome: z.enum(["not_found", "already_decided", "invalid", "kind_mismatch", "rejected", "executed", "failed"]),
+  proposal: z.unknown(),
+});
+
+/** Outcomes that wrote the row just now. That row must map. */
+const WRITTEN_OUTCOMES: ReadonlySet<DecisionOutcome> = new Set(["rejected", "executed", "failed"]);
 
 const resultValues = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
 
@@ -124,41 +146,23 @@ export function createActionProposalRepository(supabase: SupabaseClient): Action
       return (data ?? []).map(toProposal).filter((dto): dto is ActionProposalDTO => dto !== null);
     },
 
-    async getProposal(userId, proposalId) {
-      const { data, error } = await supabase
-        .from("action_proposals")
-        .select(PROPOSAL_COLUMNS)
-        .eq("id", proposalId)
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (error) throw new RepositoryError("getActionProposal");
-      return data ? toProposal(data) : null;
-    },
-
-    async claimForDecision(userId, proposalId, status) {
-      const { data, error } = await supabase
-        .from("action_proposals")
-        .update({ status, decided_at: new Date().toISOString() })
-        .eq("id", proposalId)
-        .eq("user_id", userId)
-        .eq("status", "proposed")
-        .select(PROPOSAL_COLUMNS)
-        .maybeSingle();
-      if (error) throw new RepositoryError("claimActionProposal");
-      return data ? toWrittenProposal(data, "claimActionProposal") : null;
-    },
-
-    async finish(userId, proposalId, status, result) {
-      const { data, error } = await supabase
-        .from("action_proposals")
-        .update({ status, result })
-        .eq("id", proposalId)
-        .eq("user_id", userId)
-        .eq("status", "approved")
-        .select(PROPOSAL_COLUMNS)
-        .maybeSingle();
-      if (error || !data) throw new RepositoryError("finishActionProposal");
-      return toWrittenProposal(data, "finishActionProposal");
+    async decide(proposalId, decision, payload) {
+      const { data, error } = await supabase.rpc("decide_action_proposal", {
+        p_id: proposalId,
+        p_decision: decision,
+        p_payload: payload ?? null,
+      });
+      if (error) throw new RepositoryError("decideActionProposal");
+      const parsed = decisionResponse.safeParse(data);
+      if (!parsed.success) throw new RepositoryError("decideActionProposal");
+      const { outcome, proposal } = parsed.data;
+      if (proposal === null || proposal === undefined) return { outcome, proposal: null };
+      return {
+        outcome,
+        proposal: WRITTEN_OUTCOMES.has(outcome)
+          ? toWrittenProposal(proposal, "decideActionProposal")
+          : toProposal(proposal),
+      };
     },
   };
 }
