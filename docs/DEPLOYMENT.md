@@ -82,6 +82,13 @@ Rules:
 
 Migrations are in `supabase/migrations/`. The hosted Supabase project has the GitHub integration on: a merge to `main` applies new migrations automatically. Agents never apply migrations. Write each migration so that the code which is live now still works after it runs (additive changes only). The new code and the migration go live at about the same time; for a short time the new code can run before its migration, so new database calls must fail closed.
 
+When a change must also remove something that the live code uses (a grant, a policy, a column), ship it in two steps, expand then contract:
+
+1. **Expand.** A migration that only adds, and the code that uses the addition. The live code must keep working during and after this migration. Merge, and wait until the new code is live.
+2. **Contract.** A later migration that removes the old path, in a separate pull request. Merge it only after step 1 is live. Its PR body says which PR is the expand step.
+
+Example: the memory hardening ships as `20261021000000_memory_hardening.sql` (expand, PR #13) and `20261021010000_memory_hardening_contract.sql` (contract, PR #14).
+
 ## One-time setup (owner only)
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
