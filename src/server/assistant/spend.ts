@@ -1,5 +1,6 @@
 import "server-only";
 import { SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
+import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
 import type { ApiErrorCode } from "@/types/api";
 import type { SpendLimit } from "@/server/db/spend";
@@ -20,10 +21,11 @@ export const TAVILY_BASIC_SEARCH_CREDITS = 1;
 
 /**
  * Bytes that search results can add to the prompt: each result has a title
- * (200 characters), a URL (2,048) and an excerpt, with up to 4 UTF-8 bytes
- * per character, plus the wrapper text.
+ * (200 characters) and an excerpt, with up to 4 UTF-8 bytes per character,
+ * a normalized ASCII URL, and the wrapper text.
  */
-export const SEARCH_RESULTS_MAX_BYTES = SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + 2_048 + 128) + 512;
+export const SEARCH_RESULTS_MAX_BYTES =
+  SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + MAX_SAFE_URL_CHARS + 128) + 512;
 
 /** The model's price. A model without a price is a configuration error: it is never called. */
 function requirePrice(model: string): ModelPrice {

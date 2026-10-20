@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { HISTORY_CHAR_BUDGET, HISTORY_MESSAGE_LIMIT, MAX_ASSISTANT_CHARS } from "@/lib/limits";
+import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
-import { buildContextWindow } from "@/server/assistant/context";
-import { buildPromptMessages } from "@/server/assistant/prompt";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import {
   budgetRefusal,
@@ -11,13 +10,13 @@ import {
   nebiusSettleMicroUsd,
   NebiusHoldTooLargeError,
   SEARCH_BUDGET_MESSAGE,
-  SEARCH_RESULTS_MAX_BYTES,
 } from "@/server/assistant/spend";
 import { buildRoutingConfig, ULTRA } from "@/server/assistant/tiers";
 import { toNdjsonStream } from "@/server/http/ndjson";
 import { ProviderError } from "@/server/providers/errors";
 import { streamChatCompletion } from "@/server/providers/nebius/client";
 import { costMicroUsd, priceForModel } from "@/server/providers/nebius/pricing";
+import { searchWeb } from "@/server/providers/tavily/client";
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
 import { FakeQuota, FakeSpend, MemoryRepository, fakeDeps } from "../support/fakes";
 import { collect, deltaChunk, sseEvent, streamFrom } from "../support/streams";
@@ -126,22 +125,45 @@ describe("chat hold ceiling", () => {
     expect(over.spend.reservations).toHaveLength(0);
   });
 
-  it("keeps the largest valid chat turn under the ceiling", () => {
-    // 41 messages of 3-byte characters fill the history budget; config allows at most 8,192 output tokens.
-    const count = HISTORY_MESSAGE_LIMIT + 1;
-    const history = Array.from({ length: count }, (_, i) => ({
-      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
-      content: "中".repeat(Math.floor(HISTORY_CHAR_BUDGET / count)),
-    }));
-    const prompt = buildPromptMessages({
-      history: buildContextWindow(history, HISTORY_CHAR_BUDGET),
-      webSearch: "failed",
-      results: [],
-      now: new Date(),
-      mode: "work",
+  it("holds at least the final prompt's cost for the largest turn with worst-case search results", async () => {
+    // Work mode, 40 history messages and a new message that fill the history budget with 3-byte characters.
+    const repo = new MemoryRepository();
+    const conversation = await repo.createConversation(ALICE, "Long", "work");
+    for (let i = 0; i < HISTORY_MESSAGE_LIMIT; i += 1) {
+      const role = i % 2 === 0 ? ("user" as const) : ("assistant" as const);
+      await repo.insertMessage(ALICE, { conversationId: conversation.id, role, content: "中".repeat(585) });
+    }
+    const message = "中".repeat(HISTORY_CHAR_BUDGET - HISTORY_MESSAGE_LIMIT * 585);
+
+    // Real Tavily adapter. Each kept URL is 2,048 bytes after normalization: raw 3-byte
+    // characters (9 bytes each when encoded) or input that is already percent-encoded.
+    // The first URL is 2,048 characters before normalization and 18,312 after, so it is dropped.
+    const fill = (host: string, middle: string) => `https://${host}.com/${middle.repeat(225)}aaaaaaaa`;
+    const items = [
+      { url: `https://e9.com/${"中".repeat(2_033)}`, title: "dropped", content: "dropped" },
+      ...[0, 1, 2].map((i) => ({ url: fill(`e${i}`, "中"), title: "題".repeat(200), content: "文".repeat(2_000) })),
+      ...[3, 4].map((i) => ({ url: fill(`e${i}`, "%E4%B8%AD"), title: "題".repeat(200), content: "文".repeat(2_000) })),
+    ];
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ results: items }), { status: 200 }));
+
+    const spend = new FakeSpend();
+    const { deps, prompts } = fakeDeps({
+      repo,
+      spend,
+      routing: ultraRouting(8192),
+      search: (query, signal) => searchWeb({ apiKey: "test-key" }, query, { signal, fetchImpl: fetchImpl as typeof fetch }),
     });
-    expect(prompt).toHaveLength(count + 1);
-    expect(nebiusHoldMicroUsd(ULTRA, prompt, 8192, SEARCH_RESULTS_MAX_BYTES)).toBeLessThan(150_000);
+    const { events } = await runTurn(deps, { action: "send", conversationId: conversation.id, message, webSearch: true });
+    expect(events.at(-1)?.type).toBe("done");
+
+    const final = prompts[0]!;
+    expect(final).toHaveLength(HISTORY_MESSAGE_LIMIT + 2);
+    const sourceUrls = [...final.at(-1)!.content.matchAll(/^URL: (.*)$/gm)].map((m) => m[1]!);
+    expect(sourceUrls.map((url) => url.length)).toEqual(Array(5).fill(MAX_SAFE_URL_CHARS));
+
+    const held = spend.reservations.find((r) => r.provider === "nebius")!.held;
+    expect(held).toBeGreaterThanOrEqual(nebiusHoldMicroUsd(ULTRA, final, 8192));
+    expect(held).toBeLessThan(150_000);
   });
 });
 
