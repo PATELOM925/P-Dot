@@ -636,16 +636,27 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       expect((await decideAs(gate, owner, approved, "approve")).proposal!.decided_by_function).toBe(true);
       expect((await decideAs(gate, owner, rejected, "reject")).proposal!.decided_by_function).toBe(true);
       const log = await gate.admin<{ event: string; verified: boolean | null }>(
-        `select event, (detail ->> 'verified')::boolean as verified from action_log
+        `select event, verified from action_log
           where proposal_id in ($1, $2) order by created_at`,
         [approved, rejected],
       );
       expect(log.rows).toEqual([
-        { event: "proposed", verified: null },
-        { event: "proposed", verified: null },
+        { event: "proposed", verified: true },
+        { event: "proposed", verified: true },
         { event: "approved", verified: true },
         { event: "executed", verified: true },
         { event: "rejected", verified: true },
+      ]);
+    });
+
+    it("marks a log row that a trigger wrote as verified, and one the owner role inserted directly as not verified", async () => {
+      const owner = await gate.createUser();
+      await gate.as(user(owner), "insert into memories (user_id, mode, content, source) values ($1, 'personal', 'x', 'user')", [owner]);
+      await gate.admin(`insert into action_log (user_id, event, detail) values ($1, 'executed', '{"verified":true}')`, [owner]);
+      const rows = await gate.admin("select event, verified, detail ? 'verified' as has_key from action_log where user_id = $1 order by created_at", [owner]);
+      expect(rows.rows).toEqual([
+        { event: "memory_added", verified: true, has_key: false },
+        { event: "executed", verified: false, has_key: false },
       ]);
     });
 
@@ -693,7 +704,7 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       expect(row.rows).toEqual([{ status: "executed", decided_by_function: false }]);
       expect(await countOwnedBy("tasks", owner)).toBe(0);
       const log = await gate.admin<{ event: string; verified: boolean }>(
-        `select event, (detail ->> 'verified')::boolean as verified from action_log
+        `select event, verified from action_log
           where proposal_id = $1 and event in ('approved', 'executed') order by created_at`,
         [id],
       );
@@ -701,6 +712,30 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
         { event: "approved", verified: false },
         { event: "executed", verified: false },
       ]);
+    });
+
+    it.runIf(defaults === "legacy")("stores a log row inserted with the older grant as not verified, and drops a verified key", async () => {
+      const owner = await gate.createUser();
+      const inserted = await gate.as<{ verified: boolean; detail: Record<string, unknown> }>(
+        user(owner),
+        `insert into action_log (user_id, event, detail)
+         values ($1, 'executed', '{"kind":"create_task","verified":true,"taskId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}')
+         returning verified, detail`,
+        [owner],
+      );
+      expect(inserted.rows).toEqual([
+        { verified: false, detail: { kind: "create_task", taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } },
+      ]);
+      expect(
+        await errorCode(() =>
+          gate.as(user(owner), "insert into action_log (user_id, event, verified) values ($1, 'executed', true) returning verified", [owner]),
+        ),
+      ).toBeNull();
+      const forced = await gate.admin<{ n: number }>(
+        "select count(*)::int as n from action_log where user_id = $1 and verified",
+        [owner],
+      );
+      expect(forced.rows[0]!.n).toBe(0);
     });
 
     it.runIf(defaults === "legacy")("cannot reset a decided proposal, change its result, or write nested log detail", async () => {
