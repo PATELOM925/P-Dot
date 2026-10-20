@@ -39,7 +39,15 @@ set status = 'executed',
 where p.id = $2 and p.user_id = $1 and p.status = 'approved'
   and (
     (p.kind = 'create_task' and exists (select 1 from public.tasks t where t.id::text = $3::text and t.user_id = $1))
-    or (p.kind = 'create_reminder' and exists (select 1 from public.reminders r where r.id::text = $3::text and r.user_id = $1))
+    or (p.kind = 'create_reminder' and exists (
+      select 1 from public.reminders r
+      where r.id::text = $3::text and r.user_id = $1 and (r.proposal_id is null or r.proposal_id = p.id)))
     or (p.kind = 'save_memory' and exists (select 1 from public.memories m where m.id::text = $3::text and m.user_id = $1))
+  )
+  -- No other proposal of this user, in any status, may already name the same row as its result.
+  and not exists (
+    select 1 from public.action_proposals other
+    where other.user_id = $1 and other.id <> p.id
+      and $3::text in (other.result ->> 'taskId', other.result ->> 'reminderId', other.result ->> 'memoryId')
   )
 returning p.id;

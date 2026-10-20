@@ -515,6 +515,49 @@ describe("legacy proposals left approved (decision 0009)", () => {
     expect((await run("confirm_executed", [owner, id, task])).rows).toEqual([]);
   });
 
+  it("refuses a row that another proposal already names as its result", async () => {
+    const owner = await gate.createUser();
+    const first = await legacyApproved(owner, "Call Sam");
+    const second = await legacyApproved(owner, "Call Sam");
+    const task = await taskFor(owner, "Call Sam");
+    expect((await run<{ id: string }>("list_tasks_near_decision", [owner, second])).rows.map((r) => r.id)).toEqual([task]);
+
+    expect((await run<{ id: string }>("confirm_executed", [owner, first, task])).rows.map((r) => r.id)).toEqual([first]);
+    expect((await run("confirm_executed", [owner, second, task])).rows).toEqual([]);
+    expect(await statusOf(second)).toBe("approved");
+    const log = await gate.admin("select 1 from action_log where user_id = $1 and event = 'executed'", [owner]);
+    expect(log.rows).toHaveLength(1);
+  });
+
+  it("refuses a reminder linked to another proposal, and accepts one linked to this proposal", async () => {
+    const owner = await gate.createUser();
+    const legacyReminder = async () =>
+      (
+        await gate.admin<{ id: string }>(
+          `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
+           values ($1, 'create_reminder', '{"kind":"create_reminder","mode":"work","title":"Dentist","dueAt":"2026-10-30T17:00:00Z"}', 'x', 'approved', now())
+           returning id`,
+          [owner],
+        )
+      ).rows[0]!.id;
+    const id = await legacyReminder();
+    const other = await legacyReminder();
+    const reminderFor = async (proposalId: string) =>
+      (
+        await gate.admin<{ id: string }>(
+          "insert into reminders (user_id, mode, title, due_at, proposal_id) values ($1, 'work', 'Dentist', now(), $2) returning id",
+          [owner, proposalId],
+        )
+      ).rows[0]!.id;
+    const linkedElsewhere = await reminderFor(other);
+    const linkedHere = await reminderFor(id);
+
+    expect((await run("confirm_executed", [owner, id, linkedElsewhere])).rows).toEqual([]);
+    expect(await statusOf(id)).toBe("approved");
+    expect((await run<{ id: string }>("find_reminder", [owner, id])).rows.map((r) => r.id)).toEqual([linkedHere]);
+    expect((await run<{ id: string }>("confirm_executed", [owner, id, linkedHere])).rows.map((r) => r.id)).toEqual([id]);
+  });
+
   it("a row with an unknown outcome stays approved and an approval cannot make a second task", async () => {
     const owner = await gate.createUser();
     const id = await legacyApproved(owner, "Call Sam");
