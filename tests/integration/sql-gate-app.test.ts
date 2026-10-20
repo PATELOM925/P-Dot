@@ -4,7 +4,7 @@ import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createMemoryRepository } from "@/server/db/memories";
 import { sqlGateClient } from "../support/sql-gate-client";
 import { REMINDER, TASK, decideAs, propose } from "../support/sql-gate-actions";
-import { startSqlGate, user, type SqlGate } from "../support/sql-gate";
+import { errorCode, startSqlGate, user, type SqlGate } from "../support/sql-gate";
 
 /**
  * The app's repositories against the real SQL of every migration, in the
@@ -144,15 +144,21 @@ describe("repositories on a database that has rows the older schema allowed", ()
   });
 
   it("reads a log row with a verified key, from before or during the expand step, as not verified", async () => {
-    const during = await old.as<{ id: string }>(
-      user(OWNER),
-      `insert into action_log (user_id, event, detail)
-       values ($1, 'executed', '{"kind":"create_task","verified":true,"taskId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}') returning id`,
-      [OWNER],
-    );
+    // During the expand step the older insert grant allows this; after the contract step it is refused.
+    let duringId: string | null = null;
+    const code = await errorCode(async () => {
+      const during = await old.as<{ id: string }>(
+        user(OWNER),
+        `insert into action_log (user_id, event, detail)
+         values ($1, 'executed', '{"kind":"create_task","verified":true,"taskId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}') returning id`,
+        [OWNER],
+      );
+      duringId = during.rows[0]!.id;
+    });
+    expect([null, "42501"]).toContain(code);
     const entries = await createActionLogRepository(sqlGateClient(old, OWNER)).list(OWNER, 50);
     const verified = Object.fromEntries(entries.map((entry) => [entry.id, entry.verified]));
     expect(verified[OLD_FORGED_LOG]).toBe(false);
-    expect(verified[during.rows[0]!.id]).toBe(false);
+    if (duringId) expect(verified[duringId]).toBe(false);
   });
 });
