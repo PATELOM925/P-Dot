@@ -5,10 +5,10 @@ import {
   STALE_DOCUMENT_SETTLE_LIMIT,
 } from "@/lib/limits";
 import { createDocumentSchema, modeSchema } from "@/lib/schemas";
-import { budgetRefusal } from "@/server/assistant/spend";
+import { budgetRefusal, NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import { chunkText } from "@/server/assistant/chunk";
 import { createEmbedderForRequest } from "@/server/assistant/deps";
-import { EmbeddingBudgetError, EmbeddingTooLargeError } from "@/server/assistant/embed";
+import { EmbeddingBudgetError } from "@/server/assistant/embed";
 import { getAssistantConfig } from "@/server/config";
 import { createDocumentRepository } from "@/server/db/documents";
 import { readJsonBody } from "@/server/http/request";
@@ -88,7 +88,7 @@ export async function POST(request: Request): Promise<Response> {
         const refusal = budgetRefusal(error.limit, new Date());
         return errorResponse(refusal.status, refusal.code, refusal.message, requestId, refusal.headers);
       }
-      if (error instanceof EmbeddingTooLargeError) {
+      if (error instanceof NebiusHoldTooLargeError) {
         return errorResponse(413, "payload_too_large", "The document is too large to process.", requestId);
       }
       if (error instanceof ProviderError) {

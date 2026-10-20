@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
-import { EmbeddingBudgetError, EmbeddingTooLargeError, createBudgetedEmbedder } from "@/server/assistant/embed";
-import { MAX_NEBIUS_HOLD_MICRO_USD } from "@/server/assistant/spend";
+import { EmbeddingBudgetError, createBudgetedEmbedder } from "@/server/assistant/embed";
+import { MAX_NEBIUS_HOLD_MICRO_USD, NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import type { SpendGuard } from "@/server/db/spend";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL, createEmbeddings, toPgVector } from "@/server/providers/nebius/embeddings";
@@ -130,10 +130,10 @@ describe("createBudgetedEmbedder", () => {
     const embedder = createBudgetedEmbedder({ settings, spend, fetchImpl: fetchImpl as typeof fetch });
     // 32 texts of 800,000 bytes: a worst case of 256,006 micro-dollars, above the 250,000 ceiling.
     const big = Array.from({ length: 32 }, () => "a".repeat(800_000));
-    await expect(embedder.embed(big)).rejects.toBeInstanceOf(EmbeddingTooLargeError);
+    await expect(embedder.embed(big)).rejects.toBeInstanceOf(NebiusHoldTooLargeError);
     // A small first batch is not reserved either when a later batch is too large.
     await expect(embedder.embed([...Array.from({ length: 32 }, () => "small"), ...big])).rejects.toBeInstanceOf(
-      EmbeddingTooLargeError,
+      NebiusHoldTooLargeError,
     );
     expect(holds).toHaveLength(0);
     expect(settles).toHaveLength(0);
