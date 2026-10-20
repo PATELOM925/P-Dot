@@ -81,50 +81,71 @@ export class WriteFaults {
   }
 }
 
-export interface SweepCase {
-  step: number;
-  fault: WriteFault;
-  label: string;
+/** The faults planned for one run, in step order. Empty for the run with no fault. */
+export type SweepCase = readonly FiredFault[];
+
+export interface SweepOptions {
+  faults?: readonly WriteFault[];
+  /** The most faults in one run. 2 reaches a write that only runs after an earlier write failed. */
+  depth?: number;
+  /** The sweep fails when it would run more cases than this. */
+  maxCases?: number;
 }
 
 /**
- * Runs `scenario` once with no fault to count its writes, then once for each
- * write and each fault. The scenario builds fresh fakes, wraps them with the
- * given WriteFaults, sends the request, calls `disarm()`, then recovers and
- * asserts. Returns the cases that were run. Runs every case, then fails with
- * a list of each case that failed or whose planned fault did not fire.
+ * Explores the writes of a scenario. The first run has no fault. After each
+ * run, every write that run reached after its last fault becomes a new case
+ * with one more fault (refused and lost), up to `depth` faults. So a write
+ * that runs only on an error path (a fallback status write, a recovery write)
+ * is also made to fail.
+ *
+ * The scenario builds fresh fakes, wraps them with the given WriteFaults, runs
+ * the requests under test, calls `disarm()`, then recovers and asserts. Every
+ * case runs. Then the sweep fails with a list of each case that failed or
+ * whose planned faults did not all fire. Returns the cases with faults.
  */
 export async function sweepWriteFaults(
-  scenario: (faults: WriteFaults, sweepCase: SweepCase | null) => Promise<void>,
-  faults: readonly WriteFault[] = WRITE_FAULTS,
+  scenario: (faults: WriteFaults, sweepCase: SweepCase) => Promise<void>,
+  { faults = WRITE_FAULTS, depth = 2, maxCases = 500 }: SweepOptions = {},
 ): Promise<SweepCase[]> {
-  const dry = new WriteFaults();
-  await scenario(dry, null);
-  if (dry.calls.length === 0) throw new Error("The scenario made no counted write.");
-
+  const queue: SweepCase[] = [[]];
   const cases: SweepCase[] = [];
   const failures: string[] = [];
-  for (const [index, label] of dry.calls.entries()) {
-    for (const fault of faults) {
-      const sweepCase = { step: index + 1, fault, label };
-      const run = new WriteFaults().fail(fault, sweepCase.step);
-      try {
-        await scenario(run, sweepCase);
-        if (run.fired.length !== 1) throw new Error("the planned fault did not fire");
-      } catch (error) {
-        const message = error instanceof Error ? (error.message.split("\n")[0] ?? "") : String(error);
-        const name = describeCase(sweepCase);
-        failures.push(message.startsWith(name) ? message : `${name}: ${message}`);
-      }
-      cases.push(sweepCase);
+  for (let index = 0; index < queue.length; index += 1) {
+    const plan = queue[index]!;
+    const run = new WriteFaults();
+    for (const planned of plan) run.fail(planned.fault, planned.step);
+    try {
+      await scenario(run, plan);
+      if (run.fired.length !== plan.length) throw new Error("a planned fault did not fire");
+    } catch (error) {
+      const message = error instanceof Error ? (error.message.split("\n")[0] ?? "") : String(error);
+      const name = describeCase(plan);
+      failures.push(message.startsWith(name) ? message : `${name}: ${message}`);
+    }
+    if (plan.length === 0 && run.calls.length === 0) throw new Error("The scenario made no counted write.");
+    if (plan.length > 0) cases.push(plan);
+
+    if (plan.length >= depth) continue;
+    for (let step = (plan.at(-1)?.step ?? 0) + 1; step <= run.calls.length; step += 1) {
+      for (const fault of faults) queue.push([...plan, { step, fault, label: run.calls[step - 1]! }]);
+    }
+    if (queue.length - 1 > maxCases) {
+      throw new Error(`The sweep needs more than ${maxCases} cases. Lower the depth or raise maxCases.`);
     }
   }
   if (failures.length > 0) {
-    throw new Error(`${failures.length} of ${cases.length} cases failed:\n${failures.join("\n")}`);
+    throw new Error(`${failures.length} of ${cases.length + 1} runs failed:\n${failures.join("\n")}`);
   }
   return cases;
 }
 
-export function describeCase(sweepCase: SweepCase | null): string {
-  return sweepCase ? `${sweepCase.fault} write ${sweepCase.step} (${sweepCase.label})` : "no fault";
+export function describeCase(sweepCase: SweepCase): string {
+  if (sweepCase.length === 0) return "no fault";
+  return sweepCase.map((f) => `${f.fault} write ${f.step} (${f.label})`).join(" then ");
+}
+
+/** True when a case has a fault of this kind on a write with this label. */
+export function hasFault(sweepCase: SweepCase, fault: WriteFault, label: string): boolean {
+  return sweepCase.some((f) => f.fault === fault && f.label === label);
 }

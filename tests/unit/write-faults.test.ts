@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WriteFaultError, WriteFaults, sweepWriteFaults } from "../support/write-faults";
+import { WriteFaultError, WriteFaults, describeCase, hasFault, sweepWriteFaults } from "../support/write-faults";
 
 class Store {
   rows: string[] = [];
@@ -57,16 +57,49 @@ describe("WriteFaults", () => {
 
   it("sweeps every counted write with both faults", async () => {
     const seen: string[] = [];
-    const cases = await sweepWriteFaults(async (faults, sweepCase) => {
-      const store = faults.wrap(new Store(), ["add"]);
-      await store.add("a").catch(() => {});
-      await store.add("b").catch(() => {});
-      faults.disarm();
-      await store.add("retry");
-      seen.push(sweepCase ? `${sweepCase.fault}:${sweepCase.step}:${store.rows.join("")}` : store.rows.join(""));
-    });
+    const cases = await sweepWriteFaults(
+      async (faults, sweepCase) => {
+        const store = faults.wrap(new Store(), ["add"]);
+        await store.add("a").catch(() => {});
+        await store.add("b").catch(() => {});
+        faults.disarm();
+        await store.add("retry");
+        seen.push(`${sweepCase.map((f) => `${f.fault}:${f.step}`).join(",")}=${store.rows.join("")}`);
+      },
+      { depth: 1 },
+    );
     expect(cases).toHaveLength(4);
-    expect(seen).toEqual(["abretry", "refused:1:bretry", "lost:1:abretry", "refused:2:aretry", "lost:2:abretry"]);
+    expect(seen).toEqual(["=abretry", "refused:1=bretry", "lost:1=abretry", "refused:2=aretry", "lost:2=abretry"]);
+  });
+
+  it("also faults a write that runs only after an earlier write failed", async () => {
+    const cases = await sweepWriteFaults(async (faults) => {
+      const primary = faults.wrap(new Store(), ["add"], { label: "primary" });
+      const recovery = faults.wrap(new Store(), ["add"], { label: "recovery" });
+      await primary.add("work").catch(() => recovery.add("undo").catch(() => {}));
+      faults.disarm();
+    });
+    expect(cases.map(describeCase)).toEqual([
+      "refused write 1 (primary.add)",
+      "lost write 1 (primary.add)",
+      "refused write 1 (primary.add) then refused write 2 (recovery.add)",
+      "refused write 1 (primary.add) then lost write 2 (recovery.add)",
+      "lost write 1 (primary.add) then refused write 2 (recovery.add)",
+      "lost write 1 (primary.add) then lost write 2 (recovery.add)",
+    ]);
+    expect(cases.some((c) => hasFault(c, "lost", "recovery.add"))).toBe(true);
+  });
+
+  it("fails with a clear message when the sweep needs too many cases", async () => {
+    await expect(
+      sweepWriteFaults(
+        async (faults) => {
+          const store = faults.wrap(new Store(), ["add"]);
+          for (const row of ["a", "b", "c"]) await store.add(row).catch(() => {});
+        },
+        { maxCases: 5 },
+      ),
+    ).rejects.toThrow("The sweep needs more than 5 cases");
   });
 
   it("fails a sweep when a planned fault never fires", async () => {
@@ -77,6 +110,6 @@ describe("WriteFaults", () => {
         if (first) await store.add("only in the dry run");
         first = false;
       }),
-    ).rejects.toThrow("the planned fault did not fire");
+    ).rejects.toThrow("a planned fault did not fire");
   });
 });
