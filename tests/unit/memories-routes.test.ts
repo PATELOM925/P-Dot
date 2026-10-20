@@ -7,7 +7,10 @@ import type { Embedder } from "@/server/assistant/embed";
 import { EmbeddingBudgetError } from "@/server/assistant/embed";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
-import { TEST_SPEND_CAPS, testRouting } from "../support/fakes";
+import { createBudgetedEmbedder } from "@/server/assistant/embed";
+import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
+import { FakeSpend, TEST_SPEND_CAPS, testRouting } from "../support/fakes";
+import { WriteFaults, describeCase, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -54,11 +57,16 @@ class FakeDb {
   from(table: string): FakeQuery {
     return new FakeQuery(this, table);
   }
+
+  /** Every insert, update and delete goes through here, so a test can make one fail. */
+  async write(_table: string, run: () => FakeResult): Promise<FakeResult> {
+    return run();
+  }
 }
 
 interface FakeResult {
   data: unknown;
-  error: null;
+  error: { message: string } | null;
   count?: number;
 }
 
@@ -122,7 +130,8 @@ class FakeQuery implements PromiseLike<FakeResult> {
     onFulfilled?: ((value: FakeResult) => T1 | PromiseLike<T1>) | null,
     onRejected?: ((reason: unknown) => T2 | PromiseLike<T2>) | null,
   ): Promise<T1 | T2> {
-    return Promise.resolve(this.execute()).then(onFulfilled, onRejected);
+    const result = this.op === "select" ? Promise.resolve(this.execute()) : this.db.write(this.table, () => this.execute());
+    return result.then(onFulfilled, onRejected);
   }
 
   private project(row: Row): Row {
@@ -520,6 +529,90 @@ describe("DELETE /api/memories/:id", () => {
     expect((await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string))).status).toBe(404);
     expect(storedRow(row.id as string)).toBeDefined();
     expect(actionLog()).toHaveLength(0);
+  });
+});
+
+describe("memory writes when one write fails", () => {
+  const NEW_TEXT = "Prefers tea in the morning";
+
+  /** The real budgeted embedder, with a provider that always answers and a spend guard the test can break. */
+  function arm(faults: WriteFaults) {
+    db = new FakeDb();
+    const spend = new FakeSpend();
+    faults.wrap(spend, ["reserve", "settle"]);
+    faults.wrap(db, ["write"], {
+      label: "db",
+      detail: (_method, args) => String(args[0]),
+      failWith: (error) => ({ data: null, error: { message: error.message } }),
+    });
+    const fetchImpl = async () =>
+      new Response(
+        JSON.stringify({ data: [{ index: 0, embedding: Array(EMBEDDING_DIMENSIONS).fill(0.5) }], usage: { prompt_tokens: 7 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    vi.mocked(createEmbedderForRequest).mockReturnValue(
+      createBudgetedEmbedder({ settings: { apiKey: "k", baseUrl: "https://nebius.test/v1" }, spend, fetchImpl }),
+    );
+    signInAs(ALICE);
+    return spend;
+  }
+
+  function checkSpend(spend: FakeSpend, faults: WriteFaults, at: string) {
+    const spendHit = faults.fired.some((f) => f.label.startsWith("FakeSpend"));
+    const open = spend.reservations.filter((r) => r.settled === null);
+    expect(open.length, `${at}: only a failed spend write leaves its full hold counted`).toBeLessThanOrEqual(spendHit ? 1 : 0);
+  }
+
+  // A lost insert is a lost response on a single create, so the resend saves a second copy.
+  const KNOWN_DUPLICATE = "lost:db.write:memories";
+
+  async function createScenario(faults: WriteFaults, sweepCase: SweepCase | null, checkDuplicates?: boolean) {
+    const at = describeCase(sweepCase);
+    const spend = arm(faults);
+    const send = () => listRoute.POST(jsonRequest("POST", { mode: "personal", content: NEW_TEXT }));
+    const first = await send();
+    faults.disarm();
+    if (first.status !== 201) {
+      expect(first.status, at).toBe(500);
+      expect((await send()).status, `${at}: resend`).toBe(201);
+    }
+    checkSpend(spend, faults, at);
+    const saved = db.tables.memories!.filter((r) => r.content === NEW_TEXT);
+    expect(saved.length, at).toBeGreaterThan(0);
+    for (const row of saved) expect(row.status, at).toBe("active");
+    if (checkDuplicates ?? `${sweepCase?.fault}:${sweepCase?.label}` !== KNOWN_DUPLICATE) {
+      expect(saved, `${at}: one saved memory`).toHaveLength(1);
+    }
+  }
+
+  it("POST: every write and both faults leave one active memory and no open hold", async () => {
+    const cases = await sweepWriteFaults(createScenario);
+    expect([...new Set(cases.map((c) => c.label))]).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
+  });
+
+  // Defect: there is no idempotency key, so a lost response on the insert makes the resend save a second copy.
+  it.fails("POST: response lost on the insert, then a resend: saves the memory once", async () => {
+    await createScenario(new WriteFaults().fail("lost", 3), { step: 3, fault: "lost", label: "db.write:memories" }, true);
+  });
+
+  it("PATCH: every write and both faults end with the new text, its vector and no open hold", async () => {
+    const cases = await sweepWriteFaults(async (faults, sweepCase) => {
+      const at = describeCase(sweepCase);
+      const spend = arm(faults);
+      const id = seedMemory(ALICE).id as string;
+      const send = () => itemRoute.PATCH(jsonRequest("PATCH", { content: NEW_TEXT }), params(id));
+      const first = await send();
+      faults.disarm();
+      if (first.status !== 200) {
+        expect(first.status, at).toBe(500);
+        expect((await send()).status, `${at}: resend`).toBe(200);
+      }
+      checkSpend(spend, faults, at);
+      expect(db.tables.memories, at).toHaveLength(1);
+      expect(storedRow(id), at).toMatchObject({ content: NEW_TEXT, embedding_model: EMBEDDING_MODEL });
+      expect(storedRow(id)!.embedding, at).not.toBe(OLD_VECTOR);
+    });
+    expect([...new Set(cases.map((c) => c.label))]).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
   });
 });
 
