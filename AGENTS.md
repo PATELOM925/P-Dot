@@ -51,12 +51,14 @@ MVP implementation was authorized on 2026-10-14. The backend and a minimal front
 
 ## Rules and what enforces them
 
-Only rules with a real check are listed. Level 1: one owner in the code. Level 3: a test that reads the source and fails on a copy.
+Level 1: one owner in the code. Level 3: a test that reads the source and fails on a copy. Level 4: a test that runs the code and fails on the mistake. Level 5: review only, because no check can decide it.
 
 | Rule | Enforced by | Level |
 | --- | --- | --- |
 | Only `src/server/assistant/spend.ts` computes a worst-case Nebius hold. It refuses a hold above the ceiling and never reduces it. | `nebiusHoldMicroUsd`, `nebiusEmbeddingHoldMicroUsd` and `tests/unit/spend-hold-owner.test.ts` | 1 and 3 |
 | Every entry under "Unreleased" in `CHANGELOG.md` has a bold title, a "Problem:" line, a "Resolution:" line and a pull request link (a commit link only when there was no pull request). "PR: not opened yet" fails. | `scripts/check-changelog.mjs` in `npm run lint`, and `tests/unit/check-changelog.test.ts` | 3 (lint): a check that reads `CHANGELOG.md`, not source code, and fails on a bad entry |
+| A status that means work is in progress names its recovery path in the decision record. | review only | 5 |
+| A route that does more than one write in one request has a test that makes its writes fail, refused and lost after they commit, also a write that runs only after an earlier one failed (up to two faults). The test wraps every fake the route writes through (repositories, spend, embedder, context records). It checks that no row stays in an in-between status, that the HTTP status is correct and that a retry does not repeat the effect. A new route needs its own sweep. | `sweepWriteFaults` in `tests/support/write-faults.ts`, used in the documents, actions, chat and memories route tests | 4 |
 
 ## Validation and handoff
 

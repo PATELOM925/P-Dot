@@ -8,6 +8,9 @@ import type { ChatMessage, CompletionChunk, ModelCallRequest, ModelProvider } fr
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import type { ConversationSummary, MessageDTO, Mode, TaskDTO } from "@/types/api";
 import type { TaskRepository } from "@/server/db/tasks";
+import type { ContextRecordRepository, NewContextRecord } from "@/server/db/context-records";
+import { createBudgetedEmbedder, type Embedder } from "@/server/assistant/embed";
+import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
@@ -188,6 +191,51 @@ export class FakeSpend implements SpendGuard {
   }
 }
 
+/** In-memory "what was sent" records, scoped to the user like RLS. */
+export class FakeContextRecords implements ContextRecordRepository {
+  records: (NewContextRecord & { userId: string })[] = [];
+
+  async insertContextRecord(userId: string, record: NewContextRecord) {
+    this.records.push({ ...record, userId });
+  }
+
+  async getContextRecord(userId: string, messageId: string) {
+    const found = this.records.find((r) => r.userId === userId && r.messageId === messageId);
+    if (!found) return null;
+    const { userId: _userId, memoryIds, documentChunkIds, ...record } = found;
+    void _userId;
+    return {
+      ...record,
+      memories: memoryIds.map((id) => ({ id, content: null })),
+      documentChunks: documentChunkIds.map((id) => ({ id, documentId: null, title: null })),
+      createdAt: "2026-10-14T12:00:00.000Z",
+    };
+  }
+}
+
+/**
+ * A fake embeddings endpoint: one vector for each input, with token usage.
+ * `calls` counts the requests, so a test can prove that no embedding was paid for.
+ */
+export function fakeEmbeddingFetch() {
+  const state = { calls: 0 };
+  const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
+    state.calls += 1;
+    const input = (JSON.parse(String(init?.body)) as { input: string[] }).input;
+    const data = input.map((_text, index) => ({ index, embedding: Array<number>(EMBEDDING_DIMENSIONS).fill(0.5) }));
+    return new Response(JSON.stringify({ data, usage: { prompt_tokens: input.length * 8 } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  return { fetchImpl: fetchImpl as typeof fetch, state };
+}
+
+/** The real budgeted embedder, on a fake endpoint and the given spend guard. */
+export function testEmbedder(spend: SpendGuard, fetchImpl: typeof fetch = fakeEmbeddingFetch().fetchImpl): Embedder {
+  return createBudgetedEmbedder({ settings: { apiKey: "test-key", baseUrl: "https://nebius.test/v1" }, spend, fetchImpl });
+}
+
 export class FakeQuota implements QuotaGate {
   calls = 0;
   constructor(private readonly allow = true) {}
@@ -220,6 +268,7 @@ export interface FakeDepsOptions {
   /** Replaces the simple reply provider (for routing tests). */
   provider?: ModelProvider;
   routing?: RoutingConfig;
+  contextRecords?: ContextRecordRepository;
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
@@ -255,6 +304,7 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
         })();
       },
     },
+    ...(options.contextRecords ? { contextRecords: options.contextRecords } : {}),
     breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
     random: () => 0,
     now: () => new Date(Date.UTC(2026, 9, 14, 12, 30, 0)),
