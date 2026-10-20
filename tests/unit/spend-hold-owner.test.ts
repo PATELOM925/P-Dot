@@ -30,12 +30,17 @@ describe("Nebius hold owner", () => {
     const files = sourceFiles(join(ROOT, "src")).map((path) => relative(ROOT, path));
     expect(files).toContain(OWNER);
 
+    expect(files).toContain(PRICING);
+
     const offenders: string[] = [];
     for (const file of files) {
       if (file === OWNER) continue;
-      const code = withoutComments(readFileSync(join(ROOT, file), "utf8"));
+      let code = withoutComments(readFileSync(join(ROOT, file), "utf8"));
+      // pricing.ts may declare costMicroUsd. Any other use there is a second hold owner.
+      if (file === PRICING) code = code.replace(/export function costMicroUsd\(/, "");
       if (/\bMAX_NEBIUS_HOLD_MICRO_USD\b/.test(code)) offenders.push(`${file}: MAX_NEBIUS_HOLD_MICRO_USD`);
-      if (file !== PRICING && /\bcostMicroUsd\b/.test(code)) offenders.push(`${file}: costMicroUsd`);
+      if (/\bcostMicroUsd\b/.test(code)) offenders.push(`${file}: costMicroUsd`);
+      if (/\b250_?000\b/.test(code)) offenders.push(`${file}: the ceiling as a number`);
     }
     expect(offenders, `${offenders.join("\n")}\n${FIX}`).toEqual([]);
   });
