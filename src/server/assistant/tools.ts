@@ -161,7 +161,7 @@ export const SEARCH_DOCUMENTS_TOOL: ToolDefinition = {
   function: {
     name: "search_documents",
     description:
-      "Search the user's personal documents, notes, and uploaded files for relevant information using semantic vector search.",
+      "Search the user's uploaded personal documents, notes, reservations, home details, credentials, and files using semantic vector search. Always call this whenever the user asks about their personal information, notes, flight, home, or stored files.",
     parameters: {
       type: "object",
       properties: {

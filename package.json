@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "eval": "tsx --conditions=react-server tests/evals/runner.ts",
     "eval:live": "tsx --conditions=react-server tests/evals/runner.ts --live",
+    "rag:demo": "tsx --conditions=react-server tests/evals/test-rag-live.ts",
     "check": "npm run lint && npm run typecheck && npm run test",
     "db:start": "supabase start",
     "db:status": "supabase status",
