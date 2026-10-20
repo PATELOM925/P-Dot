@@ -62,7 +62,8 @@ export class WriteFaults {
       const replacement = async (...args: unknown[]) => {
         if (!this.counting) return original.apply(target, args);
         const name = String(method);
-        const label = `${prefix}.${name}${options.detail ? `:${options.detail(name, args)}` : ""}`;
+        const detail = options.detail?.(name, args);
+        const label = `${prefix}.${name}${detail ? `:${detail}` : ""}`;
         this.calls.push(label);
         const step = this.calls.length;
         const fault = this.planned.get(step);
