@@ -136,9 +136,22 @@ describe("action log wording", () => {
   });
 
   it("says how many searchable parts a document has, without its ID", () => {
-    const view = describeLogEntry(entry("document_added", { documentId: "d1", mode: "work", chunkCount: 3 }));
-    expect(view).toEqual({ title: "Document added", facts: ["Work", "3 searchable parts"], tone: "neutral" });
-    expect(describeLogEntry(entry("document_added", { chunkCount: 1 })).facts).toEqual(["1 searchable part"]);
+    const view = describeLogEntry(entry("document_ready", { documentId: "d1", mode: "work", chunkCount: 3 }));
+    expect(view).toEqual({ title: "Document ready to search", facts: ["Work", "3 searchable parts"], tone: "neutral" });
+    expect(describeLogEntry(entry("document_ready", { chunkCount: 1 })).facts).toEqual(["1 searchable part"]);
+  });
+
+  it("names each document step, and shows a failed one as a problem", () => {
+    expect(describeLogEntry(entry("document_added", { documentId: "d1", mode: "work", status: "processing" }))).toEqual({
+      title: "Document added",
+      facts: ["Work", "Processing"],
+      tone: "neutral",
+    });
+    expect(describeLogEntry(entry("document_failed", { documentId: "d1", mode: "work" }))).toEqual({
+      title: "Document could not be processed",
+      facts: ["Work"],
+      tone: "danger",
+    });
   });
 });
 

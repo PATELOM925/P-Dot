@@ -94,6 +94,8 @@ const EVENT_LABELS: Record<ActionLogEvent, string> = {
   memory_edited: "Memory changed",
   memory_deleted: "Memory deleted",
   document_added: "Document added",
+  document_ready: "Document ready to search",
+  document_failed: "Document could not be processed",
   document_deleted: "Document deleted",
   reminder_added: "Reminder added",
   reminder_changed: "Reminder changed",
@@ -112,6 +114,7 @@ const STATUS_WORDS: Record<string, string> = {
   cancelled: "Cancelled",
   proposed: "Waiting for approval",
   active: "Active",
+  processing: "Processing",
 };
 
 export type LogTone = "neutral" | "success" | "warning" | "danger";
@@ -141,7 +144,7 @@ export function describeLogEntry(entry: ActionLogEntryDTO): LogEntryView {
   const tone: LogTone =
     entry.event === "executed"
       ? "success"
-      : entry.event === "failed"
+      : entry.event === "failed" || entry.event === "document_failed"
         ? "danger"
         : entry.event === "proposed"
           ? "warning"

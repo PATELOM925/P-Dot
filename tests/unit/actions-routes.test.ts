@@ -471,7 +471,6 @@ describe("POST /api/actions/:id/decision: approve", () => {
     });
     expect(response.status).toBe(200);
     expect(rowsOf("tasks", ALICE)[0]).toMatchObject({ title: "Pay the invoice today" });
-    expect(logEvents().find((e) => e.event === "executed")?.detail).toMatchObject({ edited: true, kind: "create_task" });
   });
 
   it("runs an action once, and a second approval gets 409 without running it again", async () => {
@@ -496,7 +495,6 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(response.status).toBe(409);
     expect(storedProposal(row.id as string)?.status).toBe("rejected");
     expect(rowsOf("tasks")).toHaveLength(0);
-    expect(logEvents().some((e) => e.event === "approved" || e.event === "executed")).toBe(false);
   });
 });
 
@@ -511,7 +509,6 @@ describe("POST /api/actions/:id/decision: reject", () => {
     expect(rowsOf("tasks")).toHaveLength(0);
     expect(rowsOf("reminders")).toHaveLength(0);
     expect(rowsOf("memories")).toHaveLength(0);
-    expect(logEvents().map((e) => e.event)).toEqual(["rejected"]);
   });
 
   it("answers 409 for a second decision after a reject, and does not approve it", async () => {
@@ -537,23 +534,7 @@ describe("POST /api/actions/:id/decision: failures", () => {
     });
 
     expect(storedProposal(row.id as string)).toMatchObject({ status: "failed", result: { error: "execution_failed" } });
-    expect(logEvents().map((e) => e.event)).toEqual(["approved", "failed"]);
     expect(consoleLines.some((l) => l.includes('"event":"action_execution_failed"'))).toBe(true);
-  });
-
-  it("still returns success when the action-log write fails, and warns without the event text", async () => {
-    signInAs(ALICE);
-    db.failInsertInto = "action_log";
-    const row = seedProposal(ALICE, taskPayload());
-    const response = await decide(row.id as string, { decision: "approve" });
-    expect(response.status).toBe(200);
-    expect(storedProposal(row.id as string)?.status).toBe("executed");
-    expect(rowsOf("tasks")).toHaveLength(1);
-
-    const warnings = consoleLines.filter((l) => l.includes('"event":"action_log_failed"'));
-    expect(warnings).toHaveLength(2);
-    expect(warnings.some((l) => l.includes('"actionEvent":"executed"'))).toBe(true);
-    expect(warnings.some((l) => l.includes('"actionEvent":"approved"'))).toBe(true);
   });
 });
 
@@ -572,14 +553,11 @@ describe("action log content", () => {
     expect(consoleLines.join("\n")).not.toContain(SECRET_MEMORY);
   });
 
-  it("logs IDs, the kind and booleans on executed", async () => {
+  it("writes no action-log rows: the database writes them from triggers", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
     await decide(row.id as string, { decision: "approve" });
-    const executed = logEvents().find((e) => e.event === "executed");
-    expect(executed).toMatchObject({ user_id: ALICE, proposal_id: row.id });
-    expect(executed?.detail).toMatchObject({ proposalId: row.id, kind: "create_task", edited: false });
-    expect(executed?.detail).toHaveProperty("taskId", rowsOf("tasks")[0]?.id);
+    expect(logEvents()).toHaveLength(0);
   });
 });
 

@@ -6,7 +6,6 @@ import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
 import type { Embedder } from "@/server/assistant/embed";
 import { EmbeddingBudgetError } from "@/server/assistant/embed";
-import type { ActionLogRepository } from "@/server/db/action-log";
 import type { DocumentRepository, NewChunk, NewDocument } from "@/server/db/documents";
 import { ProviderError } from "@/server/providers/errors";
 import type { DocumentDTO, DocumentStatus, Mode } from "@/types/api";
@@ -92,18 +91,6 @@ class FakeDocuments implements DocumentRepository {
   }
 }
 
-class FakeActionLog implements ActionLogRepository {
-  entries: { userId: string; event: string; detail: Record<string, unknown> }[] = [];
-
-  async append(userId: string, event: string, detail: Record<string, unknown> = {}): Promise<void> {
-    this.entries.push({ userId, event, detail });
-  }
-
-  async list(): Promise<never[]> {
-    return [];
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -153,7 +140,6 @@ function allLogText(spies: CallRecorder[]): string {
 }
 
 let docs: FakeDocuments;
-let log: FakeActionLog;
 let embedder: { embed: ReturnType<typeof vi.fn> };
 let consoleSpies: CallRecorder[];
 
@@ -164,10 +150,9 @@ beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {}),
   ];
   docs = new FakeDocuments();
-  log = new FakeActionLog();
   embedder = { embed: vi.fn(async (texts: string[]) => texts.map(() => [0.1, 0.2])) };
   vi.mocked(createDocumentRepository).mockReturnValue(docs);
-  vi.mocked(createActionLogRepository).mockReturnValue(log);
+  vi.mocked(createActionLogRepository).mockClear();
   vi.mocked(getAssistantConfig).mockReturnValue({} as AssistantConfig);
   vi.mocked(createEmbedderForRequest).mockReturnValue(embedder as unknown as Embedder);
 });
@@ -266,7 +251,7 @@ describe("POST /api/documents", () => {
     expect(embedder.embed).not.toHaveBeenCalled();
   });
 
-  it("stores ready chunks with their embeddings, logs the upload, and answers 201 without embeddings", async () => {
+  it("stores ready chunks with their embeddings and answers 201 without embeddings", async () => {
     signInAs(ALICE);
     const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
     expect(response.status).toBe(201);
@@ -282,20 +267,14 @@ describe("POST /api/documents", () => {
     expect(stored.chunks.map((c) => c.index)).toEqual(stored.chunks.map((_, i) => i));
     expect(stored.chunks[0]!.content).toContain("SECRET-MARKER-42");
 
-    expect(log.entries).toEqual([
-      {
-        userId: ALICE,
-        event: "document_added",
-        detail: { documentId: body.id, mode: "work", chunkCount: stored.chunks.length },
-      },
-    ]);
+    // The database writes the action log rows (document_added, then document_ready) from triggers.
+    expect(createActionLogRepository).not.toHaveBeenCalled();
   });
 
-  it("keeps the document text out of logs and the action log", async () => {
+  it("keeps the document text out of the server logs", async () => {
     signInAs(ALICE);
     await documentsRoute.POST(jsonRequest("POST", validBody()));
     expect(allLogText(consoleSpies)).not.toContain("SECRET-MARKER");
-    expect(JSON.stringify(log.entries)).not.toContain("SECRET-MARKER");
   });
 
   it("marks the document failed and answers 429 when the daily budget refuses", async () => {
@@ -309,7 +288,6 @@ describe("POST /api/documents", () => {
 
     expect(docs.stored[0]!.dto.status).toBe("failed");
     expect(docs.stored[0]!.chunks).toHaveLength(0);
-    expect(log.entries).toHaveLength(0);
     expect(allLogText(consoleSpies)).not.toContain("SECRET-MARKER");
   });
 
@@ -332,7 +310,6 @@ describe("POST /api/documents", () => {
     });
     expect(docs.stored[0]!.dto.status).toBe("failed");
     expect(docs.stored[0]!.chunks).toHaveLength(0);
-    expect(log.entries).toHaveLength(0);
   });
 
   it("marks the document failed and answers 500 for any other error", async () => {
@@ -342,7 +319,6 @@ describe("POST /api/documents", () => {
     const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
     expect(response.status).toBe(500);
     expect(docs.stored[0]!.dto.status).toBe("failed");
-    expect(log.entries).toHaveLength(0);
     expect(allLogText(consoleSpies)).not.toContain("SECRET-MARKER");
   });
 });
@@ -357,14 +333,14 @@ describe("DELETE /api/documents/:id", () => {
     expect((await documentItemRoute.DELETE(plainRequest("DELETE"), params(MISSING_ID))).status).toBe(401);
   });
 
-  it("removes the owner's document, logs it, and answers 204", async () => {
+  it("removes the owner's document and answers 204", async () => {
     signInAs(ALICE);
     const created = await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 5 });
 
     const response = await documentItemRoute.DELETE(plainRequest("DELETE"), params(created.id));
     expect(response.status).toBe(204);
     expect(docs.stored).toHaveLength(0);
-    expect(log.entries).toEqual([{ userId: ALICE, event: "document_deleted", detail: { documentId: created.id } }]);
+    expect(createActionLogRepository).not.toHaveBeenCalled();
   });
 
   it("answers 404 for another user's document, a missing one, or a bad ID, and deletes nothing", async () => {
@@ -377,7 +353,6 @@ describe("DELETE /api/documents/:id", () => {
       expect(await response.json()).toMatchObject({ error: { code: "not_found", message: "Document not found." } });
     }
     expect(docs.stored).toHaveLength(1);
-    expect(log.entries).toHaveLength(0);
   });
 
   it("rejects a cross-origin delete", async () => {

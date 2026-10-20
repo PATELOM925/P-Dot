@@ -332,12 +332,8 @@ describe("POST /api/memories", () => {
     expect(embed).toHaveBeenCalledWith(["Prefers short replies"]);
     expect(storedRow(memory.id)).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL, user_id: ALICE });
 
-    expect(actionLog()).toHaveLength(1);
-    expect(actionLog()[0]).toMatchObject({
-      user_id: ALICE,
-      event: "memory_added",
-      detail: { memoryId: memory.id, mode: "work", source: "user" },
-    });
+    // The database writes memory_added from a trigger. The app writes no log row.
+    expect(actionLog()).toHaveLength(0);
   });
 
   it("still saves with no embedding when the spend guard refuses", async () => {
@@ -348,7 +344,6 @@ describe("POST /api/memories", () => {
     const memory = await response.json();
     expect(storedRow(memory.id)).toMatchObject({ embedding: null, embedding_model: null, content: "Lives in Leeds" });
     expect(consoleLines.some((l) => l.includes('"event":"memory_embedding_failed"') && l.includes('"errorName":"EmbeddingBudgetError"'))).toBe(true);
-    expect(actionLog()[0]).toMatchObject({ event: "memory_added" });
   });
 
   it("still saves with no embedding when the provider fails", async () => {
@@ -407,7 +402,6 @@ describe("PATCH /api/memories/:id", () => {
     expect(await response.json()).toMatchObject({ id: row.id, content: "Likes green tea" });
     expect(embed).toHaveBeenCalledWith(["Likes green tea"]);
     expect(storedRow(row.id as string)).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL });
-    expect(actionLog().at(-1)).toMatchObject({ event: "memory_edited", detail: { memoryId: row.id, mode: "personal", source: "user" } });
   });
 
   it("clears the old vector when the new text cannot be embedded", async () => {
@@ -430,7 +424,6 @@ describe("PATCH /api/memories/:id", () => {
 
     expect(embed).not.toHaveBeenCalled();
     expect(storedRow(row.id as string)).toMatchObject({ embedding: OLD_VECTOR, status: "active", mode: "work" });
-    expect(actionLog().map((e) => e.event)).toEqual(["memory_edited", "memory_edited"]);
   });
 
   it("answers 404 for another user's memory and changes nothing", async () => {
@@ -462,18 +455,13 @@ describe("PATCH /api/memories/:id", () => {
 });
 
 describe("DELETE /api/memories/:id", () => {
-  it("deletes the user's memory with 204 and logs memory_deleted", async () => {
+  it("deletes the user's memory with 204", async () => {
     signInAs(ALICE);
     const row = seedMemory(ALICE, { mode: "work", source: "assistant", status: "proposed" });
     const response = await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string));
     expect(response.status).toBe(204);
     expect(storedRow(row.id as string)).toBeUndefined();
-    expect(actionLog()).toHaveLength(1);
-    expect(actionLog()[0]).toMatchObject({
-      user_id: ALICE,
-      event: "memory_deleted",
-      detail: { memoryId: row.id, mode: "work", source: "assistant" },
-    });
+    expect(actionLog()).toHaveLength(0);
   });
 
   it("answers 404 for another user's memory and deletes nothing", async () => {
@@ -513,7 +501,7 @@ describe("privacy and scoping", () => {
     for (const query of memoryReads) expect(query.columns).not.toContain("embedding");
   });
 
-  it("scopes every memory and log query to the signed-in user", async () => {
+  it("scopes every memory query to the signed-in user", async () => {
     signInAs(ALICE);
     const row = seedMemory(ALICE);
     await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal"));
@@ -521,12 +509,12 @@ describe("privacy and scoping", () => {
     await itemRoute.PATCH(jsonRequest("PATCH", { content: "y" }), params(row.id as string));
     await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string));
 
-    const touched = db.queries.filter((q) => q.table === "memories" || q.table === "action_log");
-    expect(touched.length).toBeGreaterThan(4);
+    const touched = db.queries.filter((q) => q.table === "memories");
+    expect(touched.length).toBeGreaterThanOrEqual(4);
     for (const query of touched) expect(query.scopedToUser).toBe(true);
   });
 
-  it("keeps memory text out of the action log and the warning lines", async () => {
+  it("keeps memory text out of the warning lines and writes no log row", async () => {
     const secret = "Secret plan 42 for the bakery";
     signInAs(ALICE);
     embed.mockRejectedValueOnce(new ProviderError("nebius", "timeout"));
@@ -537,7 +525,6 @@ describe("privacy and scoping", () => {
 
     expect(consoleLines.length).toBeGreaterThan(0);
     for (const line of consoleLines) expect(line).not.toContain("Secret plan");
-    for (const entry of actionLog()) expect(JSON.stringify(entry)).not.toContain("Secret plan");
-    expect(actionLog().map((e) => e.event)).toEqual(["memory_added", "memory_edited", "memory_deleted"]);
+    expect(actionLog()).toHaveLength(0);
   });
 });

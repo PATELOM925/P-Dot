@@ -428,4 +428,101 @@ describe("GET /api/action-log", () => {
       "id, proposal_id, event, detail, created_at",
     );
   });
+
+  it("skips a row that does not parse and logs its ID only, so one bad row cannot break the page", async () => {
+    fake.db.tables.action_log!.push(
+      {
+        id: uuid(61),
+        user_id: ALICE,
+        proposal_id: null,
+        event: "executed",
+        detail: { taskId: { nested: "private words" } },
+        created_at: "2026-10-20T09:00:00.000Z",
+      },
+      {
+        id: uuid(62),
+        user_id: ALICE,
+        proposal_id: null,
+        event: "made_up_event",
+        detail: {},
+        created_at: "2026-10-20T08:00:00.000Z",
+      },
+      { id: uuid(63), user_id: ALICE, proposal_id: null, event: "approved", detail: null, created_at: null },
+    );
+    const warn = vi.mocked(console.warn);
+
+    signInAs(ALICE, fake.client);
+    const response = await actionLogRoute.GET(plainRequest("http://localhost/api/action-log"));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { entries: { id: string }[] };
+    expect(body.entries.map((entry) => entry.id)).toEqual([uuid(42), uuid(41), uuid(43)]);
+
+    const lines = warn.mock.calls.map((call) => String(call[0]));
+    const skipped = lines.filter((line) => line.includes('"event":"action_log_row_skipped"'));
+    expect(skipped).toHaveLength(3);
+    for (const id of [uuid(61), uuid(62), uuid(63)]) expect(skipped.some((line) => line.includes(id))).toBe(true);
+    expect(lines.join("\n")).not.toContain("private words");
+  });
+
+  it("reads the row shapes that the database triggers write", async () => {
+    // One row of each event, copied from a run of the migration in a throwaway database.
+    const triggerRows = [
+      { event: "proposed", proposal_id: uuid(71), detail: { kind: "create_task", mode: "work" } },
+      { event: "approved", proposal_id: uuid(71), detail: { kind: "create_task", mode: "personal", edited: false } },
+      { event: "rejected", proposal_id: uuid(71), detail: { kind: "create_task", mode: "personal" } },
+      { event: "executed", proposal_id: uuid(71), detail: { kind: "save_memory", mode: "personal", memoryId: uuid(72) } },
+      {
+        event: "failed",
+        proposal_id: uuid(71),
+        detail: { code: "23514", kind: "create_task", mode: "personal", error: "execution_failed" },
+      },
+      { event: "memory_added", proposal_id: null, detail: { mode: "personal", source: "assistant", status: "active", memoryId: uuid(72) } },
+      {
+        event: "memory_edited",
+        proposal_id: null,
+        detail: {
+          mode: "personal",
+          source: "user",
+          status: "active",
+          memoryId: uuid(72),
+          modeChanged: false,
+          statusChanged: false,
+          contentChanged: true,
+        },
+      },
+      { event: "memory_deleted", proposal_id: null, detail: { mode: "personal", source: "user", memoryId: uuid(72) } },
+      { event: "document_added", proposal_id: null, detail: { mode: "work", status: "processing", documentId: uuid(73) } },
+      { event: "document_ready", proposal_id: null, detail: { mode: "work", chunkCount: 2, documentId: uuid(73) } },
+      { event: "document_failed", proposal_id: null, detail: { mode: "work", documentId: uuid(73) } },
+      { event: "document_deleted", proposal_id: null, detail: { mode: "work", documentId: uuid(73) } },
+      {
+        event: "reminder_added",
+        proposal_id: uuid(71),
+        detail: { mode: "personal", status: "scheduled", reminderId: uuid(74), fromProposal: true },
+      },
+      {
+        event: "reminder_changed",
+        proposal_id: null,
+        detail: {
+          mode: "personal",
+          status: "done",
+          dueChanged: false,
+          reminderId: uuid(74),
+          modeChanged: false,
+          titleChanged: true,
+          statusChanged: true,
+        },
+      },
+      { event: "reminder_deleted", proposal_id: null, detail: { mode: "personal", reminderId: uuid(74) } },
+    ].map((row, i) => ({ id: uuid(2000 + i), user_id: ALICE, created_at: "2026-10-20T16:56:39.302+00:00", ...row }));
+    fake.db.tables.action_log = triggerRows;
+    const warn = vi.mocked(console.warn);
+
+    signInAs(ALICE, fake.client);
+    const body = (await (await actionLogRoute.GET(plainRequest("http://localhost/api/action-log"))).json()) as {
+      entries: { event: string }[];
+    };
+    expect(body.entries.map((entry) => entry.event).sort()).toEqual(triggerRows.map((row) => row.event).sort());
+    expect(warn.mock.calls.some((call) => String(call[0]).includes("action_log_row_skipped"))).toBe(false);
+  });
 });

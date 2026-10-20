@@ -6,7 +6,6 @@ import { createEmbedderForRequest } from "@/server/assistant/deps";
 import type { Embedder } from "@/server/assistant/embed";
 import { getAssistantConfig } from "@/server/config";
 import { executeAction, type ActionDeps, type ActionResult } from "@/server/actions/execute";
-import { createActionLogRepository, type ActionLogRepository, type LogDetail } from "@/server/db/action-log";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createMemoryRepository } from "@/server/db/memories";
 import { createReminderRepository } from "@/server/db/reminders";
@@ -15,7 +14,6 @@ import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
 import { logEvent } from "@/server/log";
-import type { ActionLogEvent } from "@/types/api";
 
 interface Context {
   params: Promise<{ id: string }>;
@@ -45,7 +43,6 @@ export async function POST(request: Request, context: Context): Promise<Response
     const proposalId = id.data;
 
     const proposals = createActionProposalRepository(auth.supabase);
-    const log = createActionLogRepository(auth.supabase);
 
     const stored = await proposals.getProposal(auth.userId, proposalId);
     if (!stored) return actionNotFound(requestId);
@@ -63,14 +60,8 @@ export async function POST(request: Request, context: Context): Promise<Response
     );
     if (!claimed) return errorResponse(409, "conflict", "This action was already decided.", requestId);
 
-    const detail: LogDetail = { proposalId, kind, edited: edited !== undefined };
-
-    if (decision === "reject") {
-      await recordEvent(log, auth.userId, requestId, "rejected", detail, proposalId);
-      return jsonResponse(claimed, requestId);
-    }
-
-    await recordEvent(log, auth.userId, requestId, "approved", detail, proposalId);
+    // The database writes the action log rows for every status change.
+    if (decision === "reject") return jsonResponse(claimed, requestId);
 
     let result: ActionResult;
     try {
@@ -82,35 +73,12 @@ export async function POST(request: Request, context: Context): Promise<Response
         errorName: error instanceof Error ? error.name : "unknown",
       });
       await proposals.finish(auth.userId, proposalId, "failed", { error: "execution_failed" });
-      await recordEvent(log, auth.userId, requestId, "failed", detail, proposalId);
       return errorResponse(502, "internal_error", "The action could not be completed.", requestId);
     }
 
     const executed = await proposals.finish(auth.userId, proposalId, "executed", result);
-    await recordEvent(log, auth.userId, requestId, "executed", { ...detail, ...result }, proposalId);
     return jsonResponse(executed, requestId);
   });
-}
-
-/**
- * Writes one action-log row. A failed write never fails the request (owner
- * decision). The warning holds the request ID and the event name only. The
- * event name goes in `actionEvent`, because a field called `event` would
- * replace the log line's own `event` key.
- */
-async function recordEvent(
-  log: ActionLogRepository,
-  userId: string,
-  requestId: string,
-  event: ActionLogEvent,
-  detail: LogDetail,
-  proposalId: string,
-): Promise<void> {
-  try {
-    await log.append(userId, event, detail, proposalId);
-  } catch {
-    logEvent("warn", "action_log_failed", { requestId, actionEvent: event });
-  }
 }
 
 function executionDeps(auth: AuthContext): ActionDeps {

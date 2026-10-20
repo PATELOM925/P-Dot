@@ -5,7 +5,6 @@ import { chunkText } from "@/server/assistant/chunk";
 import { createEmbedderForRequest } from "@/server/assistant/deps";
 import { EmbeddingBudgetError } from "@/server/assistant/embed";
 import { getAssistantConfig } from "@/server/config";
-import { createActionLogRepository } from "@/server/db/action-log";
 import { createDocumentRepository } from "@/server/db/documents";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
@@ -58,11 +57,6 @@ export async function POST(request: Request): Promise<Response> {
         chunks.map((content, index) => ({ index, content, embedding: vectors[index]! })),
       );
       await documents.setStatus(auth.userId, document.id, "ready");
-      await createActionLogRepository(auth.supabase).append(auth.userId, "document_added", {
-        documentId: document.id,
-        mode,
-        chunkCount: chunks.length,
-      });
     } catch (error) {
       // Mark the document failed. A failure while marking is ignored, so the first error still reaches the user.
       await documents.setStatus(auth.userId, document.id, "failed").catch(() => {});

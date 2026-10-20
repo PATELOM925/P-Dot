@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES } from "@/lib/limits";
 import { updateMemorySchema } from "@/lib/schemas";
-import { createActionLogRepository } from "@/server/db/action-log";
 import { createMemoryRepository } from "@/server/db/memories";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
@@ -37,11 +36,6 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
     const memory = await createMemoryRepository(auth.supabase).updateMemory(auth.userId, id.data, changes, embedding);
     if (!memory) return memoryNotFound(requestId);
 
-    await createActionLogRepository(auth.supabase).append(auth.userId, "memory_edited", {
-      memoryId: memory.id,
-      mode: memory.mode,
-      source: memory.source,
-    });
     return jsonResponse(memory, requestId);
   });
 }
@@ -52,18 +46,9 @@ export async function DELETE(request: Request, context: Context): Promise<Respon
     const id = idSchema.safeParse((await context.params).id);
     if (!id.success) return memoryNotFound(requestId);
 
-    // Read the row first so the log can name its mode and source.
-    const memories = createMemoryRepository(auth.supabase);
-    const existing = await memories.getMemory(auth.userId, id.data);
-    if (!existing) return memoryNotFound(requestId);
-    const deleted = await memories.deleteMemory(auth.userId, id.data);
+    // The database writes the action log row for the delete.
+    const deleted = await createMemoryRepository(auth.supabase).deleteMemory(auth.userId, id.data);
     if (!deleted) return memoryNotFound(requestId);
-
-    await createActionLogRepository(auth.supabase).append(auth.userId, "memory_deleted", {
-      memoryId: existing.id,
-      mode: existing.mode,
-      source: existing.source,
-    });
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store", "X-Request-Id": requestId } });
   });
 }

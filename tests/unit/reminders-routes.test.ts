@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuthContext } from "@/server/auth/session";
-import type { ActionLogRepository, LogDetail } from "@/server/db/action-log";
 import type { NewReminder, ReminderChanges, ReminderRepository } from "@/server/db/reminders";
-import type { ActionLogEvent, Mode, ReminderDTO } from "@/types/api";
+import type { Mode, ReminderDTO } from "@/types/api";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/db/reminders", () => ({ createReminderRepository: vi.fn() }));
@@ -94,30 +93,7 @@ class MemoryReminders implements ReminderRepository {
   }
 }
 
-/** In-memory action log. It records every append so tests can check what was written. */
-class MemoryActionLog implements ActionLogRepository {
-  entries: { userId: string; event: ActionLogEvent; detail: LogDetail; proposalId: string | null }[] = [];
-
-  async append(userId: string, event: ActionLogEvent, detail: LogDetail = {}, proposalId: string | null = null) {
-    this.entries.push({ userId, event, detail: { ...detail }, proposalId });
-  }
-
-  async list(userId: string, limit: number) {
-    return this.entries
-      .filter((entry) => entry.userId === userId)
-      .slice(0, limit)
-      .map((entry, index) => ({
-        id: `log-${index}`,
-        proposalId: entry.proposalId,
-        event: entry.event,
-        detail: entry.detail,
-        createdAt: "2026-10-19T09:00:00.000Z",
-      }));
-  }
-}
-
 let reminders: MemoryReminders;
-let log: MemoryActionLog;
 
 /** Adds a reminder for a user straight to the store, without going through the route. */
 async function seed(userId: string, mode: Mode, title: string, dueAt = DUE) {
@@ -129,9 +105,8 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   reminders = new MemoryReminders();
-  log = new MemoryActionLog();
   vi.mocked(createReminderRepository).mockReturnValue(reminders);
-  vi.mocked(createActionLogRepository).mockReturnValue(log);
+  vi.mocked(createActionLogRepository).mockClear();
 });
 
 describe("/api/reminders requires a session", () => {
@@ -141,7 +116,6 @@ describe("/api/reminders requires a session", () => {
     expect((await listRoute.POST(jsonRequest("POST", { mode: "work", title: "x", dueAt: DUE }))).status).toBe(401);
     expect((await itemRoute.PATCH(jsonRequest("PATCH", { title: "x" }), params(ALICE))).status).toBe(401);
     expect((await itemRoute.DELETE(plainRequest("DELETE"), params(ALICE))).status).toBe(401);
-    expect(log.entries).toEqual([]);
   });
 });
 
@@ -176,7 +150,7 @@ describe("GET /api/reminders", () => {
 });
 
 describe("POST /api/reminders", () => {
-  it("creates a reminder, trims the title, and logs the add without the title", async () => {
+  it("creates a reminder and trims the title", async () => {
     signInAs(ALICE);
     const response = await listRoute.POST(
       jsonRequest("POST", { mode: "work", title: `  ${SECRET_TITLE}  `, dueAt: DUE }),
@@ -190,10 +164,6 @@ describe("POST /api/reminders", () => {
       proposalId: null,
     });
 
-    expect(log.entries).toHaveLength(1);
-    expect(log.entries[0]).toMatchObject({ userId: ALICE, event: "reminder_added", proposalId: null });
-    expect(log.entries[0]!.detail).toEqual({ reminderId: expect.any(String), mode: "work" });
-    expect(JSON.stringify(log.entries)).not.toContain("Acme");
   });
 
   it("accepts a title of exactly 200 characters", async () => {
@@ -219,7 +189,6 @@ describe("POST /api/reminders", () => {
     const response = await listRoute.POST(jsonRequest("POST", body));
     expect(response.status).toBe(400);
     expect(reminders.rows).toEqual([]);
-    expect(log.entries).toEqual([]);
   });
 
   it("rejects a cross-origin create", async () => {
@@ -229,12 +198,11 @@ describe("POST /api/reminders", () => {
     );
     expect(response.status).toBe(403);
     expect(reminders.rows).toEqual([]);
-    expect(log.entries).toEqual([]);
   });
 });
 
 describe("PATCH /api/reminders/:id", () => {
-  it("changes the title, due time and status, and logs the change with its status", async () => {
+  it("changes the title, due time and status", async () => {
     const own = await seed(ALICE, "work", "Old title");
     signInAs(ALICE);
 
@@ -250,10 +218,6 @@ describe("PATCH /api/reminders/:id", () => {
       status: "done",
     });
 
-    expect(log.entries).toHaveLength(1);
-    expect(log.entries[0]).toMatchObject({ userId: ALICE, event: "reminder_changed" });
-    expect(log.entries[0]!.detail).toEqual({ reminderId: own.id, mode: "work", status: "done" });
-    expect(JSON.stringify(log.entries)).not.toContain("New title");
   });
 
   it("can cancel a reminder", async () => {
@@ -275,7 +239,6 @@ describe("PATCH /api/reminders/:id", () => {
     signInAs(ALICE);
     expect((await itemRoute.PATCH(jsonRequest("PATCH", body), params(own.id))).status).toBe(400);
     expect(reminders.rows[0]!.reminder).toMatchObject({ title: "Keep me", status: "scheduled", mode: "work" });
-    expect(log.entries).toEqual([]);
   });
 
   it("cannot change another user's reminder", async () => {
@@ -285,7 +248,6 @@ describe("PATCH /api/reminders/:id", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: "not_found", message: "Reminder not found." } });
     expect(reminders.rows[0]!.reminder).toMatchObject({ status: "scheduled" });
-    expect(log.entries).toEqual([]);
   });
 
   it("returns 404 for an ID that is not a UUID", async () => {
@@ -306,7 +268,7 @@ describe("PATCH /api/reminders/:id", () => {
 });
 
 describe("DELETE /api/reminders/:id", () => {
-  it("removes the reminder and logs the delete with its mode", async () => {
+  it("removes the reminder", async () => {
     const own = await seed(ALICE, "personal", SECRET_TITLE);
     signInAs(ALICE);
 
@@ -314,10 +276,6 @@ describe("DELETE /api/reminders/:id", () => {
     expect(response.status).toBe(204);
     expect(reminders.rows).toEqual([]);
 
-    expect(log.entries).toHaveLength(1);
-    expect(log.entries[0]).toMatchObject({ userId: ALICE, event: "reminder_deleted" });
-    expect(log.entries[0]!.detail).toEqual({ reminderId: own.id, mode: "personal" });
-    expect(JSON.stringify(log.entries)).not.toContain("Acme");
   });
 
   it("cannot delete another user's reminder", async () => {
@@ -326,14 +284,12 @@ describe("DELETE /api/reminders/:id", () => {
     const response = await itemRoute.DELETE(plainRequest("DELETE"), params(theirs.id));
     expect(response.status).toBe(404);
     expect(reminders.rows).toHaveLength(1);
-    expect(log.entries).toEqual([]);
   });
 
   it("returns 404 for an unknown reminder", async () => {
     signInAs(ALICE);
     const response = await itemRoute.DELETE(plainRequest("DELETE"), params(MISSING_ID));
     expect(response.status).toBe(404);
-    expect(log.entries).toEqual([]);
   });
 
   it("rejects a cross-origin delete", async () => {
@@ -346,7 +302,7 @@ describe("DELETE /api/reminders/:id", () => {
 });
 
 describe("action log", () => {
-  it("writes one entry per change, with only IDs, modes and status", async () => {
+  it("is never written by the routes: the database writes it from triggers", async () => {
     signInAs(ALICE);
     const created = await (
       await listRoute.POST(jsonRequest("POST", { mode: "work", title: SECRET_TITLE, dueAt: DUE }))
@@ -354,14 +310,7 @@ describe("action log", () => {
     await itemRoute.PATCH(jsonRequest("PATCH", { title: "Renamed secret" }), params(created.id));
     await itemRoute.DELETE(plainRequest("DELETE"), params(created.id));
 
-    expect(log.entries.map((e) => e.event)).toEqual(["reminder_added", "reminder_changed", "reminder_deleted"]);
-    for (const entry of log.entries) {
-      expect(Object.keys(entry.detail).sort()).toEqual(
-        entry.event === "reminder_changed" ? ["mode", "reminderId", "status"] : ["mode", "reminderId"],
-      );
-    }
-    const everything = JSON.stringify(log.entries);
-    expect(everything).not.toContain("Acme");
-    expect(everything).not.toContain("Renamed secret");
+    expect(reminders.rows).toHaveLength(0);
+    expect(createActionLogRepository).not.toHaveBeenCalled();
   });
 });

@@ -152,12 +152,17 @@ export interface ActionProposalDTO {
   /** One plain sentence for the approval card, for example "Add task: Pay the invoice". */
   summary: string;
   status: ActionStatus;
-  /** What execution produced, for example { "taskId": "..." }. Null until executed or failed. */
+  /**
+   * What execution produced: the new row's ID, for example { "taskId": "..." },
+   * or { "error": "execution_failed", "code": "<SQLSTATE>" }. Null until
+   * executed or failed. Only the database writes it.
+   */
   result: Record<string, string | number | boolean | null> | null;
   createdAt: string;
   decidedAt: string | null;
 }
 
+/** Written only by database triggers (decision 0009). Keep in step with the `event` check in the migration. */
 export type ActionLogEvent =
   | "proposed"
   | "approved"
@@ -168,6 +173,8 @@ export type ActionLogEvent =
   | "memory_edited"
   | "memory_deleted"
   | "document_added"
+  | "document_ready"
+  | "document_failed"
   | "document_deleted"
   | "reminder_added"
   | "reminder_changed"
@@ -177,7 +184,7 @@ export interface ActionLogEntryDTO {
   id: string;
   proposalId: string | null;
   event: ActionLogEvent;
-  /** IDs, kinds and counts only. Never message or memory text. */
+  /** IDs, kinds, modes, counts and flags only. Never message or memory text. Strings are at most 64 characters. */
   detail: Record<string, string | number | boolean | null>;
   createdAt: string;
 }
@@ -195,7 +202,11 @@ export interface ReminderDTO {
   updatedAt: string;
 }
 
-/** "What was sent": the context the model received for one assistant reply. */
+/**
+ * "What was sent" for one assistant reply. The app writes this record with the
+ * user's own session, so it is the user's own record of what the app sent. It
+ * is not proof that a model received that context.
+ */
 export interface ContextRecordDTO {
   messageId: string;
   model: string;
