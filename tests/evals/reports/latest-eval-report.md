@@ -1,6 +1,6 @@
 # P-Dot AI-02 Evaluation Report
 
-- **Date**: 2026-10-20T02:48:03.885Z
+- **Date**: 2026-10-20T03:13:58.304Z
 - **Mode**: Deterministic Mock Suite
 - **Model**: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
 - **Total Cases**: 50
@@ -278,7 +278,7 @@
 
 - **Prompt**: Compare the battery capacity of iPhone 16 Pro and Samsung Galaxy S24.
 - **Tool Called**: `web_search` (Expected: `web_search`)
-- **Latency**: 1ms | **Tokens**: 247.25 | **Cost**: $0.000029
+- **Latency**: 0ms | **Tokens**: 247.25 | **Cost**: $0.000029
 
 **Model Output**:
 > Based on retrieved sources [1], The iPhone 16 Pro features a 3,582 mAh rechargeable lithium-ion battery. Furthermore [2], Samsung Galaxy S24 is equipped with a 4,000 mAh battery with 25W fast charging.

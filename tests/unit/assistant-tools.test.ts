@@ -440,5 +440,98 @@ describe("Autonomous Tool Calling (AI-04)", () => {
 
     expect(repo.messages[1]?.sources[0]?.title).toBe("office-handbook.pdf (Section 1)");
   });
+
+  it("seamlessly pivots from search_documents to web_search when personal notes do not contain the answer", async () => {
+    const repo = new MemoryRepository();
+    const { createMockDocumentRepository } = await import("@/server/db/documents");
+    // Empty document repo: no matching notes
+    const docRepo = createMockDocumentRepository();
+
+    let pass = 0;
+    const { deps, searches } = fakeDeps({
+      repo,
+      documentRepo: docRepo,
+      embed: async () => [0.1, 0.2, 0.3],
+      search: async (query) => [
+        {
+          title: "Public Release News",
+          url: "https://news.example.com/superapp",
+          excerpt: `Official announcement: ${query} is scheduled for Q4 2026.`,
+        },
+      ],
+      reply: async function* (messages, _signal, options) {
+        pass += 1;
+        if (pass === 1) {
+          // Hop 0: Model first searches personal documents
+          expect(options?.tools?.some((t) => t.function.name === "search_documents")).toBe(true);
+          yield {
+            type: "tool_calls" as const,
+            calls: [
+              {
+                id: "call_rag_empty",
+                type: "function" as const,
+                function: {
+                  name: "search_documents",
+                  arguments: JSON.stringify({ query: "SuperApp release date" }),
+                },
+              },
+            ],
+          };
+          yield { type: "finish" as const, finishReason: "tool_calls", usage: null };
+        } else if (pass === 2) {
+          // Hop 1: Document search yielded no results. Model pivots to web_search!
+          expect(options?.tools?.some((t) => t.function.name === "web_search")).toBe(true);
+          const toolMsg = messages.find((m) => m.role === "tool" && m.tool_call_id === "call_rag_empty");
+          expect(toolMsg?.content).toContain("No relevant information found in personal documents");
+
+          yield {
+            type: "tool_calls" as const,
+            calls: [
+              {
+                id: "call_web_pivot",
+                type: "function" as const,
+                function: {
+                  name: "web_search",
+                  arguments: JSON.stringify({ query: "SuperApp official release date" }),
+                },
+              },
+            ],
+          };
+          yield { type: "finish" as const, finishReason: "tool_calls", usage: null };
+        } else if (pass === 3) {
+          // Hop 2: Synthesize final answer combining context
+          const webToolMsg = messages.find((m) => m.role === "tool" && m.tool_call_id === "call_web_pivot");
+          expect(webToolMsg?.content).toContain("Public Release News");
+
+          yield {
+            type: "text" as const,
+            text: "Your personal notes did not contain information on SuperApp, but according to public announcements, it is scheduled for Q4 2026 [1].",
+          };
+          yield { type: "finish" as const, finishReason: "stop", usage: null };
+        }
+      },
+    });
+
+    const { events } = await runTurn(deps, {
+      action: "send",
+      message: "Check my notes for the release date of SuperApp, and if not there look it up online.",
+      webSearch: false,
+    });
+
+    // Verify search was invoked on the web after document check
+    expect(searches).toEqual(["SuperApp official release date"]);
+
+    // Verify both thought events occurred
+    const thoughts = events.filter((e) => e.type === "thought");
+    expect(thoughts.length).toBeGreaterThanOrEqual(2);
+
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+    if (doneEvent && doneEvent.type === "done") {
+      expect(doneEvent.message.content).toContain("Q4 2026");
+      expect(doneEvent.message.sources).toHaveLength(1);
+      expect(doneEvent.message.sources[0]?.url).toBe("https://news.example.com/superapp");
+    }
+  });
 });
 

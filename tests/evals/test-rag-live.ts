@@ -110,25 +110,10 @@ Hotel reservation: Hyatt Regency Embarcadero (Confirmation #HY-99218).
   console.log("  ↳ Initiating P-Dot Assistant with autonomous 'search_documents' tool...\n");
 
   const startChat = Date.now();
-  const dummyRepo = {
-    insertMessage: async (_u: string, m: any) => ({
-      id: "msg-123",
-      role: m.role,
-      content: m.content,
-      webSearch: m.webSearch ?? "off",
-      sources: m.sources ?? [],
-      createdAt: new Date().toISOString(),
-    }),
-    createConversation: async () => ({ id: "c-1", title: "Test", updatedAt: new Date().toISOString() }),
-    getConversation: async () => null,
-    listConversations: async () => [],
-    updateConversationTitle: async () => true,
-    deleteConversation: async () => true,
-    listRecentMessages: async () => [],
-  };
+  const dummyRepo = new (await import("../support/fakes")).MemoryRepository();
 
   const deps: AssistantDeps = {
-    repo: dummyRepo as any,
+    repo: dummyRepo,
     quota: { consume: async () => ({ allowed: true, resetsAt: new Date() }) },
     search: null,
     documentRepo: docRepo,

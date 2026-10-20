@@ -229,7 +229,7 @@ export async function* streamChatTurn(
   });
 
   const availableTools: ToolDefinition[] = [
-    ...(deps.search && webSearch === "off" ? [WEB_SEARCH_TOOL] : []),
+    ...(deps.search ? [WEB_SEARCH_TOOL] : []),
     ...(deps.documentRepo && deps.embed ? [SEARCH_DOCUMENTS_TOOL] : []),
     PROPOSE_REMINDER_TOOL,
     PROPOSE_TASK_TOOL,
@@ -415,8 +415,8 @@ export async function* streamChatTurn(
             tool_call_id: docCall.id,
             name: "search_documents",
             content: matches.length > 0
-              ? `${formatDocumentMatches(matches, allSources.length - matches.length + 1)}\n\n(Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. If you have sufficient information, answer now citing document sources with [n].)`
-              : `No relevant information found in personal documents for "${query}". (Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}.)`,
+              ? `${formatDocumentMatches(matches, allSources.length - matches.length + 1)}\n\n(Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. If you have sufficient information, answer now citing document sources with [n]. If additional public information is needed to fulfill the user's goal, you may call 'web_search' next.)`
+              : `No relevant information found in personal documents for "${query}". (Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. If this question can be answered using public information, you may call 'web_search' next, or answer directly if you already know.)`,
           });
         } catch (error) {
           if (signal.aborted) {
