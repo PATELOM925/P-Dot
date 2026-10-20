@@ -104,7 +104,21 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages, streaming]);
 
+  function triggerSessionSummarize(conversationId: string | null) {
+    if (!conversationId) return;
+    void fetch("/api/memories/summarize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId }),
+    }).catch(() => {
+      // Best-effort background summarization
+    });
+  }
+
   function openConversation(id: string) {
+    if (activeId && activeId !== id && messages.length >= 2) {
+      triggerSessionSummarize(activeId);
+    }
     abortRef.current?.abort();
     setActiveId(id);
     setMessages([]);
@@ -117,6 +131,9 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
   }
 
   function startNewConversation() {
+    if (activeId && messages.length >= 2) {
+      triggerSessionSummarize(activeId);
+    }
     abortRef.current?.abort();
     loadSeq.current += 1;
     setActiveId(null);
@@ -171,12 +188,15 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
       ]);
     }
 
+    let currentConversationId = activeId;
+
     try {
       const stream = await postChat(body, controller.signal);
       for await (const event of readChatStream(stream)) {
         switch (event.type) {
           case "start":
             accepted = true;
+            currentConversationId = event.conversation.id;
             setActiveId(event.conversation.id);
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
@@ -201,9 +221,20 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
           case "delta":
             setStreaming((current) => ({ text: (current?.text ?? "") + event.text, search: current?.search ?? null }));
             break;
+          case "title":
+            setConversations((list) =>
+              list.map((c) => (c.id === (currentConversationId ?? activeId) ? { ...c, title: event.title } : c))
+            );
+            break;
           case "done":
             finished = true;
-            setMessages((current) => [...current, { ...event.message, truncated: event.truncated }]);
+            setMessages((current) => {
+              const updated = [...current, { ...event.message, truncated: event.truncated }];
+              if (currentConversationId && updated.length >= 6 && updated.length % 6 === 0) {
+                triggerSessionSummarize(currentConversationId);
+              }
+              return updated;
+            });
             setStreaming(null);
             setStatus("Reply complete.");
             break;

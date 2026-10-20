@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { prepareChatTurn, streamChatTurn } from "@/server/assistant/service";
 import type { ChatRequest } from "@/types/api";
-import { createMockMemoryRepository, type MemoryCategory } from "@/server/db/memories";
+import { createMockMemoryRepository } from "@/server/db/memories";
 import { MemoryRepository, fakeDeps } from "../support/fakes";
 import { collect } from "../support/streams";
 

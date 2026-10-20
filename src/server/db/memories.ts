@@ -28,6 +28,12 @@ export interface NewMemory {
   embedding: number[];
 }
 
+export interface UpdateMemoryInput {
+  content?: string;
+  category?: MemoryCategory;
+  embedding?: number[];
+}
+
 export interface MemoryRepository {
   listMemories(
     userId: string,
@@ -35,6 +41,7 @@ export interface MemoryRepository {
   ): Promise<UserMemory[]>;
   getMemory(userId: string, memoryId: string): Promise<UserMemory | null>;
   createMemory(userId: string, memory: NewMemory): Promise<UserMemory>;
+  updateMemory(userId: string, memoryId: string, updates: UpdateMemoryInput): Promise<UserMemory | null>;
   deleteMemory(userId: string, memoryId: string): Promise<boolean>;
   searchMemories(
     userId: string,
@@ -123,6 +130,30 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
 
       if (error || !data) throw new RepositoryError("createMemory");
       return toUserMemory(data);
+    },
+
+    async updateMemory(
+      userId: string,
+      memoryId: string,
+      updates: UpdateMemoryInput,
+    ): Promise<UserMemory | null> {
+      const payload: Record<string, unknown> = {
+        updated_at: new Date().toISOString(),
+      };
+      if (updates.content !== undefined) payload.content = updates.content.trim();
+      if (updates.category !== undefined) payload.category = updates.category;
+      if (updates.embedding !== undefined) payload.embedding = updates.embedding;
+
+      const { data, error } = await supabase
+        .from("user_memories")
+        .update(payload)
+        .eq("id", memoryId)
+        .eq("user_id", userId)
+        .select("id, user_id, content, category, created_at, updated_at")
+        .maybeSingle();
+
+      if (error) throw new RepositoryError("updateMemory");
+      return data ? toUserMemory(data) : null;
     },
 
     async deleteMemory(userId: string, memoryId: string): Promise<boolean> {
@@ -277,6 +308,27 @@ export function createMockMemoryRepository(
         category: stored.category,
         createdAt: stored.createdAt,
         updatedAt: stored.updatedAt,
+      };
+    },
+
+    async updateMemory(
+      userId: string,
+      memoryId: string,
+      updates: UpdateMemoryInput,
+    ): Promise<UserMemory | null> {
+      const found = memories.find((m) => m.id === memoryId && m.userId === userId);
+      if (!found) return null;
+      if (updates.content !== undefined) found.content = updates.content.trim();
+      if (updates.category !== undefined) found.category = updates.category;
+      if (updates.embedding !== undefined) found.embedding = updates.embedding;
+      found.updatedAt = new Date().toISOString();
+      return {
+        id: found.id,
+        userId: found.userId,
+        content: found.content,
+        category: found.category,
+        createdAt: found.createdAt,
+        updatedAt: found.updatedAt,
       };
     },
 

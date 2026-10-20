@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { streamChatCompletion, type ChatMessage } from "@/server/providers/nebius/client";
+import { streamChatCompletion } from "@/server/providers/nebius/client";
 import { streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import { createMockDocumentRepository } from "@/server/db/documents";
 import { MemoryRepository } from "../support/fakes";

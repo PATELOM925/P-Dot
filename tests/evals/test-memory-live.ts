@@ -5,7 +5,6 @@ import { createSingleEmbedding } from "@/server/providers/nebius/embeddings";
 import { streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import { createMockMemoryRepository } from "@/server/db/memories";
 import { MemoryRepository } from "../support/fakes";
-import { collect } from "../support/streams";
 
 function loadEnvLocal() {
   const envPath = path.resolve(process.cwd(), ".env.local");

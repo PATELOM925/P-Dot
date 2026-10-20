@@ -97,5 +97,6 @@ export type ChatStreamEvent =
   | { type: "thought"; text: string }
   | { type: "action"; action: ProposedAction }
   | { type: "delta"; text: string }
+  | { type: "title"; title: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }
   | { type: "error"; code: ApiErrorCode; message: string; retryable: boolean };

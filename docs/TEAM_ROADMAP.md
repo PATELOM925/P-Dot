@@ -98,8 +98,15 @@ This document aligns Person A (Frontend), Person B (Backend/Database/Infra), and
   - Added unit test suite in `tests/unit/memories.test.ts` (171/171 tests passing across 16 test suites).
   - Verified live recall with `npm run memory:demo` (`tests/evals/test-memory-live.ts`), successfully recalling user allergies and personal preferences.
 
+- [x] **AI-06b: Episodic Session Summarization (Offline / End-of-Session Memory Distillation)**
+  - Implemented `src/server/memory/summarizer.ts` with atomic fact extraction across 4 core categories (`preference`, `work`, `personal`, `fact`).
+  - Added strict negative guardrails against transient questions, assistant suggestions, and secret/credential scrubbing (`scrubSensitiveData`).
+  - Implemented semantic deduplication and conflict resolution (`deduplicateAndPersistMemories`): updates existing memories when cosine similarity $\ge 0.85$, avoiding duplicate bloat.
+  - Added `updateMemory` method to `MemoryRepository` across Supabase pgvector and in-memory test mocks.
+  - Implemented `POST /api/memories/summarize` route for out-of-band asynchronous processing.
+  - Integrated fire-and-forget background triggers in `ChatWorkspace.tsx` on conversation switches, new chat creation, and periodic turn milestones.
+  - Added unit test suite in `tests/unit/session-summary.test.ts` (179/179 tests passing across 17 test suites, 0 lint warnings, 0 typecheck errors).
+
 ### Upcoming Steps:
-- [ ] **AI-06b: Episodic Session Summarization**
-  - Implement background worker / turn completion trigger to automatically synthesize key personal takeaways at the end of multi-turn chat sessions into atomic memory items.
 - [ ] **AI-07: Calendar & Action Proposal Execution Engine**
   - Connect Person A's interactive Action Cards (`approve`, `edit`, `cancel`) to database operations for reminders and tasks (`user_reminders`, `user_tasks`).

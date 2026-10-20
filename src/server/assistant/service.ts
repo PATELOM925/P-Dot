@@ -760,15 +760,17 @@ export async function* streamChatTurn(
     return;
   }
 
-  // Refine conversation title with smart title generator for the first turn
-  if (turn.history.length <= 1) {
-    generateSmartTitle(deps.complete, turn.userMessage.content)
-      .then((smartTitle) => {
-        if (smartTitle && smartTitle !== turn.conversation.title) {
-          deps.repo.updateConversationTitle(turn.userId, turn.conversation.id, smartTitle).catch(() => {});
-        }
-      })
-      .catch(() => {});
+  // Refine conversation title with smart title generator for the first turn or if generic
+  if (turn.history.length <= 1 || turn.conversation.title === "New Conversation") {
+    try {
+      const smartTitle = await generateSmartTitle(deps.complete, turn.userMessage.content, signal);
+      if (smartTitle && smartTitle !== turn.conversation.title && smartTitle !== "New Conversation") {
+        await deps.repo.updateConversationTitle(turn.userId, turn.conversation.id, smartTitle);
+        yield { type: "title", title: smartTitle };
+      }
+    } catch {
+      // Best-effort smart title generation
+    }
   }
 
   deps.log("info", "chat_completed", {
