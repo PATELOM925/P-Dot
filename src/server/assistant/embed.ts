@@ -13,17 +13,35 @@ export class EmbeddingBudgetError extends Error {
   }
 }
 
+/**
+ * The worst-case cost of one batch is above the largest hold the database
+ * accepts. The batch is refused before anything is reserved or sent, because
+ * a smaller hold would not cover its real cost.
+ */
+export class EmbeddingTooLargeError extends Error {
+  constructor() {
+    super("embedding refused: the batch is too large for one spend hold");
+    this.name = "EmbeddingTooLargeError";
+  }
+}
+
 export interface Embedder {
-  /** One vector for each text, in order. Throws EmbeddingBudgetError or ProviderError. */
+  /** One vector for each text, in order. Throws EmbeddingBudgetError, EmbeddingTooLargeError or ProviderError. */
   embed(texts: string[], signal?: AbortSignal): Promise<number[][]>;
 }
 
-/** Worst case: every UTF-8 byte is one token, plus a small overhead for each text. */
+/**
+ * Worst case: every UTF-8 byte is one token, plus a small overhead for each
+ * text. Throws EmbeddingTooLargeError when that is above the hold ceiling:
+ * a required hold is never reduced.
+ */
 function holdMicroUsd(texts: string[]): number {
   const price = priceForModel(EMBEDDING_MODEL);
   if (!price) throw new Error("The embedding model has no price.");
   const bytes = texts.reduce((sum, t) => sum + new TextEncoder().encode(t).length + 16, 0);
-  return Math.max(1, Math.min(costMicroUsd(price, { promptTokens: bytes, completionTokens: 0 }), MAX_NEBIUS_HOLD_MICRO_USD));
+  const hold = Math.max(1, costMicroUsd(price, { promptTokens: bytes, completionTokens: 0 }));
+  if (hold > MAX_NEBIUS_HOLD_MICRO_USD) throw new EmbeddingTooLargeError();
+  return hold;
 }
 
 /**
@@ -39,10 +57,14 @@ export function createBudgetedEmbedder(deps: {
   const price = priceForModel(EMBEDDING_MODEL);
   return {
     async embed(texts, signal) {
-      const out: number[][] = [];
+      // Every batch's hold is checked before the first reservation, so a refusal spends nothing.
+      const batches: { batch: string[]; hold: number }[] = [];
       for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
         const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-        const hold = holdMicroUsd(batch);
+        batches.push({ batch, hold: holdMicroUsd(batch) });
+      }
+      const out: number[][] = [];
+      for (const { batch, hold } of batches) {
         const reservation = await deps.spend.reserve("nebius", hold);
         if (!reservation.allowed) throw new EmbeddingBudgetError(reservation.limit);
         let charged = hold;

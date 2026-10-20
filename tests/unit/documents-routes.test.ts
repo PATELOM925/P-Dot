@@ -5,7 +5,7 @@ import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
 import type { Embedder } from "@/server/assistant/embed";
-import { EmbeddingBudgetError } from "@/server/assistant/embed";
+import { EmbeddingBudgetError, EmbeddingTooLargeError } from "@/server/assistant/embed";
 import type { DocumentRepository, NewChunk, NewDocument } from "@/server/db/documents";
 import { ProviderError } from "@/server/providers/errors";
 import type { DocumentDTO, DocumentStatus, Mode } from "@/types/api";
@@ -310,6 +310,16 @@ describe("POST /api/documents", () => {
     const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
     expect(response.status).toBe(429);
     expect((await response.json()).error.message).toBe("You have reached your daily usage limit. Try again tomorrow.");
+  });
+
+  it("marks the document failed and answers 413 when a batch is too large for one spend hold", async () => {
+    signInAs(ALICE);
+    embedder.embed.mockRejectedValueOnce(new EmbeddingTooLargeError());
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error: { code: "payload_too_large" } });
+    expect(docs.stored[0]!.dto.status).toBe("failed");
+    expect(docs.stored[0]!.chunks).toHaveLength(0);
   });
 
   it("marks the document failed and answers 502 when the provider fails", async () => {
