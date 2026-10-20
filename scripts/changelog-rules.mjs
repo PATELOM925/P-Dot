@@ -59,6 +59,7 @@ function checkEntry(entry) {
   const errors = [];
   const add = (message) => errors.push({ line: first.number, title, message: `${at}: ${message}` });
 
+  if (!/^- /.test(first.text)) add('start the entry with "- ", not "*" or "+".');
   if (!TITLE.test(first.text)) add('start the entry with a bold title: "- **What changed.**".');
   for (const label of ["Problem", "Resolution"]) {
     const result = labelStatus(lines, label);
@@ -92,7 +93,7 @@ export function findChangelogErrors(text) {
   const entries = [];
   let current = null;
   for (const line of section) {
-    if (/^- /.test(line.text)) {
+    if (/^[-*+] /.test(line.text)) {
       current = [line];
       entries.push(current);
     } else if (/^#/.test(line.text)) {

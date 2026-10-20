@@ -179,6 +179,13 @@ describe("check-changelog script", () => {
     expect(result.stderr).toContain('CHANGELOG entry "Bad." (line 8)');
   });
 
+  it.each(["*", "+"])("exits 1 on a top-level entry that starts with %s", (marker) => {
+    const result = run(changelog(`${marker} Plain entry. PR: not opened yet.\n`));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('start the entry with "- "');
+    expect(result.stderr).toContain('replace "PR: not opened yet"');
+  });
+
   it("exits 0 on good entries", () => {
     const result = run(changelog(`- **Good.** Problem: a. Resolution: b. ${PR}\n`));
     expect(result.status).toBe(0);
