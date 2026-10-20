@@ -133,6 +133,11 @@ const FILES_TO_CONVERT = [
     output: "docs/pdf/AI_LAYER_EXECUTIVE_SUMMARY.pdf",
     title: "P-Dot AI Layer: High-Level Overview & Strategic Talking Points",
   },
+  {
+    input: "docs/AI_EVALUATION_BENCHMARK_REPORT.md",
+    output: "docs/pdf/AI_EVALUATION_BENCHMARK_REPORT.pdf",
+    title: "P-Dot AI Layer: Automated Evaluation Benchmark & Hallucination Rigor Report",
+  },
 ];
 
 const tempDir = path.resolve(process.cwd(), "docs/pdf/.temp_html");
