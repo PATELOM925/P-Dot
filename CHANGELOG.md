@@ -53,7 +53,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
 
 ### Fixed
-- **Only the database writes the action log and the outcome of an action (contract step)** (decision [0009](docs/decisions/0009-memory-documents-actions.md)). PR: CONTRACT_PR.
+- **Only the database writes the action log and the outcome of an action (contract step)** (decision [0009](docs/decisions/0009-memory-documents-actions.md)). PR: [#17](https://github.com/PATELOM925/P-Dot/pull/17).
   - Problem: after the expand step (PR #13), the old insert grant on the action log and the old update grant on action proposals still let a signed-in user forge a log row or decide a proposal outside `decide_action_proposal`. They stayed only so that the older code kept working during the deploy.
   - Resolution: migration `20261021010000_memory_hardening_contract.sql` removes the insert grant and policy on `action_log` and the update grant and policy on `action_proposals`. Merge it only after the expand code is live. The database gate checks that both are gone and that the old two-write decision is refused.
 - **Only the database writes the action log and the outcome of an action (expand step)** (decision [0009](docs/decisions/0009-memory-documents-actions.md), reviews of PR #6, PR #12 and PR #13). PR: [#13](https://github.com/PATELOM925/P-Dot/pull/13).
