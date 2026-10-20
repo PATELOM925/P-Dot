@@ -448,6 +448,56 @@ describe("PATCH /api/memories/:id", () => {
     expect((await itemRoute.PATCH(jsonRequest("PATCH", { status: "active" }), params("not-an-id"))).status).toBe(404);
   });
 
+  it("answers 404 for a missing or foreign ID before any embedder work", async () => {
+    const row = seedMemory(ALICE);
+    signInAs(BOB);
+    const foreign = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes coffee" }), params(row.id as string));
+    expect(foreign.status).toBe(404);
+    const missing = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes coffee" }), params(randomUUID()));
+    expect(missing.status).toBe(404);
+
+    expect(createEmbedderForRequest).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes tea", embedding: OLD_VECTOR });
+  });
+
+  it("answers 404 for a missing ID even when the embedding settings are missing", async () => {
+    signInAs(ALICE);
+    vi.mocked(getAssistantConfig).mockImplementation(() => {
+      throw new ConfigError(["NEBIUS_API_KEY"]);
+    });
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes coffee" }), params(randomUUID()));
+    expect(response.status).toBe(404);
+  });
+
+  it.each([
+    ["the same text", "Likes tea"],
+    ["the same text with spaces", "  Likes tea  "],
+  ])("keeps the stored vector and does not embed for %s", async (_label, content) => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE);
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content }), params(row.id as string));
+    expect(response.status).toBe(200);
+    expect(embed).not.toHaveBeenCalled();
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes tea", embedding: OLD_VECTOR, embedding_model: EMBEDDING_MODEL });
+  });
+
+  it.each([
+    ["the provider fails", () => new ProviderError("nebius", "unavailable")],
+    ["the spend guard refuses", () => new EmbeddingBudgetError("day")],
+  ])("keeps the stored vector for the same text when %s", async (_label, makeError) => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE);
+    embed.mockRejectedValue(makeError());
+    const response = await itemRoute.PATCH(
+      jsonRequest("PATCH", { content: "  Likes tea  ", status: "active" }),
+      params(row.id as string),
+    );
+    expect(response.status).toBe(200);
+    expect(embed).not.toHaveBeenCalled();
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes tea", embedding: OLD_VECTOR, embedding_model: EMBEDDING_MODEL });
+  });
+
   it.each([
     ["an empty update", {}],
     ["a status other than active", { status: "proposed" }],
