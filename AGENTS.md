@@ -56,7 +56,7 @@ Level 1: one owner in the code. Level 3: a test that reads the source and fails 
 | Rule | Enforced by | Level |
 | --- | --- | --- |
 | A status that means work is in progress names its recovery path in the decision record. | review only | 5 |
-| A route that does more than one write in one request has a test that makes each write fail, refused and lost after it commits. The test checks that no row stays in an in-between status, that the HTTP status is correct and that a retry does not repeat the effect. A new route needs its own sweep. | `sweepWriteFaults` in `tests/support/write-faults.ts`, used in the documents, actions, chat and memories route tests | 4 |
+| A route that does more than one write in one request has a test that makes its writes fail, refused and lost after they commit, also a write that runs only after an earlier one failed (up to two faults). The test wraps every fake the route writes through (repositories, spend, embedder, context records). It checks that no row stays in an in-between status, that the HTTP status is correct and that a retry does not repeat the effect. A new route needs its own sweep. | `sweepWriteFaults` in `tests/support/write-faults.ts`, used in the documents, actions, chat and memories route tests | 4 |
 
 ## Validation and handoff
 
