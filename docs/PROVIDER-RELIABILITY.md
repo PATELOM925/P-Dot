@@ -101,9 +101,10 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 ### 11. A hold was reduced to fit the ceiling
 
 - **What happened:** One Nebius hold can be at most $0.25. The chat hold used `Math.min(cost, ceiling)`, so a call above $0.25 would hold less than it could cost. The embedder copied this clamp in PR #6 (0dce68a). Two earlier defects had the same effect (lessons 2 and 3).
-- **Fix:** `src/server/assistant/spend.ts` is the one owner of the worst-case hold. Above the ceiling it throws `NebiusHoldTooLargeError` before any reserve call. Chat answers 413 and the documents route answers 413. `tests/unit/spend-hold-owner.test.ts` fails when another file uses the ceiling or `costMicroUsd`.
+- **Fix:** `src/server/assistant/spend.ts` is the one owner of the worst-case hold. Above the ceiling it throws `NebiusHoldTooLargeError` before any reserve call. Chat answers 413 and the documents route answers 413. `tests/unit/spend-hold-owner.test.ts` fails when another file uses the ceiling or `costMicroUsd`. `pricing.ts` may only declare `costMicroUsd`.
 - **Rule:** Never reduce a required hold. If the hold is too large, refuse the call. Compute holds only through the owner functions.
-- **Numbers (2026-10-20):** the largest valid chat turn (41 messages of 3-byte characters, search on, Ultra, 8,192 output tokens) holds 138,188 micro-dollars. A test keeps it under 150,000.
+- **Second defect (review of PR #14):** the source URL limit was checked before normalization. A 2,048-character URL with 3-byte characters became 18,312 bytes, so the search bytes bound was false and the first hold could be below the cost of the final prompt. `toSafeHttpUrl` now also refuses a normalized URL above 2,048 characters.
+- **Numbers (2026-10-20):** the largest valid chat turn (Work mode, 41 messages of 3-byte characters that fill the 24,000-character history budget, search on, Ultra, 8,192 output tokens) holds 138,233 micro-dollars. With worst-case search results its final prompt needs 130,279. A test through the real Tavily adapter checks both and keeps the hold under 150,000.
 - **Sources:** PR #2 commit 1945dda and fix eab3260; PR #6 commit 0dce68a; [PR #14](https://github.com/PATELOM925/P-Dot/pull/14).
 
 ## Checklists
