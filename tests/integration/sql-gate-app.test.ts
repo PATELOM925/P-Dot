@@ -96,6 +96,7 @@ describe("repositories on a database that has rows the older schema allowed", ()
   const OWNER = "22222222-2222-4222-8222-222222222222";
   const BAD_KIND = "22222222-2222-4222-8222-000000000001";
   const NESTED_LOG = "22222222-2222-4222-8222-000000000002";
+  const OLD_FORGED_LOG = "22222222-2222-4222-8222-000000000003";
   let old: SqlGate;
 
   beforeAll(async () => {
@@ -109,7 +110,8 @@ describe("repositories on a database that has rows the older schema allowed", ()
             ('${BAD_KIND}', '${OWNER}', 'create_task', '{"kind":"save_memory","mode":"personal","content":"x"}', 'bad');
           insert into action_log (id, user_id, event, detail) values
             ('${NESTED_LOG}', '${OWNER}', 'executed', '{"taskId":{"nested":"bad"}}'),
-            (gen_random_uuid(), '${OWNER}', 'memory_added', '{"memoryId":"m"}');
+            (gen_random_uuid(), '${OWNER}', 'memory_added', '{"memoryId":"m"}'),
+            ('${OLD_FORGED_LOG}', '${OWNER}', 'executed', '{"kind":"create_task","verified":true}');
         `,
       },
     });
@@ -139,5 +141,18 @@ describe("repositories on a database that has rows the older schema allowed", ()
     const entries = await createActionLogRepository(sqlGateClient(old, OWNER)).list(OWNER, 50);
     expect(entries.map((entry) => entry.id)).not.toContain(NESTED_LOG);
     expect(entries.some((entry) => entry.event === "memory_added")).toBe(true);
+  });
+
+  it("reads a log row with a verified key, from before or during the expand step, as not verified", async () => {
+    const during = await old.as<{ id: string }>(
+      user(OWNER),
+      `insert into action_log (user_id, event, detail)
+       values ($1, 'executed', '{"kind":"create_task","verified":true,"taskId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}') returning id`,
+      [OWNER],
+    );
+    const entries = await createActionLogRepository(sqlGateClient(old, OWNER)).list(OWNER, 50);
+    const verified = Object.fromEntries(entries.map((entry) => [entry.id, entry.verified]));
+    expect(verified[OLD_FORGED_LOG]).toBe(false);
+    expect(verified[during.rows[0]!.id]).toBe(false);
   });
 });
