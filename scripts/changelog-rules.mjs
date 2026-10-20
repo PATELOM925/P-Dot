@@ -2,11 +2,15 @@
 // Dated sections are not checked: entries from before this check use an older shape.
 
 const REPO = "https://github.com/PATELOM925/P-Dot";
-const PR_LINK = /https:\/\/github\.com\/PATELOM925\/P-Dot\/pull\/\d+(?![\d#])/;
-const COMMIT_LINK = /https:\/\/github\.com\/PATELOM925\/P-Dot\/commit\/[0-9a-f]{7,40}(?![0-9a-zA-Z])/;
+const LINK = /https:\/\/github\.com\/PATELOM925\/P-Dot\/(?:pull|commit)\/[^\s)\]>"'`]*/g;
+const ACCEPTED_LINK = /^https:\/\/github\.com\/PATELOM925\/P-Dot\/(?:pull\/\d+|commit\/[0-9a-f]{7,40})$/;
 const TITLE = /^- \*\*(.+?)\*\*/;
 const LABEL = /\b(?:Problem|Resolution):/;
 const HAS_TEXT = /[\p{L}\p{N}]/u;
+
+function hasAcceptedLink(body) {
+  return (body.match(LINK) ?? []).some((url) => ACCEPTED_LINK.test(url.replace(/[.,;:]+$/, "")));
+}
 
 function fieldText(text, label) {
   const at = text.search(new RegExp(`\\b${label}:`));
@@ -53,7 +57,7 @@ function checkEntry(lines) {
   const body = lines.map((line) => line.text).join("\n");
   if (/PR:\s*not opened yet/i.test(body))
     add(`replace "PR: not opened yet" with the pull request link (${REPO}/pull/N). Open the pull request first.`);
-  else if (!PR_LINK.test(body) && !COMMIT_LINK.test(body))
+  else if (!hasAcceptedLink(body))
     add(
       `add a link to the pull request (${REPO}/pull/N), or, if there was no pull request, to the commit (${REPO}/commit/<sha>). A link to a review comment does not count.`,
     );

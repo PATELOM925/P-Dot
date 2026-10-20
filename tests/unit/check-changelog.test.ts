@@ -99,6 +99,24 @@ describe("findChangelogErrors", () => {
     expect(found).toEqual([expect.stringContaining('the "Problem:" line is empty')]);
   });
 
+  it("does not count review comment links on a pull request or a commit", () => {
+    const text = changelog(
+      [
+        `- **Files review.** Problem: a. Resolution: b. [review](${PR}/files#r123)`,
+        `- **Commit comment.** Problem: a. Resolution: b. [comment](${COMMIT}#r123)`,
+        `- **Commit path.** Problem: a. Resolution: b. ${COMMIT}/extra`,
+      ].join("\n"),
+    );
+    const found = messages(text);
+    expect(found).toHaveLength(3);
+    for (const message of found) expect(message).toContain("add a link to the pull request");
+  });
+
+  it("counts a pull request link next to a review link", () => {
+    const text = changelog(`- **Both.** Problem: a. Resolution: b. ([PR #14](${PR}), [review](${PR}#issuecomment-1)).\n`);
+    expect(messages(text)).toEqual([]);
+  });
+
   it("allows a blank line between Resolution and its nested bullet", () => {
     const text = changelog([`- **Fix.** [PR](${PR})`, "  - Problem: bad.", "  - Resolution:", "", "    - Fixed."].join("\n"));
     expect(messages(text)).toEqual([]);
