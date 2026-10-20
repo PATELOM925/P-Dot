@@ -55,8 +55,14 @@ export type DecisionOutcome =
 
 export interface DecisionResult {
   outcome: DecisionOutcome;
-  /** Null for not_found, and when a stored row does not parse. */
+  /**
+   * The proposal after the decision. Null for not_found, and for an older
+   * row whose stored payload cannot be shown (for example a payload that
+   * names another kind). Such a row is never run, but it can be rejected.
+   */
   proposal: ActionProposalDTO | null;
+  /** The ID and status of the row the function answered for, even when `proposal` is null. */
+  row: { id: string; status: ActionStatus } | null;
 }
 
 const ACTION_STATUSES = ["proposed", "approved", "rejected", "executed", "failed"] as const;
@@ -72,19 +78,21 @@ const proposalRow = z.object({
   result: z.unknown(),
   created_at: z.string(),
   decided_at: z.string().nullable(),
+  decided_by_function: z.boolean().optional(),
 });
+
+/** The least a decision answer must have. It does not depend on the payload. */
+const decidedRow = z.object({ id: z.string(), status: z.enum(ACTION_STATUSES) });
 
 const decisionResponse = z.object({
   outcome: z.enum(["not_found", "already_decided", "invalid", "kind_mismatch", "rejected", "executed", "failed"]),
   proposal: z.unknown(),
 });
 
-/** Outcomes that wrote the row just now. That row must map. */
-const WRITTEN_OUTCOMES: ReadonlySet<DecisionOutcome> = new Set(["rejected", "executed", "failed"]);
-
 const resultValues = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
 
-const PROPOSAL_COLUMNS = "id, conversation_id, kind, payload, summary, status, result, created_at, decided_at";
+const PROPOSAL_COLUMNS =
+  "id, conversation_id, kind, payload, summary, status, result, created_at, decided_at, decided_by_function";
 
 /**
  * Maps a row to a DTO. Returns null when the row or its stored payload does
@@ -106,6 +114,7 @@ function toProposal(row: unknown): ActionProposalDTO | null {
     result: result.success ? result.data : null,
     createdAt: parsed.data.created_at,
     decidedAt: parsed.data.decided_at,
+    verified: parsed.data.decided_by_function === true,
   };
 }
 
@@ -156,13 +165,16 @@ export function createActionProposalRepository(supabase: SupabaseClient): Action
       const parsed = decisionResponse.safeParse(data);
       if (!parsed.success) throw new RepositoryError("decideActionProposal");
       const { outcome, proposal } = parsed.data;
-      if (proposal === null || proposal === undefined) return { outcome, proposal: null };
-      return {
-        outcome,
-        proposal: WRITTEN_OUTCOMES.has(outcome)
-          ? toWrittenProposal(proposal, "decideActionProposal")
-          : toProposal(proposal),
-      };
+      if (proposal === null || proposal === undefined) {
+        if (outcome !== "not_found") throw new RepositoryError("decideActionProposal");
+        return { outcome, proposal: null, row: null };
+      }
+      // The decision may already be committed. Never fail because of the
+      // payload: an older row with a payload that cannot be shown still gets
+      // its ID and status back.
+      const row = decidedRow.safeParse(proposal);
+      if (!row.success) throw new RepositoryError("decideActionProposal");
+      return { outcome, proposal: toProposal(proposal), row: row.data };
     },
   };
 }

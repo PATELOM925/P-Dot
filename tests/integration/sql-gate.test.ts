@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createActionLogRepository } from "@/server/db/action-log";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
-import { createMemoryRepository } from "@/server/db/memories";
 import { sqlGateClient } from "../support/sql-gate-client";
+import { MEMORY, REMINDER, TASK, decideAs, propose, proposalEvents, type Decision } from "../support/sql-gate-actions";
 import {
   anon,
   defaultGrantsOnNewTable,
@@ -183,41 +183,6 @@ async function updatableColumns(table: string): Promise<string[]> {
   return result.rows.map((row) => row.column_name);
 }
 
-
-const TASK = { kind: "create_task", mode: "personal", title: "Pay the invoice" };
-const REMINDER = { kind: "create_reminder", mode: "work", title: "Call Sam", dueAt: "2026-10-30T17:00:00Z" };
-const MEMORY = { kind: "save_memory", mode: "personal", content: "Prefers short replies" };
-
-interface Decision {
-  outcome: string;
-  proposal: { id: string; status: string; payload: Record<string, unknown>; result: Record<string, unknown> | null } | null;
-}
-
-async function propose(owner: string, payload: Record<string, unknown>): Promise<string> {
-  const result = await gate.as<{ id: string }>(
-    user(owner),
-    "insert into action_proposals (user_id, kind, payload, summary) values ($1, $2, $3::jsonb, 'Do it') returning id",
-    [owner, payload.kind, JSON.stringify(payload)],
-  );
-  return result.rows[0]!.id;
-}
-
-async function decideAs(owner: string, id: string, decision: string, payload?: unknown): Promise<Decision> {
-  const result = await gate.as<{ r: Decision }>(
-    user(owner),
-    "select public.decide_action_proposal($1, $2, $3::jsonb) as r",
-    [id, decision, payload === undefined ? null : JSON.stringify(payload)],
-  );
-  return result.rows[0]!.r;
-}
-
-async function proposalEvents(id: string): Promise<string[]> {
-  const result = await gate.admin<{ event: string }>(
-    "select event from action_log where proposal_id = $1 order by created_at",
-    [id],
-  );
-  return result.rows.map((row) => row.event);
-}
 
 
 describe.each(MODES)("database gate with %s default grants", (defaults) => {
@@ -491,7 +456,7 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
         [owner],
       );
       await as("update reminders set title = 'r2', due_at = now(), status = 'done', mode = 'work' where id = $1", [reminder]);
-      const proposal = await propose(owner, TASK);
+      const proposal = await propose(gate, owner, TASK);
 
       for (const table of ["conversations", "messages", "context_records", "tasks", "memories", "documents", "document_chunks", "reminders", "action_proposals", "action_log"]) {
         const rows = await as<{ n: number }>(`select count(*)::int as n from ${table}`);
@@ -505,7 +470,7 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       );
       expect(hold.rows[0]!.allowed).toBe(true);
       expect((await as<{ ok: boolean }>("select settle_provider_spend($1, 5) as ok", [hold.rows[0]!.reservation_id])).rows[0]!.ok).toBe(true);
-      expect((await decideAs(owner, proposal, "approve")).outcome).toBe("executed");
+      expect((await decideAs(gate, owner, proposal, "approve")).outcome).toBe("executed");
 
       await as("delete from tasks where id = $1", [task]);
       await as("delete from memories where id = $1", [memory]);
@@ -542,15 +507,15 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
         [REMINDER, "reminders", "reminderId"],
         [MEMORY, "memories", "memoryId"],
       ] as const) {
-        const id = await propose(owner, payload);
-        const answer = await decideAs(owner, id, "approve");
+        const id = await propose(gate, owner, payload);
+        const answer = await decideAs(gate, owner, id, "approve");
         expect(answer.outcome).toBe("executed");
         expect(answer.proposal).toMatchObject({ id, status: "executed" });
         expect(Object.keys(answer.proposal!.result!)).toEqual([key]);
         const created = await gate.admin<{ user_id: string }>(`select user_id from ${table} where id = $1`, [answer.proposal!.result![key]]);
         expect(created.rows).toEqual([{ user_id: owner }]);
         // A reminder keeps its proposal ID, so its own log row has the proposal ID too.
-        expect(await proposalEvents(id)).toEqual(
+        expect(await proposalEvents(gate, id)).toEqual(
           payload === REMINDER ? ["proposed", "approved", "reminder_added", "executed"] : ["proposed", "approved", "executed"],
         );
       }
@@ -562,21 +527,21 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
 
     it("rejects without running anything", async () => {
       const owner = await gate.createUser();
-      const id = await propose(owner, TASK);
-      const answer = await decideAs(owner, id, "reject");
+      const id = await propose(gate, owner, TASK);
+      const answer = await decideAs(gate, owner, id, "reject");
       expect(answer).toMatchObject({ outcome: "rejected", proposal: { status: "rejected", result: null } });
       expect(await countOwnedBy("tasks", owner)).toBe(0);
-      expect(await proposalEvents(id)).toEqual(["proposed", "rejected"]);
+      expect(await proposalEvents(gate, id)).toEqual(["proposed", "rejected"]);
     });
 
     it("runs once: a second decision gets already_decided with the stored outcome, which recovers a lost response", async () => {
       const owner = await gate.createUser();
-      const id = await propose(owner, TASK);
-      const first = await decideAs(owner, id, "approve");
-      const again = await decideAs(owner, id, "approve");
+      const id = await propose(gate, owner, TASK);
+      const first = await decideAs(gate, owner, id, "approve");
+      const again = await decideAs(gate, owner, id, "approve");
       expect(again.outcome).toBe("already_decided");
       expect(again.proposal).toMatchObject({ status: "executed", result: first.proposal!.result });
-      expect((await decideAs(owner, id, "reject")).outcome).toBe("already_decided");
+      expect((await decideAs(gate, owner, id, "reject")).outcome).toBe("already_decided");
       expect(await countOwnedBy("tasks", owner)).toBe(1);
       const listed = await createActionProposalRepository(sqlGateClient(gate, owner)).listProposals(owner, undefined, 10);
       expect(listed[0]).toMatchObject({ id, status: "executed", result: first.proposal!.result });
@@ -584,8 +549,8 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
 
     it("stores an edited payload of the same kind, trimmed, and runs it", async () => {
       const owner = await gate.createUser();
-      const id = await propose(owner, TASK);
-      const answer = await decideAs(owner, id, "approve", { ...TASK, mode: "work", title: "  Pay it today  " });
+      const id = await propose(gate, owner, TASK);
+      const answer = await decideAs(gate, owner, id, "approve", { ...TASK, mode: "work", title: "  Pay it today  " });
       expect(answer.outcome).toBe("executed");
       expect(answer.proposal!.payload).toEqual({ ...TASK, mode: "work", title: "Pay it today" });
       const task = await gate.admin("select mode, title from tasks where user_id = $1", [owner]);
@@ -599,30 +564,30 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       ["an unknown mode", { ...TASK, mode: "home" }, "invalid"],
     ])("refuses %s and changes nothing", async (_label, payload, outcome) => {
       const owner = await gate.createUser();
-      const id = await propose(owner, TASK);
-      const answer = await decideAs(owner, id, "approve", payload);
+      const id = await propose(gate, owner, TASK);
+      const answer = await decideAs(gate, owner, id, "approve", payload);
       expect(answer).toMatchObject({ outcome, proposal: { status: "proposed" } });
       expect(await countOwnedBy("tasks", owner)).toBe(0);
-      expect(await proposalEvents(id)).toEqual(["proposed"]);
+      expect(await proposalEvents(gate, id)).toEqual(["proposed"]);
     });
 
     it("refuses an invalid due time and an unknown decision", async () => {
       const owner = await gate.createUser();
-      const id = await propose(owner, REMINDER);
+      const id = await propose(gate, owner, REMINDER);
       for (const dueAt of ["2026-02-30T17:00:00Z", "2026-10-30T17:00Z", "tomorrow"]) {
-        expect((await decideAs(owner, id, "approve", { ...REMINDER, dueAt })).outcome).toBe("invalid");
+        expect((await decideAs(gate, owner, id, "approve", { ...REMINDER, dueAt })).outcome).toBe("invalid");
       }
-      expect((await decideAs(owner, id, "maybe")).outcome).toBe("invalid");
-      expect((await decideAs(owner, id, "reject", REMINDER)).outcome).toBe("invalid");
+      expect((await decideAs(gate, owner, id, "maybe")).outcome).toBe("invalid");
+      expect((await decideAs(gate, owner, id, "reject", REMINDER)).outcome).toBe("invalid");
       expect(await countOwnedBy("reminders", owner)).toBe(0);
     });
 
     it("records failed with a short code when the insert fails, keeps nothing, and cannot run again", async () => {
       const owner = await gate.createUser();
-      const id = await propose(owner, { ...TASK, title: "gate-fail" });
+      const id = await propose(gate, owner, { ...TASK, title: "gate-fail" });
       await gate.admin("alter table public.tasks add constraint gate_fail check (title <> 'gate-fail')");
       try {
-        const answer = await decideAs(owner, id, "approve");
+        const answer = await decideAs(gate, owner, id, "approve");
         expect(answer).toMatchObject({
           outcome: "failed",
           proposal: { status: "failed", result: { error: "execution_failed", code: "23514" } },
@@ -631,26 +596,26 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
         await gate.admin("alter table public.tasks drop constraint gate_fail");
       }
       expect(await countOwnedBy("tasks", owner)).toBe(0);
-      expect(await proposalEvents(id)).toEqual(["proposed", "approved", "failed"]);
-      expect((await decideAs(owner, id, "approve")).outcome).toBe("already_decided");
+      expect(await proposalEvents(gate, id)).toEqual(["proposed", "approved", "failed"]);
+      expect((await decideAs(gate, owner, id, "approve")).outcome).toBe("already_decided");
     });
 
     it("gives another user's proposal the same answer as a missing one, and leaves it alone", async () => {
       const owner = await gate.createUser();
       const other = await gate.createUser();
-      const id = await propose(other, TASK);
-      const foreign = await decideAs(owner, id, "approve");
-      const missing = await decideAs(owner, "00000000-0000-4000-8000-000000000000", "approve");
+      const id = await propose(gate, other, TASK);
+      const foreign = await decideAs(gate, owner, id, "approve");
+      const missing = await decideAs(gate, owner, "00000000-0000-4000-8000-000000000000", "approve");
       expect(foreign).toEqual({ outcome: "not_found", proposal: null });
       expect(missing).toEqual(foreign);
-      expect(await decideAs(owner, id, "reject")).toEqual(foreign);
+      expect(await decideAs(gate, owner, id, "reject")).toEqual(foreign);
       const stored = await gate.admin("select status from action_proposals where id = $1", [id]);
       expect(stored.rows).toEqual([{ status: "proposed" }]);
     });
 
     it("refuses a caller with no session, and anon cannot call it", async () => {
       const owner = await gate.createUser();
-      const id = await propose(owner, TASK);
+      const id = await propose(gate, owner, TASK);
       expect(await errorCode(() => gate.as(anon, "select public.decide_action_proposal($1, 'approve', null)", [id]))).toBe(
         PERMISSION_DENIED,
       );
@@ -664,53 +629,43 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       ).toBe(PERMISSION_DENIED);
     });
 
+    it("marks its own decisions as verified, in the row and in the log", async () => {
+      const owner = await gate.createUser();
+      const approved = await propose(gate, owner, TASK);
+      const rejected = await propose(gate, owner, TASK);
+      expect((await decideAs(gate, owner, approved, "approve")).proposal!.decided_by_function).toBe(true);
+      expect((await decideAs(gate, owner, rejected, "reject")).proposal!.decided_by_function).toBe(true);
+      const log = await gate.admin<{ event: string; verified: boolean | null }>(
+        `select event, (detail ->> 'verified')::boolean as verified from action_log
+          where proposal_id in ($1, $2) order by created_at`,
+        [approved, rejected],
+      );
+      expect(log.rows).toEqual([
+        { event: "proposed", verified: null },
+        { event: "proposed", verified: null },
+        { event: "approved", verified: true },
+        { event: "executed", verified: true },
+        { event: "rejected", verified: true },
+      ]);
+    });
+
+    it("lets no caller set the marker: a user has no grant, and any other write sets it false", async () => {
+      const owner = await gate.createUser();
+      const id = await propose(gate, owner, TASK);
+      expect(
+        await errorCode(() => gate.as(user(owner), "update action_proposals set decided_by_function = true where id = $1", [id])),
+      ).toBe(PERMISSION_DENIED);
+      // Even the owner role, without the function, gets false.
+      await gate.admin("update action_proposals set status = 'approved', decided_at = now(), decided_by_function = true where id = $1", [id]);
+      const row = await gate.admin("select status, decided_by_function from action_proposals where id = $1", [id]);
+      expect(row.rows).toEqual([{ status: "approved", decided_by_function: false }]);
+    });
+
     it("writes log rows that hold no task, memory or summary text", async () => {
       const owner = await gate.createUser();
-      for (const payload of [TASK, MEMORY]) await decideAs(owner, await propose(owner, payload), "approve");
+      for (const payload of [TASK, MEMORY]) await decideAs(gate, owner, await propose(gate, owner, payload), "approve");
       const text = await gate.admin<{ t: string }>("select string_agg(detail::text, ' ') as t from action_log where user_id = $1", [owner]);
       expect(text.rows[0]!.t).not.toMatch(/invoice|short replies|Do it/i);
-    });
-  });
-
-  describe("repositories against the real SQL", () => {
-    it("decide() maps every outcome of the function", async () => {
-      const owner = await gate.createUser();
-      const repo = createActionProposalRepository(sqlGateClient(gate, owner));
-      const id = await propose(owner, TASK);
-      expect(await repo.decide(id, "approve", { kind: "save_memory", mode: "personal", content: "x" })).toMatchObject({
-        outcome: "kind_mismatch",
-        proposal: { id, status: "proposed" },
-      });
-      const executed = await repo.decide(id, "approve", { kind: "create_task", mode: "work", title: "Edited" });
-      expect(executed).toMatchObject({ outcome: "executed", proposal: { id, status: "executed", payload: { title: "Edited" } } });
-      expect(executed.proposal!.decidedAt).toEqual(expect.any(String));
-      expect(await repo.decide(id, "reject")).toMatchObject({ outcome: "already_decided", proposal: { status: "executed" } });
-      expect(await repo.decide("00000000-0000-4000-8000-000000000000", "approve")).toEqual({ outcome: "not_found", proposal: null });
-      const rejected = await propose(owner, REMINDER);
-      expect(await repo.decide(rejected, "reject")).toMatchObject({ outcome: "rejected", proposal: { status: "rejected" } });
-    });
-
-    it("writes a late vector only while the memory still has the text that was embedded", async () => {
-      const owner = await gate.createUser();
-      const repo = createMemoryRepository(sqlGateClient(gate, owner));
-      const memory = await gate.as<{ id: string }>(
-        user(owner),
-        "insert into memories (user_id, mode, content, source) values ($1, 'personal', 'Prefers tea', 'user') returning id",
-        [owner],
-      );
-      const id = memory.rows[0]!.id;
-      const vector = Array.from({ length: 1024 }, (_, i) => (i === 1 ? 1 : 0));
-      await gate.as(user(owner), "update memories set content = 'Prefers coffee' where id = $1", [id]);
-      expect(await repo.setEmbeddingIfContent(owner, id, "Prefers tea", vector)).toBe(false);
-      expect((await gate.admin("select embedding from memories where id = $1", [id])).rows).toEqual([{ embedding: null }]);
-      expect(await repo.setEmbeddingIfContent(owner, id, "Prefers coffee", vector)).toBe(true);
-      const stored = await gate.admin<{ has: boolean }>("select embedding is not null as has from memories where id = $1", [id]);
-      expect(stored.rows[0]!.has).toBe(true);
-      const events = await gate.admin<{ event: string }>(
-        "select event from action_log where detail ->> 'memoryId' = $1 order by created_at",
-        [id],
-      );
-      expect(events.rows.map((row) => row.event)).toEqual(["memory_added", "memory_edited"]);
     });
   });
 
@@ -737,13 +692,13 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
 
     it("refuses the old two-write decision, so only decide_action_proposal can run an action", async () => {
       const owner = await gate.createUser();
-      const id = await propose(owner, TASK);
+      const id = await propose(gate, owner, TASK);
       expect(
         await errorCode(() =>
           gate.as(user(owner), "update action_proposals set status = 'approved', decided_at = now() where id = $1", [id]),
         ),
       ).toBe(PERMISSION_DENIED);
-      expect((await decideAs(owner, id, "approve")).outcome).toBe("executed");
+      expect((await decideAs(gate, owner, id, "approve")).outcome).toBe("executed");
     });
   });
 });
@@ -802,10 +757,71 @@ describe("upgrade of a database that has rows the older schema allowed", () => {
     expect((await decideOld(RESET, "approve")).outcome).toBe("already_decided");
     expect((await old.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(1);
   });
+});
 
-  it("keeps older log rows, and the log reader skips the one it cannot read", async () => {
-    const entries = await createActionLogRepository(sqlGateClient(old, OWNER)).list(OWNER, 50);
-    expect(entries.map((entry) => entry.id)).not.toContain(NESTED_LOG);
-    expect(entries.some((entry) => entry.event === "memory_added")).toBe(true);
+describe("contract step over the expand window", () => {
+  const OWNER = "33333333-3333-4333-8333-333333333333";
+  const FORGED = "33333333-3333-4333-8333-000000000001";
+  const IN_FLIGHT = "33333333-3333-4333-8333-000000000002";
+  const FAKE_TASK = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  let db: SqlGate;
+
+  beforeAll(async () => {
+    db = await startSqlGate({
+      defaults: "legacy",
+      beforeMigration: {
+        file: "20261021010000_memory_hardening_contract.sql",
+        // As the signed-in owner, with the older grants of the expand window.
+        sql: `
+          insert into auth.users (id) values ('${OWNER}');
+          set role authenticated;
+          select set_config('request.jwt.claims', '{"sub":"${OWNER}","role":"authenticated"}', false);
+          insert into action_proposals (id, user_id, kind, payload, summary) values
+            ('${FORGED}', '${OWNER}', 'create_task', '{"kind":"create_task","mode":"personal","title":"Forged"}', 'x'),
+            ('${IN_FLIGHT}', '${OWNER}', 'create_task', '{"kind":"create_task","mode":"personal","title":"Old"}', 'x');
+          update action_proposals set status = 'approved', decided_at = now() where id = '${FORGED}';
+          update action_proposals set status = 'executed', result = '{"taskId":"${FAKE_TASK}"}' where id = '${FORGED}';
+          -- An older request claimed this one and has not stored its result yet.
+          update action_proposals set status = 'approved', decided_at = now() where id = '${IN_FLIGHT}';
+          reset role;
+          select set_config('request.jwt.claims', '', false);
+        `,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await db?.close();
+  });
+
+  it("keeps an outcome a caller wrote before the contract as not verified, in the row, the list and the log", async () => {
+    const row = await db.admin("select status, decided_by_function from action_proposals where id = $1", [FORGED]);
+    expect(row.rows).toEqual([{ status: "executed", decided_by_function: false }]);
+    const listed = await createActionProposalRepository(sqlGateClient(db, OWNER)).listProposals(OWNER, undefined, 10);
+    expect(listed.find((proposal) => proposal.id === FORGED)).toMatchObject({ status: "executed", verified: false });
+    const log = await db.admin<{ event: string; verified: boolean }>(
+      `select event, (detail ->> 'verified')::boolean as verified from action_log
+        where proposal_id = $1 and event in ('approved', 'executed') order by created_at`,
+      [FORGED],
+    );
+    expect(log.rows).toEqual([
+      { event: "approved", verified: false },
+      { event: "executed", verified: false },
+    ]);
+    expect((await db.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(0);
+  });
+
+  it("leaves an older request's claim approved and not verified when the contract removes its result write, and never runs it again", async () => {
+    expect(
+      await errorCode(() =>
+        db.as(user(OWNER), `update action_proposals set status = 'executed', result = '{"taskId":"${FAKE_TASK}"}' where id = $1`, [
+          IN_FLIGHT,
+        ]),
+      ),
+    ).toBe(PERMISSION_DENIED);
+    const row = await db.admin("select status, result, decided_by_function from action_proposals where id = $1", [IN_FLIGHT]);
+    expect(row.rows).toEqual([{ status: "approved", result: null, decided_by_function: false }]);
+    expect((await decideAs(db, OWNER, IN_FLIGHT, "approve")).outcome).toBe("already_decided");
+    expect((await db.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(0);
   });
 });

@@ -26,6 +26,7 @@ function proposal(id: string, payload: ActionPayload, second: number, status: Ac
     result: null,
     createdAt: at(second),
     decidedAt: null,
+    verified: false,
   } satisfies ActionProposalDTO;
 }
 

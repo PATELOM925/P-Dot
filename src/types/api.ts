@@ -160,6 +160,14 @@ export interface ActionProposalDTO {
   result: Record<string, string | number | boolean | null> | null;
   createdAt: string;
   decidedAt: string | null;
+  /**
+   * True only when the database function decide_action_proposal decided this
+   * proposal, so `status` and `result` are a record of what the database ran.
+   * False for a proposal decided by other writes (older code, or a user
+   * during the expand step) and for older rows: their outcome is only what a
+   * caller wrote. The screens do not show this yet.
+   */
+  verified: boolean;
 }
 
 /** Written only by database triggers (decision 0009). Keep in step with the `event` check in the migration. */
