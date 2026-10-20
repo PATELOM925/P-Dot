@@ -9,6 +9,13 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Tests that make each write of a request fail, to find rows left halfway.** PR: not opened yet.
+  - Problem: the same mistake reached review twice. A request that failed after its first write left a row in an in-between status: a document stuck `processing` (PR #10), a proposal stuck `approved`, and an action that ran but was stored as `failed` (PR #12). Each test covered only the one step a reviewer found.
+  - Resolution:
+    - `tests/support/write-faults.ts` wraps the existing fakes. A test can make the Nth write fail as refused (nothing saved) or lost (saved, then the call fails). `sweepWriteFaults` runs a request once for each write and each fault, so a write added later is covered.
+    - Sweeps for document upload, action decisions, chat turns, and memory create and edit check that no row stays in an in-between status, that the HTTP status is correct and that a retry does not repeat the effect. The PR #10 and PR #12 routes fail these tests.
+    - `it.fails` tests record defects that this change does not fix: a chat send that fails after its first write leaves an empty or extra conversation, and a lost response on a single insert (chat message, memory) saves a second copy on resend. After an upload that answered 500 and was sent again, the first copy can settle `ready` too.
+    - `AGENTS.md` gets a "Rules and what enforces them" table, and decision 0009 names the recovery path for `documents.status = 'processing'`.
 - **A database test gate that runs in `npm test`.** ([PR #13](https://github.com/PATELOM925/P-Dot/pull/13))
   - Problem: the same kind of database defect reached review three times. Grants let a signed-in user write rows the app trusts (`action_log` inserts, `action_proposals` updates that can reset an approved action, `context_records`). The database also accepted a nested `action_log` detail that the app's log reader refuses, so one row broke the whole list. Each time, a reviewer proved it by hand in a throwaway database.
   - Resolution:
