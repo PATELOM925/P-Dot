@@ -87,7 +87,7 @@ When a change must also remove something that the live code uses (a grant, a pol
 1. **Expand.** A migration that only adds, and the code that uses the addition. The live code must keep working during and after this migration. Merge, and wait until the new code is live.
 2. **Contract.** A later migration that removes the old path, in a separate pull request. Merge it only after step 1 is live. Its PR body says which PR is the expand step.
 
-Example: the memory hardening ships as `20261021000000_memory_hardening.sql` (expand, PR #13) and `20261021010000_memory_hardening_contract.sql` (contract, PR #14).
+Example: the memory hardening ships as `20261021000000_memory_hardening.sql` (expand, PR #13) and `20261021010000_memory_hardening_contract.sql` (contract, PR #17).
 
 ## One-time setup (owner only)
 

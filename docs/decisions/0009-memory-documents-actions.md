@@ -71,7 +71,7 @@ The reviews of PRs #6, #12 and #13 found that a signed-in user could use the pub
 The fix ships in two steps, so the code that is live keeps working at each point (expand, then contract):
 
 1. **Expand:** migration `20261021000000_memory_hardening.sql` and the code that uses it (PR #13). The migration only adds. The code on main keeps its grants and keeps working during and after the migration. Until step 2, main's code can write a second, app-written log row for a change; the trigger row is the trusted one.
-2. **Contract:** migration `20261021010000_memory_hardening_contract.sql` (contract pull request, CONTRACT_PR). It removes the old insert grant and policy on `action_log` and the old update grant and policy on `action_proposals`. Merge it only after the expand code is live.
+2. **Contract:** migration `20261021010000_memory_hardening_contract.sql` (PR #17). It removes the old insert grant and policy on `action_log` and the old update grant and policy on `action_proposals`. Merge it only after the expand code is live.
 
 What the two steps do:
 
