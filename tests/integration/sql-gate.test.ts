@@ -714,27 +714,36 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
     });
   });
 
-  describe("the code on main keeps working until the contract step", () => {
-    it.runIf(defaults === "legacy")("can still write a flat log row and decide a proposal in two writes", async () => {
-      const owner = await gate.createUser();
-      await gate.as(user(owner), "insert into action_log (user_id, event, detail) values ($1, 'memory_added', '{\"memoryId\":\"m\"}')", [owner]);
-      const id = await propose(owner, TASK);
-      await gate.as(user(owner), "update action_proposals set status = 'approved', decided_at = now() where id = $1 and status = 'proposed'", [id]);
-      await gate.as(user(owner), "update action_proposals set status = 'executed', result = '{\"taskId\":\"t\"}' where id = $1 and status = 'approved'", [id]);
-      expect((await gate.admin("select status from action_proposals where id = $1", [id])).rows).toEqual([{ status: "executed" }]);
-    });
-
-    it.runIf(defaults === "legacy")("cannot reset a decided proposal, change its result, or write nested log detail", async () => {
-      const owner = await gate.createUser();
-      const id = await propose(owner, TASK);
-      await decideAs(owner, id, "approve");
-      expect(await errorCode(() => gate.as(user(owner), "update action_proposals set status = 'proposed', decided_at = null, result = null where id = $1", [id]))).toBe("23514");
-      expect(await errorCode(() => gate.as(user(owner), "update action_proposals set result = '{\"taskId\":\"fake\"}' where id = $1", [id]))).toBe("23514");
+  describe("after the contract step, only the database writes the log and decides a proposal", () => {
+    it("authenticated cannot insert into action_log", async () => {
       expect(
         await errorCode(() =>
-          gate.as(user(owner), "insert into action_log (user_id, event, detail) values ($1, 'executed', '{\"taskId\":{\"a\":1}}')", [owner]),
+          gate.as(user(userA), "insert into action_log (user_id, event, detail) values ($1, 'executed', '{}')", [userA]),
         ),
-      ).toBe("23514");
+      ).toBe(PERMISSION_DENIED);
+      const policies = await gate.admin("select policyname from pg_policies where tablename = 'action_log' and cmd = 'INSERT'");
+      expect(policies.rows).toEqual([]);
+    });
+
+    it("authenticated has no UPDATE privilege or update policy on action_proposals", async () => {
+      expect(await updatableColumns("action_proposals")).toEqual([]);
+      const granted = await gate.admin<{ granted: boolean }>(
+        "select has_any_column_privilege('authenticated', 'public.action_proposals', 'UPDATE') as granted",
+      );
+      expect(granted.rows[0]!.granted).toBe(false);
+      const policies = await gate.admin("select policyname from pg_policies where tablename = 'action_proposals' and cmd = 'UPDATE'");
+      expect(policies.rows).toEqual([]);
+    });
+
+    it("refuses the old two-write decision, so only decide_action_proposal can run an action", async () => {
+      const owner = await gate.createUser();
+      const id = await propose(owner, TASK);
+      expect(
+        await errorCode(() =>
+          gate.as(user(owner), "update action_proposals set status = 'approved', decided_at = now() where id = $1", [id]),
+        ),
+      ).toBe(PERMISSION_DENIED);
+      expect((await decideAs(owner, id, "approve")).outcome).toBe("executed");
     });
   });
 });

@@ -53,6 +53,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
 
 ### Fixed
+- **Only the database writes the action log and the outcome of an action (contract step)** (decision [0009](docs/decisions/0009-memory-documents-actions.md)). PR: CONTRACT_PR.
+  - Problem: after the expand step (PR #13), the old insert grant on the action log and the old update grant on action proposals still let a signed-in user forge a log row or decide a proposal outside `decide_action_proposal`. They stayed only so that the older code kept working during the deploy.
+  - Resolution: migration `20261021010000_memory_hardening_contract.sql` removes the insert grant and policy on `action_log` and the update grant and policy on `action_proposals`. Merge it only after the expand code is live. The database gate checks that both are gone and that the old two-write decision is refused.
 - **Only the database writes the action log and the outcome of an action (expand step)** (decision [0009](docs/decisions/0009-memory-documents-actions.md), reviews of PR #6, PR #12 and PR #13). PR: [#13](https://github.com/PATELOM925/P-Dot/pull/13).
   - Problem: a signed-in user could use the public API to forge an executed action or a log event, reset an action to "proposed" and run it twice, and store short private text or nested values in the log. The decision route ran the action and wrote its result in separate steps, so a lost write could store a false or missing outcome. A late memory vector could replace the vector of newer text. The embedder cut a worst-case spend hold down to the ceiling instead of refusing. A new project without automatic grants could not read its own tables.
   - Resolution:
