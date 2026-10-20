@@ -9,6 +9,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **A check that every Unreleased changelog entry has a problem, a resolution and a link.** ([PR #15](https://github.com/PATELOM925/P-Dot/pull/15))
+  - Problem: entries missed required parts again and again. PR #5 review found entries without pull request links (P3, twice). PRs #7, #8, #11 and #12 reached `main` in squash `e78ebc7` without entries of their own, and six entries said that their pull request was not opened yet.
+  - Resolution: `scripts/check-changelog.mjs` runs in `npm run lint`. Each top-level entry under "Unreleased" needs a bold title, a "Problem:" and a "Resolution:" line (sub-bullet or on the title line) and a pull request link, or a commit link when there was no pull request. A placeholder that says the pull request is not opened yet fails, and a review comment link does not count. The error gives the entry title, the line and what to add. The check uses no git and no network. The entries that landed in `e78ebc7` now link that commit. `AGENTS.md` lists the rule under "Rules and what enforces them".
 - **A database test gate that runs in `npm test`.** ([PR #13](https://github.com/PATELOM925/P-Dot/pull/13))
   - Problem: the same kind of database defect reached review three times. Grants let a signed-in user write rows the app trusts (`action_log` inserts, `action_proposals` updates that can reset an approved action, `context_records`). The database also accepted a nested `action_log` detail that the app's log reader refuses, so one row broke the whole list. Each time, a reviewer proved it by hand in a throwaway database.
   - Resolution:
