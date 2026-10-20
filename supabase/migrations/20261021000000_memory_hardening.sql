@@ -158,6 +158,40 @@ alter table public.action_log
 -- clock_timestamp, so two events in one transaction keep their order.
 alter table public.action_log alter column created_at set default clock_timestamp();
 
+-- Provenance. verified is true only on a row that the log triggers below
+-- wrote through public.write_action_log, and for an action outcome only when
+-- decide_action_proposal decided it. A row inserted any other way (main's
+-- code, or a user with the older insert grant) is false. A "verified" key in
+-- the detail is removed, so no caller can supply it. Older rows stay false.
+alter table public.action_log add column if not exists verified boolean not null default false;
+
+-- SECURITY INVOKER on purpose: current_user is the role that wrote the row.
+create or replace function public.set_action_log_provenance()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.detail := new.detail - 'verified';
+  if tg_op = 'UPDATE' then
+    new.verified := old.verified;
+  else
+    new.verified := current_setting('pdot.log_verified', true) = 'true'
+      and current_user not in ('anon', 'authenticated');
+  end if;
+  return new;
+end;
+$$;
+
+revoke execute on function public.set_action_log_provenance() from public, anon, authenticated;
+
+-- Runs after action_log_check_detail (triggers fire in name order), so the
+-- detail is a flat object here.
+drop trigger if exists action_log_set_provenance on public.action_log;
+create trigger action_log_set_provenance
+  before insert or update on public.action_log
+  for each row execute function public.set_action_log_provenance();
+
 -- ---------------------------------------------------------------------------
 -- Action log writers. Triggers on the source tables write every log row, so
 -- the app cannot write, skip or change one. Each trigger builds the detail
@@ -167,7 +201,11 @@ alter table public.action_log alter column created_at set default clock_timestam
 -- The functions are SECURITY DEFINER with an empty search path, and no API
 -- role can call them directly.
 -- ---------------------------------------------------------------------------
-create or replace function public.write_action_log(p_user_id uuid, p_event text, p_proposal_id uuid, p_detail jsonb)
+-- p_verified: the database saw this change. For an action outcome it is
+-- true only when decide_action_proposal decided the proposal.
+create or replace function public.write_action_log(
+  p_user_id uuid, p_event text, p_proposal_id uuid, p_detail jsonb, p_verified boolean default true
+)
 returns void
 language plpgsql
 set search_path = ''
@@ -177,8 +215,11 @@ begin
   if not exists (select 1 from auth.users u where u.id = p_user_id) then
     return;
   end if;
+  -- Names this one insert as written by the database (see set_action_log_provenance).
+  perform set_config('pdot.log_verified', case when p_verified then 'true' else 'false' end, true);
   insert into public.action_log (user_id, event, proposal_id, detail)
   values (p_user_id, p_event, p_proposal_id, jsonb_strip_nulls(coalesce(p_detail, '{}'::jsonb)));
+  perform set_config('pdot.log_verified', '', true);
 end;
 $$;
 
@@ -284,8 +325,6 @@ begin
     return new;
   end if;
 
-  -- verified: true only when decide_action_proposal wrote this change.
-  v_detail := v_detail || jsonb_build_object('verified', new.decided_by_function);
 
   if new.status = 'approved' then
     v_detail := v_detail || jsonb_build_object('edited', old.payload is distinct from new.payload);
@@ -301,12 +340,13 @@ begin
   elsif new.status <> 'rejected' then
     return new;
   end if;
-  perform public.write_action_log(new.user_id, new.status, new.id, v_detail);
+  -- Verified only when decide_action_proposal wrote this change.
+  perform public.write_action_log(new.user_id, new.status, new.id, v_detail, new.decided_by_function);
   return new;
 end;
 $$;
 
-revoke execute on function public.write_action_log(uuid, text, uuid, jsonb) from public, anon, authenticated;
+revoke execute on function public.write_action_log(uuid, text, uuid, jsonb, boolean) from public, anon, authenticated;
 revoke execute on function public.log_memory_change() from public, anon, authenticated;
 revoke execute on function public.log_document_change() from public, anon, authenticated;
 revoke execute on function public.log_reminder_change() from public, anon, authenticated;
