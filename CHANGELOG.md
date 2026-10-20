@@ -17,7 +17,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - It reads stored `action_log` and `action_proposals` rows, NULLs included, through the app's own repositories.
     - Three checks fail on `main` and pass with the memory hardening migration in this PR: the nested log detail, the `action_log` insert grant and the `action_proposals` update grant.
     - `tests/integration/frozen-migrations.test.ts` fails when a migration is not listed in `frozen-migrations.sha256` or its file no longer matches its hash. The message tells the author what to do.
-- **Screens for approvals, memory, documents, "what was sent", the action log and reminders** (decisions [0009](docs/decisions/0009-memory-documents-actions.md) and [0005](docs/decisions/0005-assistant-hub-proposal.md)). PR: not opened yet.
+- **Screens for approvals, memory, documents, "what was sent", the action log and reminders** (decisions [0009](docs/decisions/0009-memory-documents-actions.md) and [0005](docs/decisions/0005-assistant-hub-proposal.md)). Landed without a pull request in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7).
   - Problem: the storage and routes from decision 0009 had no screens. Users could not see or edit what P-Dot keeps, approve an action, or check what went to the model.
   - Resolution:
     - Approval cards in chat (only that conversation's) and on Today: Approve, Edit then approve, Cancel. The details shown come from the stored payload, which is what runs, not from the assistant's one-line summary. A failed run, a decision made in another tab and a lost session each get a clear message.
@@ -26,24 +26,24 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - An action log page, grouped by the viewer's local day, without IDs or text.
     - Reminders on Workflows, and live counts for the built-in tools on Connectors. Routines and account connectors stay previews.
     - Every page says plainly that replies do not use memories or documents yet and that the assistant does not propose actions yet.
-- **Chat shows P-Dot's suggestions under the reply that made them, and the Today tab counts what is waiting.** PR: not opened yet.
+- **Chat shows P-Dot's suggestions under the reply that made them, and the Today tab counts what is waiting.** Landed without a pull request in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7).
   - Problem: chat listed every waiting card at the end of the conversation, so in a long conversation a card was far from the reply it came from, and a decided card disappeared after a reload. Memories P-Dot suggests had no place in chat, and proposals were easy to miss on other pages.
   - Resolution:
     - Each proposal goes under the reply of the turn it was made in (by database time, since proposals have no message link). Waiting ones are cards; decided ones are short lines with the outcome.
     - Memories P-Dot suggested appear as "Remember this?" cards under the reply they came from: Keep, Edit then keep (one request, so the old text is never kept), Don't keep.
     - The Today tab shows how many proposals wait in both modes. It reloads after a decision, after a reply and when the tab comes back into view.
     - What the screens expect from the AI layer (timing, links, IDs) is written down in decision [0009](docs/decisions/0009-memory-documents-actions.md), so it can be built against them.
-- **Installable app for Android (PWA) and a Devices page** ([decision 0010](docs/decisions/0010-pwa-and-device-pairing.md)). PR: not opened yet.
+- **Installable app for Android (PWA) and a Devices page** ([decision 0010](docs/decisions/0010-pwa-and-device-pairing.md)). Landed without a pull request in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7).
   - Problem: P-Dot could not be installed on a phone or ask to show notifications, though the landing page says it acts on your phone.
   - Resolution: a manifest, a service worker that caches only the offline page and icons (never pages or API responses), the install prompt, notification permission with a local test notification, and a Devices page that shows what the browser supports and previews pairing. Push delivery and pairing need the open decisions in 0010.
-- **Storage and shared code for memory, documents, action proposals, the action log, reminders and "what was sent"** (decision [0009](docs/decisions/0009-memory-documents-actions.md)).
+- **Storage and shared code for memory, documents, action proposals, the action log, reminders and "what was sent"** (decision [0009](docs/decisions/0009-memory-documents-actions.md)). Landed in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7) from [PR #6](https://github.com/PATELOM925/P-Dot/pull/6).
   - Problem: the pitch needs memory the user can see and edit, search over their own documents, actions that run only after approval, a record of what happened, and a view of what was sent to the model. None of this had storage.
   - Resolution: one additive migration with pgvector, RLS on every table, append-only log and context records, and similarity search that runs as the caller. Embeddings use Qwen3-Embedding-8B at 1,024 dimensions through the spend guard. Shared types, request schemas and limits for the API routes that follow.
 - **Document routes: upload, list and delete plain text or Markdown** ([PR #10](https://github.com/PATELOM925/P-Dot/pull/10)).
   - Problem: the user needs to add documents for search, and an upload that stops before its final status write must not stay "processing" for ever.
   - Resolution: the upload splits the text into chunks, embeds them through the spend guard and saves them in one statement. If both final status writes fail, the route logs the document ID only. A later list settles each of the user's documents that is still "processing" after 10 minutes: "ready" if all its chunks have embeddings, otherwise "failed". The update applies only while the status is still "processing", and it makes no embedding call.
 
-- **"Ask first" and "Auto" approval modes in chat** ([decision 0011](docs/decisions/0011-approval-modes.md)). PR: not opened yet.
+- **"Ask first" and "Auto" approval modes in chat** ([decision 0011](docs/decisions/0011-approval-modes.md)). Landed without a pull request in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7).
   - Problem: approving every small action is tedious, but some actions must never happen unseen.
   - Resolution:
     - Easy to find and set: a one-time card in chat asks which mode to use (Ask first recommended, or keep it with one click). After that, a button next to the microphone always shows the current mode and opens a menu that explains both (touch, mouse and keyboard; Esc closes it). Settings → Approvals has the same choice as radio cards, and the Today panel shows the mode with a Change link. The choice is saved on the device; Ask first is the default.
@@ -62,12 +62,14 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - The embedder refuses a batch whose worst-case hold is above the ceiling, before any reservation. The documents route answers 413.
     - Also brought over from PRs #9 and #10, which target code that is already on main: a memory edit checks ownership before it embeds and does not embed unchanged text, and documents left "processing" are settled later.
     - Proven in a throwaway Postgres with all migrations in order, on a new database and on top of older bad rows. Decision 0009 says that a context record is the user's own record of what the app sent, and that a deleted memory's text can stay in a `save_memory` proposal.
-- **Dictation was blocked by P-Dot's own security header.** PR: not opened yet.
+- **Dictation was blocked by P-Dot's own security header.** Landed without a pull request in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7).
   - Problem: `next.config.ts` sent `Permissions-Policy: microphone=()`, which turns the microphone off on every page, so the microphone button showed as available but Chrome refused it, and the message told users to change their own browser settings. Words heard after Send also landed in the next message.
   - Resolution: the header now allows the microphone for P-Dot's own pages only (`microphone=(self)`; camera and location stay off), with a test. The button is disabled when a page cannot use the microphone. While listening, the words being heard show under the message box; finished phrases are added within the message length limit; Esc, Send and switching conversations stop listening and drop any later words; stopping on purpose shows no error; Chrome on Android listens for one phrase per tap, because continuous listening there repeats words.
 
 ### Changed
-- **Icons and colours follow the design palette.** The favicon, Apple icon and app icons put the "P." mark on the indigo-to-violet accent gradient instead of the old flat blue. The manifest uses the page ground colour, so the bar does not flash when the app opens, and no longer locks the screen to portrait. PR: not opened yet.
+- **Icons and colours follow the design palette.** Landed without a pull request in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7).
+  - Problem: the icons used the old flat blue, the manifest colour made the bar flash when the app opened, and the manifest locked the screen to portrait.
+  - Resolution: the favicon, Apple icon and app icons put the "P." mark on the indigo-to-violet accent gradient. The manifest uses the page ground colour and no longer locks the screen to portrait.
 
 ## 2026-10-19
 
