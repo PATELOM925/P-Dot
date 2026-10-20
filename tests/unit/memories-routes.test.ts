@@ -7,10 +7,8 @@ import type { Embedder } from "@/server/assistant/embed";
 import { EmbeddingBudgetError } from "@/server/assistant/embed";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
-import { createBudgetedEmbedder } from "@/server/assistant/embed";
-import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
-import { FakeSpend, TEST_SPEND_CAPS, testRouting } from "../support/fakes";
-import { WriteFaults, describeCase, sweepWriteFaults, type SweepCase } from "../support/write-faults";
+import { FakeSpend, TEST_SPEND_CAPS, testEmbedder, testRouting } from "../support/fakes";
+import { WriteFaults, describeCase, hasFault, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -545,14 +543,7 @@ describe("memory writes when one write fails", () => {
       detail: (_method, args) => String(args[0]),
       failWith: (error) => ({ data: null, error: { message: error.message } }),
     });
-    const fetchImpl = async () =>
-      new Response(
-        JSON.stringify({ data: [{ index: 0, embedding: Array(EMBEDDING_DIMENSIONS).fill(0.5) }], usage: { prompt_tokens: 7 } }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    vi.mocked(createEmbedderForRequest).mockReturnValue(
-      createBudgetedEmbedder({ settings: { apiKey: "k", baseUrl: "https://nebius.test/v1" }, spend, fetchImpl }),
-    );
+    vi.mocked(createEmbedderForRequest).mockReturnValue(testEmbedder(spend));
     signInAs(ALICE);
     return spend;
   }
@@ -563,10 +554,7 @@ describe("memory writes when one write fails", () => {
     expect(open.length, `${at}: only a failed spend write leaves its full hold counted`).toBeLessThanOrEqual(spendHit ? 1 : 0);
   }
 
-  // A lost insert is a lost response on a single create, so the resend saves a second copy.
-  const KNOWN_DUPLICATE = "lost:db.write:memories";
-
-  async function createScenario(faults: WriteFaults, sweepCase: SweepCase | null, checkDuplicates?: boolean) {
+  async function createScenario(faults: WriteFaults, sweepCase: SweepCase, checkDuplicates?: boolean) {
     const at = describeCase(sweepCase);
     const spend = arm(faults);
     const send = () => listRoute.POST(jsonRequest("POST", { mode: "personal", content: NEW_TEXT }));
@@ -580,19 +568,20 @@ describe("memory writes when one write fails", () => {
     const saved = db.tables.memories!.filter((r) => r.content === NEW_TEXT);
     expect(saved.length, at).toBeGreaterThan(0);
     for (const row of saved) expect(row.status, at).toBe("active");
-    if (checkDuplicates ?? `${sweepCase?.fault}:${sweepCase?.label}` !== KNOWN_DUPLICATE) {
+    // A lost insert is a lost response on a single create, so the resend saves a second copy (it.fails below).
+    if (checkDuplicates ?? !hasFault(sweepCase, "lost", "db.write:memories")) {
       expect(saved, `${at}: one saved memory`).toHaveLength(1);
     }
   }
 
   it("POST: every write and both faults leave one active memory and no open hold", async () => {
     const cases = await sweepWriteFaults(createScenario);
-    expect([...new Set(cases.map((c) => c.label))]).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
+    expect([...new Set(cases.map((c) => c.at(-1)!.label))].sort()).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
   });
 
   // Defect: there is no idempotency key, so a lost response on the insert makes the resend save a second copy.
   it.fails("POST: response lost on the insert, then a resend: saves the memory once", async () => {
-    await createScenario(new WriteFaults().fail("lost", 3), { step: 3, fault: "lost", label: "db.write:memories" }, true);
+    await createScenario(new WriteFaults().fail("lost", 3), [{ step: 3, fault: "lost", label: "db.write:memories" }], true);
   });
 
   it("PATCH: every write and both faults end with the new text, its vector and no open hold", async () => {
@@ -612,7 +601,7 @@ describe("memory writes when one write fails", () => {
       expect(storedRow(id), at).toMatchObject({ content: NEW_TEXT, embedding_model: EMBEDDING_MODEL });
       expect(storedRow(id)!.embedding, at).not.toBe(OLD_VECTOR);
     });
-    expect([...new Set(cases.map((c) => c.label))]).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
+    expect([...new Set(cases.map((c) => c.at(-1)!.label))].sort()).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
   });
 });
 
