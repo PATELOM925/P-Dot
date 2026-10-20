@@ -3,9 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import { readChatStream } from "@/features/chat/stream";
-import { FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps, testRouting } from "../support/fakes";
+import { FakeContextRecords, FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps, testRouting } from "../support/fakes";
 import { collect } from "../support/streams";
-import { WriteFaults, describeCase, sweepWriteFaults, type SweepCase } from "../support/write-faults";
+import { WriteFaults, describeCase, hasFault, sweepWriteFaults, type SweepCase, type WriteFault } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -170,42 +170,62 @@ describe("POST /api/chat", () => {
 
 describe("POST /api/chat when one write fails", () => {
   const MESSAGE = "Plan my week";
+  type Variant = "new" | "existing" | "search";
 
   /**
-   * Cases that leave a duplicate today (see the it.fails tests below). The sweep
-   * still checks that they leave no stuck row and answer with an error.
+   * Faults that leave a duplicate today (see the it.fails tests below). A case
+   * with one of them is still checked for stuck rows and for an error answer.
    */
-  const KNOWN_DUPLICATES = new Set([
-    "new:refused:MemoryRepository.insertMessage:user",
-    "new:lost:MemoryRepository.createConversation",
-    "new:lost:MemoryRepository.insertMessage:user",
-    "existing:lost:MemoryRepository.insertMessage:user",
-  ]);
+  const KNOWN_DUPLICATES: Record<Variant, [WriteFault, string][]> = {
+    new: [
+      ["refused", "MemoryRepository.insertMessage:user"],
+      ["lost", "MemoryRepository.createConversation"],
+      ["lost", "MemoryRepository.insertMessage:user"],
+    ],
+    search: [
+      ["refused", "MemoryRepository.insertMessage:user"],
+      ["lost", "MemoryRepository.createConversation"],
+      ["lost", "MemoryRepository.insertMessage:user"],
+    ],
+    existing: [["lost", "MemoryRepository.insertMessage:user"]],
+  };
 
   async function chatScenario(
-    variant: "new" | "existing",
+    variant: Variant,
     faults: WriteFaults,
-    sweepCase: SweepCase | null,
-    checkDuplicates = !KNOWN_DUPLICATES.has(`${variant}:${sweepCase?.fault}:${sweepCase?.label}`),
+    sweepCase: SweepCase,
+    checkDuplicates = !KNOWN_DUPLICATES[variant].some(([fault, label]) => hasFault(sweepCase, fault, label)),
+    strictRecord = false,
   ) {
     const at = `${variant} conversation, ${describeCase(sweepCase)}`;
     repo = new MemoryRepository();
     const spend = new FakeSpend();
     const quota = new FakeQuota();
+    const contextRecords = new FakeContextRecords();
     const existing = variant === "existing" ? await repo.createConversation(ALICE, "Earlier", "personal") : null;
     faults.wrap(repo, ["createConversation", "insertMessage"], {
       detail: (method, args) => (method === "insertMessage" ? String((args[1] as { role: string }).role) : ""),
     });
-    faults.wrap(spend, ["reserve", "settle"], { detail: (_m, args) => String(args[0]).replace(/^res-\d+$/, "hold") });
+    faults.wrap(spend, ["reserve", "settle"], {
+      detail: (method, args) =>
+        method === "reserve" ? String(args[0]) : (spend.reservations.find((r) => r.id === args[0])?.provider ?? "unknown"),
+    });
     faults.wrap(quota, ["consume"]);
-    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo, spend, quota }).deps);
+    faults.wrap(contextRecords, ["insertContextRecord"]);
+    const fake = fakeDeps({ repo, spend, quota, contextRecords });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
     signInAs(ALICE);
 
+    const webSearch = variant === "search";
     const send = () =>
       chatRoute.POST(
-        chatRequest({ action: "send", message: MESSAGE, webSearch: false, ...(existing ? { conversationId: existing.id } : {}) }),
+        chatRequest({ action: "send", message: MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) }),
       );
-    const events = async (response: Response) => (response.status === 200 ? collect(readChatStream(response.body!)) : []);
+    const events = async (response: Response) => {
+      const read = response.status === 200 ? await collect(readChatStream(response.body!)) : [];
+      await Promise.all(fake.waited.splice(0));
+      return read;
+    };
 
     const first = await send();
     const firstEvents = await events(first);
@@ -222,32 +242,55 @@ describe("POST /api/chat when one write fails", () => {
       expect(again.at(-1)?.type, `${at}: resend`).toBe("done");
     } else if (!done) {
       const conversationId = started.type === "start" ? started.conversation.id : "";
-      const retry = await chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch: false }));
+      const retry = await chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch }));
       const retried = await events(retry);
       if (retry.status !== 409) expect(retried.at(-1)?.type, `${at}: retry`).toBe("done");
     }
 
-    const settledOrHit = spend.reservations.filter((r) => r.settled === null);
-    const spendHit = faults.fired.some((f) => f.label.startsWith("FakeSpend"));
-    expect(settledOrHit.length, `${at}: only a failed spend write leaves its full hold counted`).toBeLessThanOrEqual(
-      spendHit ? 1 : 0,
-    );
+    const spendFaults = faults.fired.filter((f) => f.label.startsWith("FakeSpend")).length;
+    const openNebius = spend.reservations.filter((r) => r.provider === "nebius" && r.settled === null).length;
+    expect(openNebius, `${at}: only a failed spend write leaves a Nebius hold counted`).toBeLessThanOrEqual(spendFaults);
+    // A search that was sent keeps its Tavily credit (decision 0006).
+    const openTavily = spend.reservations.filter((r) => r.provider === "tavily" && r.settled === null).length;
+    expect(openTavily, `${at}: Tavily holds`).toBeLessThanOrEqual(fake.searches.length + spendFaults);
+    if (webSearch) expect(spend.reservations.some((r) => r.provider === "tavily"), `${at}: search spend`).toBe(true);
 
     const mine = repo.conversations.filter((c) => c.userId === ALICE);
     const target = existing ?? mine.at(-1);
-    const roles = repo.messages.filter((m) => m.conversationId === target?.id).map((m) => m.role);
-    const last = roles.at(-1);
-    expect(last, `${at}: the last message has its reply`).toBe("assistant");
+    const thread = repo.messages.filter((m) => m.conversationId === target?.id);
+    const reply = thread.at(-1);
+    expect(reply?.role, `${at}: the last message has its reply`).toBe("assistant");
+
+    const records = contextRecords.records.filter((r) => r.messageId === reply?.id);
+    // A refused record write only logs a warning (decision 0009). A lost reply response is the known defect below.
+    const recordMayBeMissing =
+      hasFault(sweepCase, "refused", "FakeContextRecords.insertContextRecord") ||
+      (!strictRecord && hasFault(sweepCase, "lost", "MemoryRepository.insertMessage:assistant"));
+    if (!recordMayBeMissing) expect(records, `${at}: one "what was sent" record for the reply`).toHaveLength(1);
+    expect(records.length, at).toBeLessThanOrEqual(1);
+    expect(contextRecords.records.length, `${at}: no record without a saved reply`).toBeLessThanOrEqual(1);
+
     if (!checkDuplicates) return;
     expect(mine, `${at}: no extra conversation`).toHaveLength(1);
-    expect(roles, `${at}: one message and one reply`).toEqual(["user", "assistant"]);
+    expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
   }
 
-  it.each(["new", "existing"] as const)(
-    "%s conversation: every write and both faults end with one message and its reply",
+  it.each(["new", "existing", "search"] as const)(
+    "%s conversation: every write, up to two faults, ends with one message, its reply and its record",
     async (variant) => {
       const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase));
-      expect(cases.map((c) => c.label)).toContain("MemoryRepository.insertMessage:assistant");
+      const labels = new Set(cases.map((c) => c.at(-1)!.label));
+      for (const label of [
+        "FakeQuota.consume",
+        "FakeSpend.reserve:nebius",
+        "MemoryRepository.insertMessage:user",
+        "MemoryRepository.insertMessage:assistant",
+        "FakeSpend.settle:nebius",
+        "FakeContextRecords.insertContextRecord",
+        ...(variant === "search" ? ["FakeSpend.reserve:tavily"] : []),
+      ]) {
+        expect(labels, label).toContain(label);
+      }
     },
   );
 
@@ -261,10 +304,20 @@ describe("POST /api/chat when one write fails", () => {
   ] as const)("%s conversation, %s %s, then a resend: %s", async (variant, fault, label, _defect) => {
     void _defect;
     const dry = new WriteFaults();
-    await chatScenario(variant, dry, null);
+    await chatScenario(variant, dry, []);
     const step = dry.calls.indexOf(label) + 1;
     expect(step).toBeGreaterThan(0);
-    await chatScenario(variant, new WriteFaults().fail(fault, step), { step, fault, label }, true);
+    await chatScenario(variant, new WriteFaults().fail(fault, step), [{ step, fault, label }], true);
+  });
+
+  // Defect: the reply is saved but its response is lost, so the turn ends with an error and
+  // writes no "what was sent" record. The retry gets 409, so the saved reply never gets one.
+  it.fails("a lost response on the reply write: the saved reply has its record", async () => {
+    const label = "MemoryRepository.insertMessage:assistant";
+    const dry = new WriteFaults();
+    await chatScenario("existing", dry, []);
+    const step = dry.calls.indexOf(label) + 1;
+    await chatScenario("existing", new WriteFaults().fail("lost", step), [{ step, fault: "lost", label }], true, true);
   });
 });
 
