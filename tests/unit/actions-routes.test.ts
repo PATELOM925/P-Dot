@@ -8,7 +8,8 @@ import { RepositoryError } from "@/server/db/conversations";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
-import { TEST_SPEND_CAPS, testRouting } from "../support/fakes";
+import { FakeSpend, TEST_SPEND_CAPS, testEmbedder, testRouting } from "../support/fakes";
+import { WriteFaults, describeCase, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -77,6 +78,11 @@ class FakeDb {
 
   from(table: string): FakeQuery {
     return new FakeQuery(this, table);
+  }
+
+  /** Every insert and update goes through here, so a test can make one fail. */
+  async write(_table: string, run: () => FakeResult): Promise<FakeResult> {
+    return run();
   }
 
   async rpc(name: string, args: Row): Promise<FakeResult> {
@@ -208,7 +214,8 @@ class FakeQuery implements PromiseLike<FakeResult> {
     onFulfilled?: ((value: FakeResult) => T1 | PromiseLike<T1>) | null,
     onRejected?: ((reason: unknown) => T2 | PromiseLike<T2>) | null,
   ): Promise<T1 | T2> {
-    return Promise.resolve(this.execute()).then(onFulfilled, onRejected);
+    const result = this.op === "select" ? Promise.resolve(this.execute()) : this.db.write(this.table, () => this.execute());
+    return result.then(onFulfilled, onRejected);
   }
 
   private project(row: Row): Row {
@@ -737,6 +744,83 @@ describe("POST /api/actions/:id/decision: failures", () => {
     expect(response.status).toBe(500);
     expect(storedProposal(row.id as string)?.status).toBe("proposed");
     expect(rowsOf("tasks")).toHaveLength(0);
+  });
+});
+
+describe("POST /api/actions/:id/decision when one write fails", () => {
+  const kinds = [
+    ["create_task", taskPayload, "tasks"],
+    ["create_reminder", reminderPayload, "reminders"],
+    ["save_memory", () => memoryPayload(), "memories"],
+  ] as const;
+
+  let spend: FakeSpend;
+
+  /** Fresh fakes with the real budgeted embedder for a saved memory. Every database and spend write is counted. */
+  function arm(faults: WriteFaults) {
+    db = new FakeDb();
+    spend = new FakeSpend();
+    signInAs(ALICE);
+    faults.wrap(db, ["rpc", "write"], {
+      label: "db",
+      detail: (_method, args) => String(args[0]),
+      failWith: (error) => ({ data: null, error: { message: error.message } }),
+    });
+    faults.wrap(spend, ["reserve", "settle"]);
+    vi.mocked(createEmbedderForRequest).mockReturnValue(testEmbedder(spend));
+  }
+
+  /** Approve once, then approve again after an error, as the user would. `decide` waits for the work after the response. */
+  async function approveScenario(payload: Row, table: string, faults: WriteFaults, sweepCase: SweepCase) {
+    const at = describeCase(sweepCase);
+    arm(faults);
+    const id = seedProposal(ALICE, payload).id as string;
+
+    const first = await decide(id, { decision: "approve" });
+    faults.disarm();
+    const afterFirst = storedProposal(id)!.status;
+    expect(afterFirst, `${at}: no in-between status`).not.toBe("approved");
+    expect(rowsOf(table), `${at}: the stored outcome matches the effect`).toHaveLength(afterFirst === "executed" ? 1 : 0);
+    const spendFaults = faults.fired.filter((f) => f.label.startsWith("FakeSpend")).length;
+    expect(spend.reservations.filter((r) => r.settled === null).length, `${at}: open holds`).toBeLessThanOrEqual(spendFaults);
+    if (first.status === 200) {
+      expect(afterFirst, at).toBe("executed");
+      return;
+    }
+    expect([500, 502], at).toContain(first.status);
+
+    const retry = await decide(id, { decision: "approve" });
+    expect(retry.status, `${at}: retry`).toBe(afterFirst === "proposed" ? 200 : 409);
+    expect(storedProposal(id)!.status, at).toBe(afterFirst === "proposed" ? "executed" : afterFirst);
+    expect(rowsOf(table), `${at}: no duplicate on retry`).toHaveLength(afterFirst === "failed" ? 0 : 1);
+  }
+
+  it.each(kinds)("%s: never leaves a proposal approved or a false outcome, for every write, up to two faults", async (kind, payload, table) => {
+    const cases = await sweepWriteFaults((faults, sweepCase) => approveScenario(payload(), table, faults, sweepCase));
+    const labels = new Set(cases.map((c) => c.at(-1)!.label));
+    expect(labels).toContain("db.rpc:decide_action_proposal");
+    if (kind === "save_memory") {
+      for (const label of ["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]) expect(labels).toContain(label);
+    }
+  });
+
+  it("PR #12 case: the result write is lost after the task was created, and a retry runs nothing", async () => {
+    const faults = new WriteFaults().fail("lost", 1);
+    await approveScenario(taskPayload(), "tasks", faults, [{ step: 1, fault: "lost", label: "db.rpc:decide_action_proposal" }]);
+    expect(faults.fired.map((f) => f.label)).toEqual(["db.rpc:decide_action_proposal"]);
+  });
+
+  it("a saved memory keeps its executed result when the vector write fails after the response", async () => {
+    const faults = new WriteFaults().fail("refused", 4);
+    arm(faults);
+    const id = seedProposal(ALICE, memoryPayload()).id as string;
+
+    expect((await decide(id, { decision: "approve" })).status).toBe(200);
+    expect(faults.calls).toEqual(["db.rpc:decide_action_proposal", "FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
+    expect(faults.fired.map((f) => f.label)).toEqual(["db.write:memories"]);
+    expect(storedProposal(id)!.status).toBe("executed");
+    expect(rowsOf("memories")).toEqual([expect.objectContaining({ status: "active", embedding: null })]);
+    expect(consoleLines.some((l) => l.includes('"event":"action_embedding_failed"'))).toBe(true);
   });
 });
 

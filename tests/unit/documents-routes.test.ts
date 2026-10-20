@@ -4,11 +4,13 @@ import { MAX_DOCUMENT_BODY_BYTES, MAX_DOCUMENT_CHARS } from "@/lib/limits";
 import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
-import type { Embedder } from "@/server/assistant/embed";
-import { EmbeddingBudgetError, EmbeddingTooLargeError } from "@/server/assistant/embed";
+import { EmbeddingBudgetError, type Embedder } from "@/server/assistant/embed";
+import { NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import type { DocumentRepository, NewChunk, NewDocument } from "@/server/db/documents";
 import { ProviderError } from "@/server/providers/errors";
 import type { DocumentDTO, DocumentStatus, Mode } from "@/types/api";
+import { FakeSpend, fakeEmbeddingFetch, testEmbedder } from "../support/fakes";
+import { WRITE_FAULTS, WriteFaults, describeCase, hasFault, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn() }));
@@ -91,9 +93,15 @@ class FakeDocuments implements DocumentRepository {
       .slice(0, limit);
     for (const doc of stale) {
       const complete = doc.chunks.length > 0 && doc.chunks.every((c) => c.embedding.length > 0);
-      doc.dto.status = complete ? "ready" : "failed";
+      await this.settleStatus(userId, doc.dto.id, complete ? "ready" : "failed");
     }
     return stale.length;
+  }
+
+  /** One row of the settle: like the real update, it changes only a row that is still processing. */
+  async settleStatus(userId: string, documentId: string, status: DocumentStatus): Promise<void> {
+    const doc = this.find(userId, documentId);
+    if (doc?.dto.status === "processing") doc.dto.status = status;
   }
 
   async deleteDocument(userId: string, documentId: string): Promise<boolean> {
@@ -314,7 +322,7 @@ describe("POST /api/documents", () => {
 
   it("marks the document failed and answers 413 when a batch is too large for one spend hold", async () => {
     signInAs(ALICE);
-    embedder.embed.mockRejectedValueOnce(new EmbeddingTooLargeError());
+    embedder.embed.mockRejectedValueOnce(new NebiusHoldTooLargeError());
     const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error: { code: "payload_too_large" } });
@@ -468,5 +476,174 @@ describe("documents left processing", () => {
     expect((await list.json()).documents).toHaveLength(1);
     const events = vi.mocked(console.warn).mock.calls.map((call) => JSON.parse(String(call[0])).event);
     expect(events).toContain("documents_settle_failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A write that fails halfway through an upload, or while the list settles it
+// ---------------------------------------------------------------------------
+
+describe("documents when one write fails", () => {
+  const ELEVEN_MINUTES_MS = 11 * 60 * 1000;
+  const listWork = () => documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"));
+  const upload = () => documentsRoute.POST(jsonRequest("POST", validBody()));
+  const complete = (doc: StoredDocument) => doc.chunks.length > 0 && doc.chunks.every((c) => c.embedding.length > 0);
+  const age = () => {
+    for (const doc of docs.stored) doc.dto.createdAt = new Date(Date.now() - ELEVEN_MINUTES_MS).toISOString();
+  };
+
+  let spend: FakeSpend;
+  let embeddings: ReturnType<typeof fakeEmbeddingFetch>;
+
+  /** Fresh fakes with the real budgeted embedder. Every document and spend write is counted. */
+  async function arm(faults: WriteFaults, seed?: () => Promise<void>) {
+    docs = new FakeDocuments();
+    spend = new FakeSpend();
+    embeddings = fakeEmbeddingFetch();
+    await seed?.();
+    faults.wrap(docs, ["createDocument", "insertChunks", "setStatus", "settleStatus"], {
+      detail: (method, args) => (method === "setStatus" || method === "settleStatus" ? String(args[2]) : ""),
+    });
+    faults.wrap(spend, ["reserve", "settle"]);
+    vi.mocked(createDocumentRepository).mockReturnValue(docs);
+    vi.mocked(createEmbedderForRequest).mockReturnValue(testEmbedder(spend, embeddings.fetchImpl));
+    signInAs(ALICE);
+  }
+
+  /** Lists the documents. Settling never pays for an embedding. */
+  async function list(at: string): Promise<DocumentDTO[]> {
+    const paid = embeddings.state.calls;
+    const response = await listWork();
+    expect(response.status, at).toBe(200);
+    expect(embeddings.state.calls, `${at}: settling must not embed again`).toBe(paid);
+    return (await response.json()).documents;
+  }
+
+  function checkSettled(faults: WriteFaults, at: string) {
+    for (const doc of docs.stored) {
+      expect(doc.dto.status, at).not.toBe("processing");
+      if (doc.dto.status === "ready") expect(complete(doc), `${at}: ready only with every chunk stored`).toBe(true);
+    }
+    const spendFaults = faults.fired.filter((f) => f.label.startsWith("FakeSpend")).length;
+    const open = spend.reservations.filter((r) => r.settled === null).length;
+    expect(open, `${at}: only a failed spend write leaves its full hold counted`).toBeLessThanOrEqual(spendFaults);
+  }
+
+  /**
+   * Upload, then the upload goes stale and the user opens the list. Both run
+   * with faults. Then, with no faults, the user sends again after an error and
+   * opens the list once more.
+   */
+  async function uploadScenario(faults: WriteFaults, sweepCase: SweepCase) {
+    const at = describeCase(sweepCase);
+    await arm(faults);
+    const first = await upload();
+    age();
+    await list(at);
+    faults.disarm();
+
+    const firstDoc = docs.stored[0];
+    if (first.status === 201) {
+      expect(firstDoc?.dto.status, `${at}: 201 only for a ready document`).toBe("ready");
+    } else {
+      expect(first.status, at).toBe(500);
+      expect((await first.json()).error.code, at).toBe("internal_error");
+      expect((await upload()).status, `${at}: resend`).toBe(201);
+    }
+    age();
+    const listed = await list(`${at}, second list`);
+    checkSettled(faults, at);
+
+    // A failed upload whose first copy still became ready is the known defect below.
+    const failedButReady = first.status !== 201 && firstDoc?.dto.status === "ready";
+    if (!failedButReady) expect(listed.filter((d) => d.status === "ready"), `${at}: one ready copy`).toHaveLength(1);
+  }
+
+  it("never leaves a document processing, for every write of the upload and the settle, up to two faults", async () => {
+    const cases = await sweepWriteFaults(uploadScenario);
+    for (const fault of WRITE_FAULTS) {
+      for (const label of [
+        "FakeDocuments.createDocument",
+        "FakeSpend.reserve",
+        "FakeSpend.settle",
+        "FakeDocuments.insertChunks",
+        "FakeDocuments.setStatus:ready",
+        "FakeDocuments.setStatus:failed",
+        "FakeDocuments.settleStatus:failed",
+      ]) {
+        expect(cases.some((c) => hasFault(c, fault, label)), `${fault} ${label}`).toBe(true);
+      }
+    }
+  });
+
+  it("settles every stale row, for every settle write, up to two faults", async () => {
+    const cases = await sweepWriteFaults(async (faults, sweepCase) => {
+      const at = describeCase(sweepCase);
+      await arm(faults, async () => {
+        for (const title of ["Complete one", "Complete two", "Stopped"]) {
+          const doc = await docs.createDocument(ALICE, { mode: "work", title, mediaType: "text/plain", charCount: 5 });
+          if (title !== "Stopped") await docs.insertChunks(ALICE, doc.id, [{ index: 0, content: "x", embedding: [0.5] }]);
+        }
+      });
+      age();
+      await list(at);
+      faults.disarm();
+      await list(`${at}, second list`);
+      checkSettled(faults, at);
+      expect(docs.stored.map((d) => d.dto.status), at).toEqual(["ready", "ready", "failed"]);
+    });
+    for (const fault of WRITE_FAULTS) {
+      expect(cases.some((c) => hasFault(c, fault, "FakeDocuments.settleStatus:ready"))).toBe(true);
+      expect(cases.some((c) => hasFault(c, fault, "FakeDocuments.settleStatus:failed"))).toBe(true);
+    }
+  });
+
+  it("PR #10 review case: ready and fallback writes refused, then the list settles it ready with no embedding call", async () => {
+    const faults = new WriteFaults().fail("refused", 5, 6);
+    await arm(faults);
+    const response = await upload();
+    faults.disarm();
+    expect(response.status).toBe(500);
+    expect(faults.fired.map((f) => f.label)).toEqual(["FakeDocuments.setStatus:ready", "FakeDocuments.setStatus:failed"]);
+    expect(docs.stored[0]!.dto.status).toBe("processing");
+
+    age();
+    expect(await list("review case")).toEqual([expect.objectContaining({ id: docs.stored[0]!.dto.id, status: "ready" })]);
+    expect(embeddings.state.calls).toBe(1);
+  });
+
+  it("response lost on the fallback write: the document ends failed, not stuck", async () => {
+    const faults = new WriteFaults().fail("refused", 4).fail("lost", 5);
+    await arm(faults);
+    expect((await upload()).status).toBe(500);
+    faults.disarm();
+    expect(faults.fired.map((f) => f.label)).toEqual(["FakeDocuments.insertChunks", "FakeDocuments.setStatus:failed"]);
+    expect(docs.stored[0]!.dto.status).toBe("failed");
+  });
+
+  it("response lost on the first write: the row exists with no chunks and the list settles it failed", async () => {
+    const faults = new WriteFaults().fail("lost", 1);
+    await arm(faults);
+    expect((await upload()).status).toBe(500);
+    faults.disarm();
+    expect(docs.stored[0]!.dto.status).toBe("processing");
+    age();
+    expect((await list("lost create"))[0]).toMatchObject({ status: "failed" });
+  });
+
+  // Defect: the route answers 500 but the first copy ends ready (after the review case it is
+  // settled ready; after a lost ready write with a refused fallback it stays ready). The user
+  // sends the upload again and ends with two ready copies.
+  it.fails.each([
+    ["the review case", { refused: [5, 6], lost: [] }],
+    ["a lost ready write and a refused fallback", { refused: [6], lost: [5] }],
+  ])("%s then a resend: keeps one ready copy", async (_label, plan) => {
+    const faults = new WriteFaults().fail("refused", ...plan.refused).fail("lost", ...plan.lost);
+    await arm(faults);
+    expect((await upload()).status).toBe(500);
+    faults.disarm();
+    expect((await upload()).status).toBe(201);
+    age();
+    expect((await list("resend")).filter((d) => d.status === "ready")).toHaveLength(1);
   });
 });

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createActionLogRepository } from "@/server/db/action-log";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
@@ -185,6 +187,9 @@ async function updatableColumns(table: string): Promise<string[]> {
 
 
 
+/** Starting PGlite and applying every migration can pass the default 10 s hook limit when other test files run in parallel. */
+const SQL_GATE_HOOK_TIMEOUT_MS = 60_000;
+
 describe.each(MODES)("database gate with %s default grants", (defaults) => {
   beforeAll(async () => {
     gate = await startSqlGate({ defaults });
@@ -192,11 +197,11 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
     userB = await gate.createUser();
     rowsA = await seedOwner(gate, userA);
     rowsB = await seedOwner(gate, userB);
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await gate?.close();
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   describe("Supabase stand-in", () => {
     it("gives a new public table the default grants of this mode, so the checks below are not vacuous", async () => {
@@ -712,6 +717,175 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       expect((await decideAs(gate, owner, id, "approve")).outcome).toBe("executed");
     });
   });
+
+  describe("legacy proposals left approved (decision 0009)", () => {
+    /** The owner statements, read from the file the decision links to, so the two cannot drift. */
+    const statements = new Map(
+      readFileSync(resolve(process.cwd(), "docs/decisions/0009-legacy-approved.sql"), "utf8")
+        .split(/^-- name: /m)
+        .slice(1)
+        .map((block) => {
+          const [header, ...body] = block.split("\n");
+          return [header!.split(" ")[0]!, { header: header!, sql: body.join("\n").trim().replace(/;$/, "") }] as const;
+        }),
+    );
+    const run = <T,>(name: string, params: unknown[]) => gate.admin<T>(statements.get(name)!.sql, params);
+
+    async function legacyApproved(owner: string, title: string): Promise<string> {
+      const row = await gate.admin<{ id: string }>(
+        `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
+         values ($1, 'create_task', jsonb_build_object('kind', 'create_task', 'mode', 'personal', 'title', $2::text), 'x', 'approved', now())
+         returning id`,
+        [owner, title],
+      );
+      return row.rows[0]!.id;
+    }
+
+    async function taskFor(owner: string, title: string): Promise<string> {
+      const row = await gate.admin<{ id: string }>(
+        "insert into tasks (user_id, mode, title) values ($1, 'personal', $2) returning id",
+        [owner, title],
+      );
+      return row.rows[0]!.id;
+    }
+
+    const statusOf = async (id: string) =>
+      (await gate.admin<{ status: string }>("select status from action_proposals where id = $1", [id])).rows[0]!.status;
+
+    it("each statement says whether it is read-only, and only confirm_executed writes", () => {
+      expect([...statements.keys()]).toEqual([
+        "find_approved",
+        "find_reminder",
+        "list_tasks_near_decision",
+        "list_memories_near_decision",
+        "confirm_executed",
+      ]);
+      for (const [name, { header, sql }] of statements) {
+        const readOnly = header.includes("(read-only)");
+        expect(readOnly || header.includes("(writes"), name).toBe(true);
+        expect(/^select\b/i.test(sql), name).toBe(readOnly);
+        expect(sql, name).toContain("user_id = $1");
+      }
+    });
+
+    it("the decision function answers already_decided, runs nothing and leaves the row approved", async () => {
+      const owner = await gate.createUser();
+      const id = await legacyApproved(owner, "Legacy task");
+      const answer = await gate.as<{ answer: { outcome: string } }>(
+        user(owner),
+        "select public.decide_action_proposal($1, 'approve') as answer",
+        [id],
+      );
+      expect(answer.rows[0]!.answer.outcome).toBe("already_decided");
+      expect(await statusOf(id)).toBe("approved");
+      expect(await countOwnedBy("tasks", owner)).toBe(0);
+    });
+
+    it("the read-only statements return only the chosen user's rows", async () => {
+      const owner = await gate.createUser();
+      const other = await gate.createUser();
+      const mine = await legacyApproved(owner, "Mine");
+      const theirs = await legacyApproved(other, "Theirs");
+      await taskFor(owner, "Mine");
+      await taskFor(other, "Theirs");
+
+      const found = await run<{ id: string }>("find_approved", [owner]);
+      expect(found.rows.map((r) => r.id)).toEqual([mine]);
+      const tasks = await run<{ title: string }>("list_tasks_near_decision", [owner, mine]);
+      expect(tasks.rows.map((r) => r.title)).toEqual(["Mine"]);
+      expect((await run("list_tasks_near_decision", [owner, theirs])).rows).toEqual([]);
+      expect((await run("list_memories_near_decision", [owner, mine])).rows).toEqual([]);
+      expect((await run("find_reminder", [owner, theirs])).rows).toEqual([]);
+    });
+
+    it("an edited task still shows in the list, and the row is set executed only for the row the user confirms", async () => {
+      const owner = await gate.createUser();
+      const other = await gate.createUser();
+      const id = await legacyApproved(owner, "Pay the invoice");
+      const task = await taskFor(owner, "Pay the invoice");
+      await gate.admin("update tasks set title = 'Paid, edited later' where id = $1", [task]);
+      const othersTask = await taskFor(other, "Pay the invoice");
+
+      const listed = await run<{ id: string }>("list_tasks_near_decision", [owner, id]);
+      expect(listed.rows.map((r) => r.id)).toEqual([task]);
+
+      // Another user's row, or another user's proposal, changes nothing.
+      expect((await run("confirm_executed", [owner, id, othersTask])).rows).toEqual([]);
+      expect((await run("confirm_executed", [other, id, task])).rows).toEqual([]);
+      expect(await statusOf(id)).toBe("approved");
+
+      expect((await run<{ id: string }>("confirm_executed", [owner, id, task])).rows.map((r) => r.id)).toEqual([id]);
+      const proposals = await createActionProposalRepository(sqlGateClient(gate, owner)).listProposals(owner, undefined, 50);
+      // A person confirmed it, not the decision function: it stays not verified, so the screens say "Marked done".
+      expect(proposals.find((p) => p.id === id)).toMatchObject({ status: "executed", result: { taskId: task }, verified: false });
+      const log = await gate.admin<{ event: string; verified: boolean }>(
+        "select event, verified from action_log where user_id = $1 and proposal_id = $2 and event = 'executed'",
+        [owner, id],
+      );
+      expect(log.rows).toEqual([{ event: "executed", verified: false }]);
+      expect((await run("confirm_executed", [owner, id, task])).rows).toEqual([]);
+    });
+
+    it("refuses a row that another proposal already names as its result", async () => {
+      const owner = await gate.createUser();
+      const first = await legacyApproved(owner, "Call Sam");
+      const second = await legacyApproved(owner, "Call Sam");
+      const task = await taskFor(owner, "Call Sam");
+      expect((await run<{ id: string }>("list_tasks_near_decision", [owner, second])).rows.map((r) => r.id)).toEqual([task]);
+
+      expect((await run<{ id: string }>("confirm_executed", [owner, first, task])).rows.map((r) => r.id)).toEqual([first]);
+      expect((await run("confirm_executed", [owner, second, task])).rows).toEqual([]);
+      expect(await statusOf(second)).toBe("approved");
+      const log = await gate.admin("select 1 from action_log where user_id = $1 and event = 'executed'", [owner]);
+      expect(log.rows).toHaveLength(1);
+    });
+
+    it("refuses a reminder linked to another proposal, and accepts one linked to this proposal", async () => {
+      const owner = await gate.createUser();
+      const legacyReminder = async () =>
+        (
+          await gate.admin<{ id: string }>(
+            `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
+             values ($1, 'create_reminder', '{"kind":"create_reminder","mode":"work","title":"Dentist","dueAt":"2026-10-30T17:00:00Z"}', 'x', 'approved', now())
+             returning id`,
+            [owner],
+          )
+        ).rows[0]!.id;
+      const id = await legacyReminder();
+      const other = await legacyReminder();
+      const reminderFor = async (proposalId: string) =>
+        (
+          await gate.admin<{ id: string }>(
+            "insert into reminders (user_id, mode, title, due_at, proposal_id) values ($1, 'work', 'Dentist', now(), $2) returning id",
+            [owner, proposalId],
+          )
+        ).rows[0]!.id;
+      const linkedElsewhere = await reminderFor(other);
+      const linkedHere = await reminderFor(id);
+
+      expect((await run("confirm_executed", [owner, id, linkedElsewhere])).rows).toEqual([]);
+      expect(await statusOf(id)).toBe("approved");
+      expect((await run<{ id: string }>("find_reminder", [owner, id])).rows.map((r) => r.id)).toEqual([linkedHere]);
+      expect((await run<{ id: string }>("confirm_executed", [owner, id, linkedHere])).rows.map((r) => r.id)).toEqual([id]);
+    });
+
+    it("a row with an unknown outcome stays approved and an approval cannot make a second task", async () => {
+      const owner = await gate.createUser();
+      const id = await legacyApproved(owner, "Call Sam");
+      const task = await taskFor(owner, "Call Sam");
+      await gate.admin("delete from tasks where id = $1", [task]);
+      expect((await run("list_tasks_near_decision", [owner, id])).rows).toEqual([]);
+
+      const answer = await gate.as<{ answer: { outcome: string } }>(
+        user(owner),
+        "select public.decide_action_proposal($1, 'approve') as answer",
+        [id],
+      );
+      expect(answer.rows[0]!.answer.outcome).toBe("already_decided");
+      expect(await statusOf(id)).toBe("approved");
+      expect(await countOwnedBy("tasks", owner)).toBe(0);
+    });
+  });
 });
 
 describe("upgrade of a database that has rows the older schema allowed", () => {
@@ -742,11 +916,11 @@ describe("upgrade of a database that has rows the older schema allowed", () => {
         `,
       },
     });
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await old?.close();
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   const decideOld = async (id: string, decision: string) =>
     (await old.as<{ r: Decision }>(user(OWNER), "select public.decide_action_proposal($1, $2, null) as r", [id, decision]))
@@ -803,11 +977,11 @@ describe("contract step over the expand window", () => {
         `,
       },
     });
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await db?.close();
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   it("keeps an outcome a caller wrote before the contract as not verified, in the row, the list and the log", async () => {
     const row = await db.admin("select status, decided_by_function from action_proposals where id = $1", [FORGED]);

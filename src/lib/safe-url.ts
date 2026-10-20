@@ -1,9 +1,13 @@
+/** Longest URL kept, before and after normalization. A normalized URL is ASCII, so this is also its byte count. */
+export const MAX_SAFE_URL_CHARS = 2048;
+
 /**
  * Returns a normalized http(s) URL, or null for anything else (javascript:,
- * data:, credentials in the URL, malformed input). Used for source links.
+ * data:, credentials in the URL, malformed input, a normalized URL longer
+ * than MAX_SAFE_URL_CHARS). Used for source links.
  */
 export function toSafeHttpUrl(value: unknown): string | null {
-  if (typeof value !== "string" || value.length === 0 || value.length > 2048) {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_SAFE_URL_CHARS) {
     return null;
   }
   let url: URL;
@@ -14,7 +18,8 @@ export function toSafeHttpUrl(value: unknown): string | null {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   if (url.username || url.password) return null;
-  return url.toString();
+  const normalized = url.toString();
+  return normalized.length > MAX_SAFE_URL_CHARS ? null : normalized;
 }
 
 /**
