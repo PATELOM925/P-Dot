@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createActionLogRepository } from "@/server/db/action-log";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
@@ -404,6 +406,18 @@ describe("records the app must be able to trust", () => {
 });
 
 describe("legacy proposals left approved (decision 0009)", () => {
+  /** The owner statements, read from the file the decision links to, so the two cannot drift. */
+  const statements = new Map(
+    readFileSync(resolve(process.cwd(), "docs/decisions/0009-legacy-approved.sql"), "utf8")
+      .split(/^-- name: /m)
+      .slice(1)
+      .map((block) => {
+        const [header, ...body] = block.split("\n");
+        return [header!.split(" ")[0]!, { header: header!, sql: body.join("\n").trim().replace(/;$/, "") }] as const;
+      }),
+  );
+  const run = <T,>(name: string, params: unknown[]) => gate.admin<T>(statements.get(name)!.sql, params);
+
   async function legacyApproved(owner: string, title: string): Promise<string> {
     const row = await gate.admin<{ id: string }>(
       `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
@@ -414,6 +428,33 @@ describe("legacy proposals left approved (decision 0009)", () => {
     return row.rows[0]!.id;
   }
 
+  async function taskFor(owner: string, title: string): Promise<string> {
+    const row = await gate.admin<{ id: string }>(
+      "insert into tasks (user_id, mode, title) values ($1, 'personal', $2) returning id",
+      [owner, title],
+    );
+    return row.rows[0]!.id;
+  }
+
+  const statusOf = async (id: string) =>
+    (await gate.admin<{ status: string }>("select status from action_proposals where id = $1", [id])).rows[0]!.status;
+
+  it("each statement says whether it is read-only, and only confirm_executed writes", () => {
+    expect([...statements.keys()]).toEqual([
+      "find_approved",
+      "find_reminder",
+      "list_tasks_near_decision",
+      "list_memories_near_decision",
+      "confirm_executed",
+    ]);
+    for (const [name, { header, sql }] of statements) {
+      const readOnly = header.includes("(read-only)");
+      expect(readOnly || header.includes("(writes"), name).toBe(true);
+      expect(/^select\b/i.test(sql), name).toBe(readOnly);
+      expect(sql, name).toContain("user_id = $1");
+    }
+  });
+
   it("the decision function answers already_decided, runs nothing and leaves the row approved", async () => {
     const owner = await gate.createUser();
     const id = await legacyApproved(owner, "Legacy task");
@@ -423,53 +464,68 @@ describe("legacy proposals left approved (decision 0009)", () => {
       [id],
     );
     expect(answer.rows[0]!.answer.outcome).toBe("already_decided");
-    const stored = await gate.admin<{ status: string }>("select status from action_proposals where id = $1", [id]);
-    expect(stored.rows[0]!.status).toBe("approved");
+    expect(await statusOf(id)).toBe("approved");
     expect(await countOwnedBy("tasks", owner)).toBe(0);
   });
 
-  it("the documented steps find the row and settle it as executed or failed, with a log row", async () => {
+  it("the read-only statements return only the chosen user's rows", async () => {
     const owner = await gate.createUser();
-    const ran = await legacyApproved(owner, "Ran before the stop");
-    const notRun = await legacyApproved(owner, "Stopped before the insert");
-    const task = await gate.admin<{ id: string }>(
-      "insert into tasks (user_id, mode, title) values ($1, 'personal', 'Ran before the stop') returning id",
-      [owner],
-    );
+    const other = await gate.createUser();
+    const mine = await legacyApproved(owner, "Mine");
+    const theirs = await legacyApproved(other, "Theirs");
+    await taskFor(owner, "Mine");
+    await taskFor(other, "Theirs");
 
-    const found = await gate.admin<{ id: string }>(
-      "select id, user_id, kind, payload, decided_at from public.action_proposals where status = 'approved' and user_id = $1 order by decided_at",
-      [owner],
-    );
-    expect(found.rows.map((r) => r.id).sort()).toEqual([ran, notRun].sort());
-    const effect = await gate.admin<{ id: string }>(
-      `select t.id from public.tasks t join public.action_proposals p on p.id = $1
-       where t.user_id = p.user_id and t.title = p.payload ->> 'title' and t.mode = p.payload ->> 'mode'
-         and t.created_at between p.decided_at - interval '1 minute' and p.decided_at + interval '10 minutes'`,
-      [ran],
-    );
-    expect(effect.rows.map((r) => r.id)).toEqual([task.rows[0]!.id]);
+    const found = await run<{ id: string }>("find_approved", [owner]);
+    expect(found.rows.map((r) => r.id)).toEqual([mine]);
+    const tasks = await run<{ title: string }>("list_tasks_near_decision", [owner, mine]);
+    expect(tasks.rows.map((r) => r.title)).toEqual(["Mine"]);
+    expect((await run("list_tasks_near_decision", [owner, theirs])).rows).toEqual([]);
+    expect((await run("list_memories_near_decision", [owner, mine])).rows).toEqual([]);
+    expect((await run("find_reminder", [owner, theirs])).rows).toEqual([]);
+  });
 
-    await gate.admin(
-      "update public.action_proposals set status = 'executed', result = jsonb_build_object('taskId', $2::text) where id = $1 and status = 'approved'",
-      [ran, task.rows[0]!.id],
-    );
-    await gate.admin(
-      `update public.action_proposals set status = 'failed', result = '{"error":"execution_failed"}' where id = $1 and status = 'approved'`,
-      [notRun],
-    );
+  it("an edited task still shows in the list, and the row is set executed only for the row the user confirms", async () => {
+    const owner = await gate.createUser();
+    const other = await gate.createUser();
+    const id = await legacyApproved(owner, "Pay the invoice");
+    const task = await taskFor(owner, "Pay the invoice");
+    await gate.admin("update tasks set title = 'Paid, edited later' where id = $1", [task]);
+    const othersTask = await taskFor(other, "Pay the invoice");
 
+    const listed = await run<{ id: string }>("list_tasks_near_decision", [owner, id]);
+    expect(listed.rows.map((r) => r.id)).toEqual([task]);
+
+    // Another user's row, or another user's proposal, changes nothing.
+    expect((await run("confirm_executed", [owner, id, othersTask])).rows).toEqual([]);
+    expect((await run("confirm_executed", [other, id, task])).rows).toEqual([]);
+    expect(await statusOf(id)).toBe("approved");
+
+    expect((await run<{ id: string }>("confirm_executed", [owner, id, task])).rows.map((r) => r.id)).toEqual([id]);
     const proposals = await createActionProposalRepository(sqlGateClient(gate, owner)).listProposals(owner, undefined, 50);
-    expect(proposals.map((p) => [p.id, p.status, p.result]).sort()).toEqual(
-      [
-        [ran, "executed", { taskId: task.rows[0]!.id }],
-        [notRun, "failed", { error: "execution_failed" }],
-      ].sort(),
+    expect(proposals.find((p) => p.id === id)).toMatchObject({ status: "executed", result: { taskId: task } });
+    const log = await gate.admin<{ event: string }>(
+      "select event from action_log where user_id = $1 and proposal_id = $2 and event = 'executed'",
+      [owner, id],
     );
-    const log = await gate.admin<{ event: string; proposal_id: string }>(
-      "select event, proposal_id from action_log where user_id = $1 and event in ('executed', 'failed')",
-      [owner],
+    expect(log.rows).toHaveLength(1);
+    expect((await run("confirm_executed", [owner, id, task])).rows).toEqual([]);
+  });
+
+  it("a row with an unknown outcome stays approved and an approval cannot make a second task", async () => {
+    const owner = await gate.createUser();
+    const id = await legacyApproved(owner, "Call Sam");
+    const task = await taskFor(owner, "Call Sam");
+    await gate.admin("delete from tasks where id = $1", [task]);
+    expect((await run("list_tasks_near_decision", [owner, id])).rows).toEqual([]);
+
+    const answer = await gate.as<{ answer: { outcome: string } }>(
+      user(owner),
+      "select public.decide_action_proposal($1, 'approve') as answer",
+      [id],
     );
-    expect(log.rows.map((r) => `${r.proposal_id}:${r.event}`).sort()).toEqual([`${notRun}:failed`, `${ran}:executed`].sort());
+    expect(answer.rows[0]!.answer.outcome).toBe("already_decided");
+    expect(await statusOf(id)).toBe("approved");
+    expect(await countOwnedBy("tasks", owner)).toBe(0);
   });
 });
