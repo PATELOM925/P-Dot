@@ -84,6 +84,11 @@ This document aligns Person A (Frontend), Person B (Backend/Database/Infra), and
   - Implemented `/api/documents` REST endpoints for upload, listing, and deletion.
   - Unit test suite expanded to 155 passing tests across 14 suites (`npm run check` 100% clean).
 
+- [x] **AI-05b: Hallucination Prevention & Factual Rigor Suite**
+  - Built comprehensive unit guardrail test suite in `tests/unit/hallucination.test.ts` (10 tests covering: orphan citation prohibition, empty retrieval honesty, sycophancy refutation, unmentioned entity containment, adversarial document injection neutralization, UTC temporal grounding, and cross-source multi-tool citation integrity).
+  - Built live model evaluation benchmark in `tests/evals/test-hallucination-live.ts` (`npm run eval:hallucination`) testing anachronisms, fictional treaties, general knowledge citations, missing document facts, and prompt injection resistance.
+  - Verified 100% (5/5) pass rate against live Nebius Token Factory (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`).
+
 ### Upcoming Steps:
 - [ ] **AI-06: Long-Term Memory System (Personal Fact Extraction & Retrieval)**
   - Implement `save_memory` tool for autonomous fact extraction from conversations.
