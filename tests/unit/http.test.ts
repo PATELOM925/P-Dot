@@ -85,7 +85,7 @@ describe("getAssistantConfig", () => {
       model: "org/model",
       fallbackModel: undefined,
       embeddingModel: "Qwen/Qwen3-Embedding-8B",
-      maxOutputTokens: 1024,
+      maxOutputTokens: 4096,
     });
     expect(config.tavily).toBeNull();
     expect(config.quota).toEqual({ requestsPerWindow: 30, windowSeconds: 3600 });

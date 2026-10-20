@@ -82,6 +82,9 @@ export function titleFromMessage(message: string, maxChars = 60): string {
   let cleaned = message.replace(/\s+/g, " ").trim();
   if (cleaned.length === 0) return "New Conversation";
 
+  // Strip leading and trailing quotes, backticks, or brackets
+  cleaned = cleaned.replace(/^["'«»“”‘’`]+|["'«»“”‘’`]+$/g, "").trim();
+
   // Common generic single-word greetings become "New Conversation"
   if (/^(hi|hello|hey|yo|greetings|sup)\b/i.test(cleaned) && cleaned.length < 10) {
     return "New Conversation";
@@ -90,6 +93,7 @@ export function titleFromMessage(message: string, maxChars = 60): string {
   // Strip conversational fillers at start
   const fillerRegex = /^(can you (please )?|could you (please )?|please |help me (to )?|i want to |i need to |tell me (about )?)/i;
   cleaned = cleaned.replace(fillerRegex, "");
+  cleaned = cleaned.replace(/^["'«»“”‘’`]+|["'«»“”‘’`]+$/g, "").trim();
 
   return cleaned.length > maxChars ? `${cleaned.slice(0, maxChars - 1).trimEnd()}…` : cleaned;
 }
@@ -103,11 +107,19 @@ export async function generateSmartTitle(
   userPrompt: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const promptText = userPrompt.trim();
+  let promptText = userPrompt.trim();
   if (promptText.length === 0) return "New Conversation";
+
+  // Strip leading/trailing quotes
+  promptText = promptText.replace(/^["'«»“”‘’`]+|["'«»“”‘’`]+$/g, "").trim();
 
   // Short generic greeting check
   if (/^(hi|hello|hey|yo|greetings|good (morning|afternoon|evening))\b/i.test(promptText) && promptText.length < 15) {
+    return "New Conversation";
+  }
+
+  // If prompt is just a continuation command, avoid naming the chat "Continue"
+  if (/^(please\s+)?(continue|continuw|keep going|go on|proceed|finish)\b/i.test(promptText)) {
     return "New Conversation";
   }
 
@@ -115,11 +127,11 @@ export async function generateSmartTitle(
     {
       role: "system",
       content:
-        "You are a conversation title generator. Output ONLY a concise, professional title of 2 to 5 words summarizing the user's topic. Do NOT use quotation marks, punctuation, or conversational words like 'Sure' or 'Title:'. Examples: 'Tokyo Trip Planning', 'React Hook Optimization', 'Quarterly Budgeting'.",
+        "You are an expert conversation title generator. Output ONLY a concise, professional title of 2 to 5 words summarizing the user's core inquiry topic. Do NOT use quotation marks, punctuation, or conversational words like 'Sure' or 'Title:'. Examples: 'Pediatric Blood Transfusion Ethics', 'Tokyo Trip Planning', 'React Hook Optimization', 'Quarterly Budgeting'.",
     },
     {
       role: "user",
-      content: promptText.slice(0, 500),
+      content: promptText.slice(0, 1000),
     },
   ];
 
@@ -129,11 +141,21 @@ export async function generateSmartTitle(
       if (chunk.type === "text") {
         title += chunk.text;
       }
-      if (title.length > 60) break;
+      if (title.length > 300) break;
     }
-    const clean = title.replace(/["'*_#`]/g, "").replace(/\s+/g, " ").trim();
-    if (clean.length >= 2 && clean.length <= 60 && !clean.toLowerCase().startsWith("title")) {
-      return clean;
+
+    // Strip reasoning / think tags if emitted by reasoning models
+    let clean = title.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<thought>[\s\S]*?<\/thought>/gi, "");
+    // Strip markdown formatting, quotes, and punctuation
+    clean = clean.replace(/["'*_#`]/g, "").replace(/\s+/g, " ").trim();
+    // Strip conversational title prefixes like "Title:", "Topic:", "Here is a title:"
+    clean = clean.replace(/^(?:title|topic|subject|chat title)\s*[:\-]\s*/i, "");
+    clean = clean.replace(/^(?:here is (?:a|the) title|suggested title)\s*[:\-]?\s*/i, "");
+    clean = clean.replace(/^["'«»“”‘’]+|["'«»“”‘’]+$/g, "").trim();
+
+    const firstLine = clean.split("\n")[0]?.trim() ?? "";
+    if (firstLine.length >= 2 && firstLine.length <= 60) {
+      return firstLine;
     }
   } catch {
     // Fallback on any failure

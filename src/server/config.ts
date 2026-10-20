@@ -29,7 +29,7 @@ const assistantEnvSchema = z.object({
   NEBIUS_MODEL: z.string().trim().min(1),
   NEBIUS_FALLBACK_MODEL: z.string().trim().optional(),
   NEBIUS_EMBEDDING_MODEL: z.string().trim().default("Qwen/Qwen3-Embedding-8B"),
-  NEBIUS_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(8192).default(1024),
+  NEBIUS_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(8192).default(4096),
   TAVILY_API_KEY: z.string().trim().optional(),
   CHAT_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).max(10_000).default(30),
   CHAT_WINDOW_SECONDS: z.coerce.number().int().min(60).max(2_678_400).default(3600),

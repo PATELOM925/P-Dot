@@ -1,19 +1,19 @@
 // Request and context bounds. Shared so the UI can enforce the same limits the API does.
 
-/** Maximum characters in one user message. */
-export const MAX_MESSAGE_CHARS = 4_000;
+/** Maximum characters in one user message (~2,000 tokens). */
+export const MAX_MESSAGE_CHARS = 8_000;
 
-/** Maximum size of a POST /api/chat body. */
+/** Maximum size of a POST /api/chat body (16 KB). */
 export const MAX_CHAT_BODY_BYTES = 16 * 1024;
 
 /** Most recent messages loaded from storage when building model context. */
-export const HISTORY_MESSAGE_LIMIT = 40;
+export const HISTORY_MESSAGE_LIMIT = 50;
 
 /**
- * Character budget for conversation history sent to the model (~6k tokens at
+ * Character budget for conversation history sent to the model (~16k tokens at
  * roughly 4 characters per token). Older messages are dropped first.
  */
-export const HISTORY_CHAR_BUDGET = 24_000;
+export const HISTORY_CHAR_BUDGET = 64_000;
 
 /** Hard stop for a single assistant reply (the database allows 32k). */
 export const MAX_ASSISTANT_CHARS = 30_000;

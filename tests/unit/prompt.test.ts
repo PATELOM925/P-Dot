@@ -76,6 +76,13 @@ describe("titleFromMessage", () => {
     expect(titleFromMessage("  plan   my\nweek  ")).toBe("plan my week");
     expect(titleFromMessage("x".repeat(100))).toHaveLength(60);
   });
+
+  it("strips leading and trailing quotation marks and backticks", () => {
+    expect(
+      titleFromMessage('"A 12-year-old child of a Jehovah\'s Witness family is brought to the ER..."'),
+    ).toBe("A 12-year-old child of a Jehovah's Witness family is brough…");
+    expect(titleFromMessage("`How to configure Postgres`")).toBe("How to configure Postgres");
+  });
 });
 
 describe("generateSmartTitle", () => {
@@ -89,6 +96,18 @@ describe("generateSmartTitle", () => {
       "How do I deploy Next.js 16 to Cloudflare Workers with OpenNext?",
     );
     expect(title).toBe("Cloudflare Workers Deployment");
+  });
+
+  it("cleans thinking tags and Title: prefixes from model output", async () => {
+    async function* reasoningComplete() {
+      yield { type: "text" as const, text: "<think>Let me think of a title...</think>\n**Title:** Pediatric Transfusion Ethics" };
+      yield { type: "finish" as const, finishReason: "stop", usage: null };
+    }
+    const title = await generateSmartTitle(
+      reasoningComplete,
+      "A 12-year-old child needs emergency transfusion...",
+    );
+    expect(title).toBe("Pediatric Transfusion Ethics");
   });
 
   it("falls back to titleFromMessage on short messages or error", async () => {
@@ -189,5 +208,20 @@ describe("buildPromptMessages", () => {
   it("includes the current date", () => {
     const messages = buildPromptMessages({ history: [{ role: "user", content: "hi" }], webSearch: "off", results: [], now });
     expect(messages[0]!.content).toContain("2026-10-14");
+  });
+
+  it("injects continuation directive when latest message asks to continue", () => {
+    const messages = buildPromptMessages({
+      history: [
+        { role: "user", content: "Explain emergency transfusion in pediatric trauma." },
+        { role: "assistant", content: "Here are the first 5 minutes of protocol..." },
+        { role: "user", content: "please continuw" },
+      ],
+      webSearch: "off",
+      results: [],
+      now,
+    });
+    expect(messages[0]!.content).toContain("CONTINUATION DIRECTIVE");
+    expect(messages[0]!.content).toContain("Resume directly from that exact cutoff point");
   });
 });

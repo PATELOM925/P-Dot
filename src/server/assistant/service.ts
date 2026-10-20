@@ -760,10 +760,23 @@ export async function* streamChatTurn(
     return;
   }
 
-  // Refine conversation title with smart title generator for the first turn or if generic
-  if (turn.history.length <= 1 || turn.conversation.title === "New Conversation") {
+  // Refine conversation title with smart title generator if generic or truncated
+  const isGenericOrTruncated =
+    turn.conversation.title === "New Conversation" ||
+    turn.conversation.title.endsWith("…") ||
+    turn.conversation.title.endsWith("...") ||
+    turn.conversation.title.length > 45;
+
+  if (turn.history.length <= 1 || isGenericOrTruncated) {
     try {
-      const smartTitle = await generateSmartTitle(deps.complete, turn.userMessage.content, signal);
+      const substantivePrompt =
+        turn.history.find(
+          (m) =>
+            m.role === "user" &&
+            !/^(please\s+)?(continue|continuw|go on|keep going|proceed)\b/i.test(m.content.trim()),
+        )?.content ?? turn.userMessage.content;
+
+      const smartTitle = await generateSmartTitle(deps.complete, substantivePrompt, signal);
       if (smartTitle && smartTitle !== turn.conversation.title && smartTitle !== "New Conversation") {
         await deps.repo.updateConversationTitle(turn.userId, turn.conversation.id, smartTitle);
         yield { type: "title", title: smartTitle };
