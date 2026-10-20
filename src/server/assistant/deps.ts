@@ -3,6 +3,7 @@ import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
 import { createConversationRepository } from "@/server/db/conversations";
 import { createDocumentRepository } from "@/server/db/documents";
+import { createMemoryRepository } from "@/server/db/memories";
 import { createQuotaGate } from "@/server/db/quota";
 import { logEvent } from "@/server/log";
 import { streamChatCompletion } from "@/server/providers/nebius/client";
@@ -18,6 +19,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
     documentRepo: createDocumentRepository(auth.supabase),
+    memoryRepo: createMemoryRepository(auth.supabase),
     embed: (text, signal) =>
       createSingleEmbedding(
         {

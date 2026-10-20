@@ -18,6 +18,8 @@ Guidelines:
     - If the user asks about personal notes, credentials, flights, or private files, call 'search_documents'.
     - If personal documents do not contain the answer, or only provide partial context, seamlessly pivot to 'web_search' within your remaining attempts to find the missing public information.
     - If an initial web search is insufficient or requires comparing multiple subjects, you may make a targeted follow-up search.
+    - If the user shares a lasting personal preference, biographical detail, habit, or constraint (e.g. 'I prefer dark roast coffee', 'I live in Austin', 'Remember that I am allergic to peanuts'), call 'save_memory' to remember it across conversations.
+    - If you need to recall past personal preferences or background details not shown in context, call 'search_memories'.
     - If the user asks to schedule a reminder or track a todo, call 'propose_reminder' or 'propose_task'.
   * Once your tool attempts are complete or sufficient information is gathered, you MUST synthesize a direct answer with inline [n] citations and not call any further tools.
 - When answering with information from search results or tool sources, always append the source citation tag [n] (e.g. [1], [2]) directly after every factual statement or sentence derived from that source. Do not invent citations or cite sources that do not contain the claim.
@@ -37,7 +39,7 @@ function searchStatusNote(status: WebSearchStatus): string | null {
 
 /** Removes markup that could be mistaken for the delimiters used below. */
 function neutralize(text: string): string {
-  return text.replace(/<\/?\s*(web_search_results|personal_document_results|document_source|user_message|source)\b[^>]*>/gi, "[removed tag]");
+  return text.replace(/<\/?\s*(web_search_results|personal_document_results|document_source|relevant_memories|user_memories|user_message|source)\b[^>]*>/gi, "[removed tag]");
 }
 
 export function formatSearchResults(results: WebSearchResult[]): string {
@@ -62,11 +64,22 @@ export function formatDocumentMatches(matches: DocumentMatchExcerpt[], startInde
   return `<personal_document_results>\nRetrieved from the user's personal documents. When stating facts from a document, cite it as [id] (e.g. [${startIndex}]).\n${blocks.join("\n")}\n</personal_document_results>`;
 }
 
+export interface MemoryExcerpt {
+  category: string;
+  content: string;
+}
+
+export function formatMemories(memories: MemoryExcerpt[]): string {
+  const items = memories.map((m) => `- [${m.category}] ${neutralize(m.content)}`);
+  return `<relevant_memories>\nKnown facts and preferences about the user:\n${items.join("\n")}\n</relevant_memories>`;
+}
+
 export interface PromptInput {
   history: HistoryMessage[]; // chronological, already budgeted; last item is the user's message
   webSearch: WebSearchStatus;
   results: WebSearchResult[];
   now: Date;
+  memories?: MemoryExcerpt[];
 }
 
 /**
@@ -77,7 +90,10 @@ export interface PromptInput {
 export function buildPromptMessages(input: PromptInput): ChatMessage[] {
   const date = input.now.toISOString().slice(0, 10);
   const note = searchStatusNote(input.webSearch);
-  const system = [BASE_SYSTEM_PROMPT, `Today's date (UTC) is ${date}.`, note].filter(Boolean).join("\n\n");
+  const memoryBlock = input.memories && input.memories.length > 0 ? formatMemories(input.memories) : null;
+  const system = [BASE_SYSTEM_PROMPT, `Today's date (UTC) is ${date}.`, note, memoryBlock]
+    .filter(Boolean)
+    .join("\n\n");
 
   const messages: ChatMessage[] = [{ role: "system", content: system }];
   input.history.forEach((message, index) => {
@@ -93,3 +109,4 @@ export function buildPromptMessages(input: PromptInput): ChatMessage[] {
   });
   return messages;
 }
+

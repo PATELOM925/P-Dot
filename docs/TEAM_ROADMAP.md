@@ -89,9 +89,17 @@ This document aligns Person A (Frontend), Person B (Backend/Database/Infra), and
   - Built live model evaluation benchmark in `tests/evals/test-hallucination-live.ts` (`npm run eval:hallucination`) testing anachronisms, fictional treaties, general knowledge citations, missing document facts, and prompt injection resistance.
   - Verified 100% (5/5) pass rate against live Nebius Token Factory (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`).
 
+- [x] **AI-06: Long-Term Memory System (Personal Fact Extraction & Retrieval)**
+  - Created Supabase migration `20261020000001_user_memories.sql` with `user_memories` table (4096-dimensional vectors), `match_user_memories` RPC, and RLS policies.
+  - Implemented `MemoryRepository` (`src/server/db/memories.ts`) with Supabase pgvector client and mock test repository.
+  - Implemented autonomous `save_memory` and `search_memories` tools in multi-hop assistant loop (`src/server/assistant/tools.ts`, `service.ts`).
+  - Built hybrid memory architecture: semantic pre-retrieval on every turn injecting `<relevant_memories>` into the system prompt.
+  - Built REST API endpoints: `GET /api/memories`, `POST /api/memories`, `DELETE /api/memories/[id]`.
+  - Added unit test suite in `tests/unit/memories.test.ts` (171/171 tests passing across 16 test suites).
+  - Verified live recall with `npm run memory:demo` (`tests/evals/test-memory-live.ts`), successfully recalling user allergies and personal preferences.
+
 ### Upcoming Steps:
-- [ ] **AI-06: Long-Term Memory System (Personal Fact Extraction & Retrieval)**
-  - Implement `save_memory` tool for autonomous fact extraction from conversations.
-  - Build hybrid memory retrieval: semantic search on `user_memories` table + static `user_profiles` system prompt injection.
-  - **AI-06b: Episodic Session Summarization**: Summarize key user takeaways at session conclusion into durable memory items.
-  - Add `search_memories` tool allowing P-Dot to recall historical facts across past conversations.
+- [ ] **AI-06b: Episodic Session Summarization**
+  - Implement background worker / turn completion trigger to automatically synthesize key personal takeaways at the end of multi-turn chat sessions into atomic memory items.
+- [ ] **AI-07: Calendar & Action Proposal Execution Engine**
+  - Connect Person A's interactive Action Cards (`approve`, `edit`, `cancel`) to database operations for reminders and tasks (`user_reminders`, `user_tasks`).

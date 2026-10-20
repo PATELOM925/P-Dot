@@ -175,3 +175,75 @@ export const SEARCH_DOCUMENTS_TOOL: ToolDefinition = {
   },
 };
 
+/** Schema for validating save_memory arguments */
+export const saveMemoryArgsSchema = z.object({
+  content: z.string().trim().min(1).max(1000),
+  category: z.enum(["preference", "fact", "work", "personal", "general"]).default("general"),
+});
+
+export type SaveMemoryArgs = z.infer<typeof saveMemoryArgsSchema>;
+
+/**
+ * Tool definition for saving a new durable memory item.
+ * The model calls this when the user explicitly or implicitly shares a lasting personal fact,
+ * preference, constraint, or detail that should be remembered across conversations.
+ */
+export const SAVE_MEMORY_TOOL: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "save_memory",
+    description:
+      "Save a durable personal memory, preference, habit, or biographical fact about the user for future conversations. Call this whenever the user shares personal preferences ('I prefer dark roast', 'I am allergic to gluten'), work details ('I work on the billing team'), or asks you to remember something.",
+    parameters: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description:
+            "A concise, atomic factual statement summarizing what to remember (e.g. 'Prefers dark roast coffee with oat milk', 'Allergic to gluten', 'Works as a backend engineer').",
+        },
+        category: {
+          type: "string",
+          enum: ["preference", "fact", "work", "personal", "general"],
+          description: "Category of the memory. Defaults to 'general'.",
+        },
+      },
+      required: ["content"],
+    },
+  },
+};
+
+/** Schema for validating search_memories arguments */
+export const searchMemoriesArgsSchema = z.object({
+  query: z.string().trim().min(1).max(400),
+  category: z.enum(["preference", "fact", "work", "personal", "general"]).optional(),
+});
+
+export type SearchMemoriesArgs = z.infer<typeof searchMemoriesArgsSchema>;
+
+/**
+ * Tool definition for retrieving past memories and user preferences.
+ */
+export const SEARCH_MEMORIES_TOOL: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "search_memories",
+    description:
+      "Search the user's saved personal memories, preferences, work background, and habits using semantic vector search. Call this when you need context about user preferences, personal details, or past stated constraints.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Targeted search keywords or topic to search within user memories.",
+        },
+        category: {
+          type: "string",
+          enum: ["preference", "fact", "work", "personal", "general"],
+          description: "Optional filter by category.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+};

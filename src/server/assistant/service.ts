@@ -23,10 +23,13 @@ import type { WebSearchResult } from "@/server/providers/tavily/client";
 import { buildCompactedContextWindow, generateSmartTitle, titleFromMessage, type HistoryMessage } from "./context";
 import { publicSearchFailureMessage, toPublicCompletionError } from "./errors";
 import type { DocumentRepository } from "@/server/db/documents";
-import { formatDocumentMatches, buildPromptMessages, formatSearchResults } from "./prompt";
+import type { MemoryRepository, MemoryCategory } from "@/server/db/memories";
+import { formatDocumentMatches, buildPromptMessages, formatSearchResults, type MemoryExcerpt } from "./prompt";
 import {
   WEB_SEARCH_TOOL,
   SEARCH_DOCUMENTS_TOOL,
+  SAVE_MEMORY_TOOL,
+  SEARCH_MEMORIES_TOOL,
   PROPOSE_REMINDER_TOOL,
   PROPOSE_TASK_TOOL,
   type ToolDefinition,
@@ -50,7 +53,9 @@ export interface AssistantDeps {
   ) => AsyncIterable<CompletionChunk>;
   /** Document repository for personal RAG */
   documentRepo?: DocumentRepository;
-  /** Embedding generator for personal RAG */
+  /** Long-term user memories repository */
+  memoryRepo?: MemoryRepository;
+  /** Embedding generator for personal RAG & memories */
   embed?: (text: string, signal?: AbortSignal) => Promise<number[]>;
   now: () => Date;
   log: Logger;
@@ -220,17 +225,41 @@ export async function* streamChatTurn(
     }
   }
 
+  // 1.5. Pre-retrieve top relevant user memories (hybrid long-term memory)
+  let relevantMemories: MemoryExcerpt[] = [];
+  if (deps.memoryRepo && deps.embed) {
+    try {
+      const queryEmbedding = await deps.embed(turn.userMessage.content, signal);
+      const matches = await deps.memoryRepo.searchMemories(turn.userId, queryEmbedding, {
+        threshold: 0.25,
+        limit: 4,
+      });
+      relevantMemories = matches.map((m) => ({ category: m.category, content: m.content }));
+    } catch (error) {
+      if (signal.aborted) {
+        deps.log("info", "chat_client_aborted", { ...logBase, stage: "memory_preretrieval" });
+        return;
+      }
+      deps.log("warn", "memory_preretrieval_failed", {
+        ...logBase,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   // 2. Inference over a bounded context window with compaction support.
   const messages = buildPromptMessages({
     history: buildCompactedContextWindow(turn.history, HISTORY_CHAR_BUDGET),
     webSearch,
     results,
     now: deps.now(),
+    memories: relevantMemories,
   });
 
   const availableTools: ToolDefinition[] = [
     ...(deps.search ? [WEB_SEARCH_TOOL] : []),
     ...(deps.documentRepo && deps.embed ? [SEARCH_DOCUMENTS_TOOL] : []),
+    ...(deps.memoryRepo && deps.embed ? [SAVE_MEMORY_TOOL, SEARCH_MEMORIES_TOOL] : []),
     PROPOSE_REMINDER_TOOL,
     PROPOSE_TASK_TOOL,
   ];
@@ -290,12 +319,21 @@ export async function* streamChatTurn(
         break;
       }
 
-      // Check if model called web_search, search_documents, propose_reminder, or propose_task
+      // Check if model called web_search, search_documents, save_memory, search_memories, propose_reminder, or propose_task
       const searchCall = pendingToolCalls.find((call) => call.function.name === "web_search");
       const docCall = pendingToolCalls.find((call) => call.function.name === "search_documents");
+      const saveMemCall = pendingToolCalls.find((call) => call.function.name === "save_memory");
+      const searchMemCall = pendingToolCalls.find((call) => call.function.name === "search_memories");
       const reminderCall = pendingToolCalls.find((call) => call.function.name === "propose_reminder");
       const taskCall = pendingToolCalls.find((call) => call.function.name === "propose_task");
-      const activeCall = searchCall ?? docCall ?? reminderCall ?? taskCall ?? pendingToolCalls[0]!;
+      const activeCall =
+        searchCall ??
+        docCall ??
+        saveMemCall ??
+        searchMemCall ??
+        reminderCall ??
+        taskCall ??
+        pendingToolCalls[0]!;
 
       // Chain of Thought event: emit the model's reasoning or plan for this hop
       const rawThought = content.trim();
@@ -315,6 +353,15 @@ export async function* streamChatTurn(
             if (typeof p.query === "string" && p.query.trim()) q = p.query.trim();
           } catch {}
           planningThought = `Searching personal documents for "${q}" (Hop ${hop + 1} of ${MAX_TOOL_HOPS})...`;
+        } else if (saveMemCall) {
+          planningThought = `Saving memory to user profile (Hop ${hop + 1} of ${MAX_TOOL_HOPS})...`;
+        } else if (searchMemCall) {
+          let q = turn.userMessage.content;
+          try {
+            const p = JSON.parse(searchMemCall.function.arguments);
+            if (typeof p.query === "string" && p.query.trim()) q = p.query.trim();
+          } catch {}
+          planningThought = `Searching user memories for "${q}" (Hop ${hop + 1} of ${MAX_TOOL_HOPS})...`;
         } else if (reminderCall) {
           planningThought = `Preparing reminder proposal...`;
         } else if (taskCall) {
@@ -437,6 +484,107 @@ export async function* streamChatTurn(
             tool_call_id: docCall.id,
             name: "search_documents",
             content: "Document search unavailable. Please answer from other context or general knowledge.",
+          });
+        }
+      } else if (saveMemCall && deps.memoryRepo && deps.embed) {
+        let memContent = "";
+        let category: MemoryCategory = "general";
+        try {
+          const parsed = JSON.parse(saveMemCall.function.arguments);
+          if (typeof parsed.content === "string") memContent = parsed.content.trim();
+          if (parsed.category) category = parsed.category;
+        } catch {}
+
+        if (memContent) {
+          try {
+            const embedding = await deps.embed(memContent, signal);
+            await deps.memoryRepo.createMemory(turn.userId, {
+              content: memContent,
+              category,
+              embedding,
+            });
+            messages.push({
+              role: "assistant",
+              content: null,
+              tool_calls: [saveMemCall],
+            });
+            messages.push({
+              role: "tool",
+              tool_call_id: saveMemCall.id,
+              name: "save_memory",
+              content: `Memory saved: "${memContent}" [category: ${category}]. (Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. Confirm politely to the user that you will remember this.)`,
+            });
+          } catch (error) {
+            if (signal.aborted) {
+              deps.log("info", "chat_client_aborted", { ...logBase, stage: "save_memory" });
+              return;
+            }
+            deps.log("warn", "save_memory_failed", {
+              ...logBase,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            messages.push({
+              role: "assistant",
+              content: null,
+              tool_calls: [saveMemCall],
+            });
+            messages.push({
+              role: "tool",
+              tool_call_id: saveMemCall.id,
+              name: "save_memory",
+              content: "Memory storage temporarily unavailable.",
+            });
+          }
+        }
+      } else if (searchMemCall && deps.memoryRepo && deps.embed) {
+        let query = turn.userMessage.content;
+        let category: MemoryCategory | undefined;
+        try {
+          const parsed = JSON.parse(searchMemCall.function.arguments);
+          if (typeof parsed.query === "string" && parsed.query.trim()) query = parsed.query.trim();
+          if (parsed.category) category = parsed.category;
+        } catch {}
+
+        try {
+          const queryEmbedding = await deps.embed(query, signal);
+          const matches = await deps.memoryRepo.searchMemories(turn.userId, queryEmbedding, {
+            threshold: 0.2,
+            limit: 5,
+            category,
+          });
+
+          messages.push({
+            role: "assistant",
+            content: null,
+            tool_calls: [searchMemCall],
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: searchMemCall.id,
+            name: "search_memories",
+            content: matches.length > 0
+              ? `<user_memories>\n${matches.map((m) => `- [${m.category}] ${m.content}`).join("\n")}\n</user_memories>\n\n(Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}. You may now answer directly using these memories.)`
+              : `No matching memories found for "${query}". (Attempts remaining: ${remainingAttempts - 1} of ${MAX_TOOL_HOPS}.)`,
+          });
+        } catch (error) {
+          if (signal.aborted) {
+            deps.log("info", "chat_client_aborted", { ...logBase, stage: "search_memories" });
+            return;
+          }
+          deps.log("warn", "search_memories_failed", {
+            ...logBase,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          messages.push({
+            role: "assistant",
+            content: null,
+            tool_calls: [searchMemCall],
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: searchMemCall.id,
+            name: "search_memories",
+            content: "Memory search temporarily unavailable.",
           });
         }
       } else if (reminderCall) {

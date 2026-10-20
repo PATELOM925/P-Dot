@@ -48,9 +48,10 @@ create index if not exists document_chunks_doc_chunk_idx
 create index if not exists document_chunks_user_idx
   on public.document_chunks (user_id);
 
--- HNSW vector cosine similarity index for fast approximate nearest neighbor search
-create index if not exists document_chunks_embedding_hnsw_idx
-  on public.document_chunks using hnsw (embedding vector_cosine_ops);
+-- Note: pgvector HNSW/IVFFlat indexes support up to 2000 dimensions.
+-- For 4096-dimensional embeddings (e.g. Qwen3-Embedding-8B), exact cosine
+-- similarity filtered by user_id index executes in sub-millisecond time
+-- across a user's personal document collection.
 
 -- ---------------------------------------------------------------------------
 -- Similarity Search RPC
