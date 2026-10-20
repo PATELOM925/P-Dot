@@ -192,6 +192,9 @@ export function ChatWorkspace({ initialConversationId }: { initialConversationId
             }));
             setStatus(event.status === "used" ? "Web search complete. P-Dot is replying…" : (event.message ?? ""));
             break;
+          case "action":
+            setStatus(`Proposed ${event.action.kind}: "${event.action.title}"`);
+            break;
           case "delta":
             setStreaming((current) => ({ text: (current?.text ?? "") + event.text, search: current?.search ?? null }));
             break;

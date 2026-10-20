@@ -10,12 +10,29 @@ export interface SourceRef {
   url: string;
 }
 
+export type ProposedAction =
+  | {
+      id: string;
+      kind: "reminder";
+      title: string;
+      dueAt: string;
+      notes?: string;
+    }
+  | {
+      id: string;
+      kind: "task";
+      title: string;
+      priority?: "low" | "medium" | "high";
+      dueDate?: string;
+    };
+
 export interface MessageDTO {
   id: string;
   role: MessageRole;
   content: string;
   webSearch: WebSearchStatus;
   sources: SourceRef[];
+  actions?: ProposedAction[];
   createdAt: string;
 }
 
@@ -77,6 +94,7 @@ export type ChatStreamEvent =
       sources: SourceRef[];
       message?: string;
     }
+  | { type: "action"; action: ProposedAction }
   | { type: "delta"; text: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }
   | { type: "error"; code: ApiErrorCode; message: string; retryable: boolean };

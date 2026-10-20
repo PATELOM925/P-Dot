@@ -10,6 +10,7 @@ import type {
   ChatStreamEvent,
   ConversationSummary,
   MessageDTO,
+  ProposedAction,
   SourceRef,
   WebSearchStatus,
 } from "@/types/api";
@@ -22,7 +23,13 @@ import type { WebSearchResult } from "@/server/providers/tavily/client";
 import { buildCompactedContextWindow, generateSmartTitle, titleFromMessage, type HistoryMessage } from "./context";
 import { publicSearchFailureMessage, toPublicCompletionError } from "./errors";
 import { buildPromptMessages, formatSearchResults } from "./prompt";
-import { WEB_SEARCH_TOOL, type ToolDefinition, type ToolCall } from "./tools";
+import {
+  WEB_SEARCH_TOOL,
+  PROPOSE_REMINDER_TOOL,
+  PROPOSE_TASK_TOOL,
+  type ToolDefinition,
+  type ToolCall,
+} from "./tools";
 
 export interface CompleteOptions {
   tools?: ToolDefinition[];
@@ -213,46 +220,74 @@ export async function* streamChatTurn(
     now: deps.now(),
   });
 
-  const tools = deps.search && webSearch === "off" ? [WEB_SEARCH_TOOL] : undefined;
-  const toolChoice = tools ? "auto" : undefined;
+  const availableTools: ToolDefinition[] = [
+    ...(deps.search && webSearch === "off" ? [WEB_SEARCH_TOOL] : []),
+    PROPOSE_REMINDER_TOOL,
+    PROPOSE_TASK_TOOL,
+  ];
 
   let content = "";
   let truncated = false;
   let finishReason: string | null = null;
   let usage: TokenUsage | null = null;
-  let pendingToolCalls: ToolCall[] = [];
+  const proposedActions: ProposedAction[] = [];
+  const MAX_TOOL_HOPS = 2; // Strict budget of up to 2 tool execution attempts per turn
+  let hop = 0;
 
   try {
-    for await (const chunk of deps.complete(messages, signal, { tools, toolChoice })) {
-      if (chunk.type === "finish") {
-        finishReason = chunk.finishReason;
-        usage = chunk.usage;
-        continue;
-      }
-      if (chunk.type === "tool_calls") {
-        pendingToolCalls = chunk.calls;
-        continue;
+    while (hop < MAX_TOOL_HOPS) {
+      let pendingToolCalls: ToolCall[] = [];
+      const remainingAttempts = MAX_TOOL_HOPS - hop;
+      // Provide tools while attempts remain; on the final hop, disable tools so the model synthesizes text
+      const currentTools = hop < MAX_TOOL_HOPS - 1 && availableTools.length > 0 ? availableTools : undefined;
+      const currentToolChoice = currentTools ? "auto" : undefined;
+
+      content = "";
+      for await (const chunk of deps.complete(messages, signal, { tools: currentTools, toolChoice: currentToolChoice })) {
+        if (chunk.type === "finish") {
+          finishReason = chunk.finishReason;
+          if (chunk.usage && usage) {
+            usage = {
+              promptTokens: usage.promptTokens + chunk.usage.promptTokens,
+              completionTokens: usage.completionTokens + chunk.usage.completionTokens,
+            };
+          } else if (chunk.usage) {
+            usage = chunk.usage;
+          }
+          continue;
+        }
+        if (chunk.type === "tool_calls") {
+          pendingToolCalls = chunk.calls;
+          continue;
+        }
+
+        if (chunk.type === "text") {
+          const normalized = normalizeAssistantText(chunk.text);
+          const room = MAX_ASSISTANT_CHARS - content.length;
+          const text = normalized.slice(0, room);
+          if (text) {
+            content += text;
+            yield { type: "delta", text };
+          }
+          if (content.length >= MAX_ASSISTANT_CHARS) {
+            truncated = true;
+            break;
+          }
+        }
       }
 
-      if (chunk.type === "text") {
-        const normalized = normalizeAssistantText(chunk.text);
-        const room = MAX_ASSISTANT_CHARS - content.length;
-        const text = normalized.slice(0, room);
-        if (text) {
-          content += text;
-          yield { type: "delta", text };
-        }
-        if (content.length >= MAX_ASSISTANT_CHARS) {
-          truncated = true;
-          break;
-        }
+      if (pendingToolCalls.length === 0) {
+        // Model provided its direct text reply without calling tools
+        break;
       }
-    }
 
-    // If the model autonomously decided to invoke a tool (e.g. web_search):
-    if (pendingToolCalls.length > 0 && deps.search) {
+      // Check if model called web_search, propose_reminder, or propose_task
       const searchCall = pendingToolCalls.find((call) => call.function.name === "web_search");
-      if (searchCall) {
+      const reminderCall = pendingToolCalls.find((call) => call.function.name === "propose_reminder");
+      const taskCall = pendingToolCalls.find((call) => call.function.name === "propose_task");
+      const activeCall = searchCall ?? reminderCall ?? taskCall ?? pendingToolCalls[0]!;
+
+      if (searchCall && deps.search) {
         let query = turn.userMessage.content;
         try {
           const parsed = JSON.parse(searchCall.function.arguments);
@@ -260,11 +295,12 @@ export async function* streamChatTurn(
             query = parsed.query.trim();
           }
         } catch {
-          // Fallback to original user query if parsing fails
+          // Fallback to original user query
         }
 
         try {
-          results = await deps.search(query, signal);
+          const newResults = await deps.search(query, signal);
+          results = [...results, ...newResults];
           webSearch = results.length > 0 ? "used" : "no_results";
           yield {
             type: "search",
@@ -280,16 +316,10 @@ export async function* streamChatTurn(
             return;
           }
           webSearch = "failed";
-          results = [];
-          deps.log("warn", "search_failed", {
-            ...logBase,
-            kind: error instanceof ProviderError ? error.kind : "unknown",
-            status: error instanceof ProviderError ? error.status : undefined,
-          });
           yield { type: "search", status: "failed", sources: [], message: publicSearchFailureMessage(error) };
         }
 
-        // Add assistant tool invocation and tool response to context
+        // Add assistant tool invocation and tool response to context with remaining attempt guidance
         messages.push({
           role: "assistant",
           content: null,
@@ -299,74 +329,124 @@ export async function* streamChatTurn(
           role: "tool",
           tool_call_id: searchCall.id,
           name: "web_search",
-          content: results.length > 0 ? formatSearchResults(results) : "No web search results found.",
+          content: results.length > 0
+            ? `${formatSearchResults(results)}\n\n(Search attempts remaining: ${remainingAttempts - 1}. If you have sufficient information, answer now with [n] citations.)`
+            : "No web search results found.",
         });
+      } else if (reminderCall) {
+        let title = "Reminder";
+        let dueAt = "tomorrow";
+        let notes: string | undefined;
+        try {
+          const parsed = JSON.parse(reminderCall.function.arguments);
+          if (parsed.title) title = parsed.title;
+          if (parsed.due_at) dueAt = parsed.due_at;
+          if (parsed.notes) notes = parsed.notes;
+        } catch {}
 
-        // Second completion pass: model streams final grounded reply
-        content = "";
-        for await (const chunk of deps.complete(messages, signal)) {
-          if (chunk.type === "finish") {
-            finishReason = chunk.finishReason;
-            if (chunk.usage && usage) {
-              usage = {
-                promptTokens: usage.promptTokens + chunk.usage.promptTokens,
-                completionTokens: usage.completionTokens + chunk.usage.completionTokens,
-              };
-            } else if (chunk.usage) {
-              usage = chunk.usage;
-            }
-            continue;
+        const action: ProposedAction = {
+          id: `act_${Math.random().toString(36).slice(2, 9)}`,
+          kind: "reminder",
+          title,
+          dueAt,
+          notes,
+        };
+        proposedActions.push(action);
+        yield { type: "action", action };
+
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [reminderCall],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: reminderCall.id,
+          name: "propose_reminder",
+          content: `Reminder "${title}" scheduled for "${dueAt}" has been presented as an interactive card for the user's approval. Confirm this politely to the user.`,
+        });
+      } else if (taskCall) {
+        let title = "Task";
+        let priority: "low" | "medium" | "high" = "medium";
+        let dueDate: string | undefined;
+        try {
+          const parsed = JSON.parse(taskCall.function.arguments);
+          if (parsed.title) title = parsed.title;
+          if (parsed.priority) priority = parsed.priority;
+          if (parsed.due_date) dueDate = parsed.due_date;
+        } catch {}
+
+        const action: ProposedAction = {
+          id: `act_${Math.random().toString(36).slice(2, 9)}`,
+          kind: "task",
+          title,
+          priority,
+          dueDate,
+        };
+        proposedActions.push(action);
+        yield { type: "action", action };
+
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [taskCall],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: taskCall.id,
+          name: "propose_task",
+          content: `Task "${title}" (priority: ${priority}) has been presented as an interactive card for the user's approval. Confirm this politely to the user.`,
+        });
+      } else {
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [activeCall],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: activeCall.id,
+          name: activeCall.function.name,
+          content: "Tool completed.",
+        });
+      }
+
+      hop++;
+    }
+
+    // Fallback synthesis pass if after all hops content is still empty:
+    if (content.trim().length === 0) {
+      const finalMessages: ChatMessage[] = [
+        ...messages,
+        {
+          role: "user",
+          content: "All tool attempts have concluded. Please provide your direct final response now.",
+        },
+      ];
+      for await (const chunk of deps.complete(finalMessages, signal)) {
+        if (chunk.type === "finish") {
+          finishReason = chunk.finishReason;
+          if (chunk.usage && usage) {
+            usage = {
+              promptTokens: usage.promptTokens + chunk.usage.promptTokens,
+              completionTokens: usage.completionTokens + chunk.usage.completionTokens,
+            };
+          } else if (chunk.usage) {
+            usage = chunk.usage;
           }
-          if (chunk.type === "text") {
-            const normalized = normalizeAssistantText(chunk.text);
-            const room = MAX_ASSISTANT_CHARS - content.length;
-            const text = normalized.slice(0, room);
-            if (text) {
-              content += text;
-              yield { type: "delta", text };
-            }
-            if (content.length >= MAX_ASSISTANT_CHARS) {
-              truncated = true;
-              break;
-            }
-          }
+          continue;
         }
-
-        // Fallback synthesis pass if the model attempted another tool call or returned empty text
-        if (content.trim().length === 0) {
-          const finalMessages: ChatMessage[] = [
-            ...messages,
-            {
-              role: "user",
-              content: "Based on the retrieved sources above, provide the direct answer now with citations.",
-            },
-          ];
-          for await (const chunk of deps.complete(finalMessages, signal)) {
-            if (chunk.type === "finish") {
-              finishReason = chunk.finishReason;
-              if (chunk.usage && usage) {
-                usage = {
-                  promptTokens: usage.promptTokens + chunk.usage.promptTokens,
-                  completionTokens: usage.completionTokens + chunk.usage.completionTokens,
-                };
-              } else if (chunk.usage) {
-                usage = chunk.usage;
-              }
-              continue;
-            }
-            if (chunk.type === "text") {
-              const normalized = normalizeAssistantText(chunk.text);
-              const room = MAX_ASSISTANT_CHARS - content.length;
-              const text = normalized.slice(0, room);
-              if (text) {
-                content += text;
-                yield { type: "delta", text };
-              }
-              if (content.length >= MAX_ASSISTANT_CHARS) {
-                truncated = true;
-                break;
-              }
-            }
+        if (chunk.type === "text") {
+          const normalized = normalizeAssistantText(chunk.text);
+          const room = MAX_ASSISTANT_CHARS - content.length;
+          const text = normalized.slice(0, room);
+          if (text) {
+            content += text;
+            yield { type: "delta", text };
+          }
+          if (content.length >= MAX_ASSISTANT_CHARS) {
+            truncated = true;
+            break;
           }
         }
       }
@@ -412,6 +492,9 @@ export async function* streamChatTurn(
       webSearch,
       sources: webSearch === "used" ? toSourceRefs(results) : [],
     });
+    if (proposedActions.length > 0) {
+      saved = { ...saved, actions: proposedActions };
+    }
   } catch {
     deps.log("error", "assistant_message_save_failed", logBase);
     yield {

@@ -68,28 +68,15 @@ This document aligns Person A (Frontend), Person B (Backend/Database/Infra), and
   - Audited pricing: $0.06 / $0.24 per 1M tokens (~189k turns for $25 budget).
   - Confirmed tool-calling support and EU zero-training data retention.
   - Documented in `docs/decisions/0005-nebius-model-selection-and-audit.md`.
-- [x] **AI-04 (Part 1): Autonomous Web Search Tool Calling**
-  - Created tool schema in `src/server/assistant/tools.ts`.
-  - Implemented streaming tool chunk parser in `src/server/providers/nebius/client.ts`.
-  - Implemented model-driven autonomous tool dispatch in `src/server/assistant/service.ts`.
-  - Verified with 114 unit tests passing.
-
-- [x] **AI-02: 50-Prompt Evaluation Test Suite**
-  - Built automated eval runner in `tests/evals/runner.ts` covering 50 real-world benchmark cases.
-  - Validated tool precision, citation grounding, adversarial prompt injection defense, multi-turn contexts, and cost budgeting.
-  - Achieved $0.009 cost for 50 queries with baseline report in `tests/evals/reports/latest-eval-report.md`.
-- [x] **AI-03: Multi-Model Tiering, Dynamic Fallbacks & Smart Context Compaction**
-  - Configured secondary fallback model (`NEBIUS_FALLBACK_MODEL`, default `Qwen/Qwen3-30B-A3B-Instruct-2507`).
-  - Implemented pre-stream failover in `src/server/assistant/deps.ts` if primary model returns 503, 429, or network error.
-  - Tuned `BASE_SYSTEM_PROMPT` and `formatSearchResults` in `src/server/assistant/prompt.ts` with explicit `[1]` citation rules and conciseness guidelines.
-  - Implemented `buildCompactedContextWindow` and `generateRollingSummary` in `src/server/assistant/context.ts` to preserve context across long chats.
-  - Implemented `generateSmartTitle` and `updateConversationTitle` in `src/server/db/conversations.ts` for clean 3-5 word topic titles.
+- [x] **AI-04: Multi-hop Autonomous Tool Calling & Action Proposal System**
+  - Implemented multi-hop tool execution loop with strict attempt budgeting (up to 2 attempts per turn).
+  - Explicit attempt instructions provided to model in system prompt and tool feedback context.
+  - Implemented `propose_reminder` and `propose_task` tools emitting `{ type: "action", action }` events for interactive frontend cards (FE-04).
+  - Normalization of Unicode non-breaking spaces and Asian citation brackets `【n】` to standard `[n]`.
+  - Added unit test suite in `tests/unit/assistant-tools.test.ts` (129/129 unit tests passing).
 
 ### Upcoming Steps:
-- [ ] **AI-04 (Part 2): Multi-Step Tool Loop & Action Proposing Tools**
-  - Upgrade tool loop from 1-hop to multi-hop (up to 3 iterations).
-  - Add `propose_action` tool (`create_reminder`, `add_task`) so the model can trigger frontend action cards.
-- [ ] **AI-05: Vector RAG (Document Search)**
+- [ ] **AI-05: Vector RAG (Document Search & Ingestion)**
   - Integrate Nebius `Qwen/Qwen3-Embedding-8B` ($0.01 / 1M tokens).
   - Implement document chunking (recursive character splitter, 500-token chunks with 50-token overlap).
   - Implement vector similarity query against Supabase `document_chunks`.
