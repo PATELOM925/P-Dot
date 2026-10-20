@@ -14,10 +14,17 @@ export function migrationFiles(): string[] {
 
 /**
  * Stand-ins for what a Supabase project has before the first migration runs.
- * The default privileges are the legacy Supabase set, copied from
- * github.com/supabase/postgres migrations/db/init-scripts/00000000000000-initial-schema.sql.
- * This is the most permissive case: every grant a migration does not revoke stays open.
+ * Two modes for the default privileges:
+ * - "legacy": the older Supabase set, copied from github.com/supabase/postgres
+ *   migrations/db/init-scripts/00000000000000-initial-schema.sql. This is the
+ *   most permissive case: every grant a migration does not revoke stays open.
+ * - "none": no automatic grants on new tables, functions or sequences, as in a
+ *   new project after Supabase stopped exposing new tables automatically
+ *   (https://supabase.com/changelog/45329). Only explicit grants work. Postgres
+ *   still gives EXECUTE on a new function to PUBLIC unless a migration revokes it.
  */
+export type DefaultGrants = "legacy" | "none";
+
 const SUPABASE_BOOTSTRAP = `
   set timezone to 'UTC';
   create role anon nologin noinherit;
@@ -37,6 +44,9 @@ const SUPABASE_BOOTSTRAP = `
 
   grant usage on schema public to anon, authenticated, service_role;
   grant usage on schema extensions to anon, authenticated, service_role;
+`;
+
+const LEGACY_DEFAULT_GRANTS = `
   alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
   alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
   alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
@@ -45,6 +55,7 @@ const SUPABASE_BOOTSTRAP = `
 export type Actor = { role: "anon" } | { role: "authenticated"; userId: string };
 
 export interface SqlGate {
+  readonly defaults: DefaultGrants;
   /** Runs as the migration owner (superuser here). Bypasses RLS: use it only to seed and to check. */
   admin<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<Results<T>>;
   /** Runs one statement in its own transaction as the actor, the way PostgREST does for each request. */
@@ -64,11 +75,20 @@ async function enterRole(tx: Transaction, actor: Actor): Promise<void> {
   await tx.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify(claims)]);
 }
 
-/** Starts an in-memory Postgres, applies the Supabase stand-ins, then every migration unchanged. */
-export async function startSqlGate(): Promise<SqlGate> {
+/**
+ * Starts an in-memory Postgres, applies the Supabase stand-ins, then every
+ * migration unchanged. `beforeMigration` runs as the owner just before the
+ * named file, to seed rows that an older schema allowed.
+ */
+export async function startSqlGate(
+  options: { defaults?: DefaultGrants; beforeMigration?: { file: string; sql: string } } = {},
+): Promise<SqlGate> {
+  const defaults = options.defaults ?? "legacy";
   const pg = await PGlite.create({ extensions: { vector } });
   await pg.exec(SUPABASE_BOOTSTRAP);
+  if (defaults === "legacy") await pg.exec(LEGACY_DEFAULT_GRANTS);
   for (const file of migrationFiles()) {
+    if (options.beforeMigration?.file === file) await pg.exec(options.beforeMigration.sql);
     try {
       await pg.exec(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
     } catch (error) {
@@ -83,6 +103,7 @@ export async function startSqlGate(): Promise<SqlGate> {
     });
 
   return {
+    defaults,
     admin: (sql, params) => pg.query(sql, params),
     as: (actor, sql, params) => transactionAs(actor, (tx) => tx.query(sql, params)),
     transactionAs,
