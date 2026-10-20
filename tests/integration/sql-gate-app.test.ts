@@ -14,13 +14,16 @@ import { errorCode, startSqlGate, user, type SqlGate } from "../support/sql-gate
 
 let gate: SqlGate;
 
+/** Starting PGlite and applying every migration can pass the default 10 s hook limit when other test files run in parallel. */
+const SQL_GATE_HOOK_TIMEOUT_MS = 60_000;
+
 beforeAll(async () => {
   gate = await startSqlGate({ defaults: "none" });
-});
+}, SQL_GATE_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
   await gate?.close();
-});
+}, SQL_GATE_HOOK_TIMEOUT_MS);
 
 describe("repositories against the real SQL", () => {
   it("decide() maps every outcome of the function", async () => {
@@ -115,11 +118,11 @@ describe("repositories on a database that has rows the older schema allowed", ()
         `,
       },
     });
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await old?.close();
-  });
+  }, SQL_GATE_HOOK_TIMEOUT_MS);
 
   it("rejects an older proposal whose payload names another kind, and answers with its ID and status", async () => {
     const repo = createActionProposalRepository(sqlGateClient(old, OWNER));
