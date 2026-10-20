@@ -71,7 +71,7 @@ returns table (
 )
 language plpgsql
 security definer
-set search_path = ''
+set search_path = public, pg_temp
 as $$
 declare
   v_user uuid := auth.uid();
