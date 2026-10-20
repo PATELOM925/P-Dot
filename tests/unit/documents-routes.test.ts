@@ -83,6 +83,19 @@ class FakeDocuments implements DocumentRepository {
     if (doc) doc.dto.status = status;
   }
 
+  /** Same rules as the real repository: chunks with embeddings make it ready, otherwise failed. */
+  async settleStaleDocuments(userId: string, createdBefore: Date, limit: number): Promise<number> {
+    const stale = this.stored
+      .filter((d) => d.userId === userId && d.dto.status === "processing")
+      .filter((d) => new Date(d.dto.createdAt) < createdBefore)
+      .slice(0, limit);
+    for (const doc of stale) {
+      const complete = doc.chunks.length > 0 && doc.chunks.every((c) => c.embedding.length > 0);
+      doc.dto.status = complete ? "ready" : "failed";
+    }
+    return stale.length;
+  }
+
   async deleteDocument(userId: string, documentId: string): Promise<boolean> {
     const index = this.stored.findIndex((d) => d.userId === userId && d.dto.id === documentId);
     if (index < 0) return false;
@@ -364,5 +377,86 @@ describe("DELETE /api/documents/:id", () => {
     );
     expect(response.status).toBe(403);
     expect(docs.stored).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recovery of documents left "processing"
+// ---------------------------------------------------------------------------
+
+describe("documents left processing", () => {
+  const ELEVEN_MINUTES_MS = 11 * 60 * 1000;
+  const listWork = () => documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"));
+  const makeOld = (doc: StoredDocument) => {
+    doc.dto.createdAt = new Date(Date.now() - ELEVEN_MINUTES_MS).toISOString();
+  };
+
+  it("logs a failed fallback write, then a later list settles the row as ready with no embedding call", async () => {
+    signInAs(ALICE);
+    const setStatus = vi.spyOn(docs, "setStatus").mockRejectedValue(new Error("database unavailable"));
+
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody()));
+    expect(response.status).toBe(500);
+    const stored = docs.stored[0]!;
+    expect(stored.chunks.length).toBeGreaterThan(1);
+    expect(stored.dto.status).toBe("processing");
+
+    const warnings = vi.mocked(console.warn).mock.calls.map((call) => JSON.parse(String(call[0])));
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ event: "document_status_write_failed", documentId: stored.dto.id }),
+    );
+    expect(allLogText(consoleSpies)).not.toContain("SECRET-MARKER");
+    expect(allLogText(consoleSpies)).not.toContain("Team handbook");
+
+    // The database is back and the upload is now stale.
+    setStatus.mockRestore();
+    makeOld(stored);
+    const embedCalls = embedder.embed.mock.calls.length;
+
+    const list = await listWork();
+    expect(list.status).toBe(200);
+    expect((await list.json()).documents[0]).toMatchObject({ id: stored.dto.id, status: "ready" });
+    expect(stored.dto.status).toBe("ready");
+    expect(embedder.embed.mock.calls.length).toBe(embedCalls);
+  });
+
+  it("leaves a fresh processing document alone", async () => {
+    signInAs(ALICE);
+    const fresh = await docs.createDocument(ALICE, { mode: "work", title: "Uploading", mediaType: "text/plain", charCount: 5 });
+
+    const list = await listWork();
+    expect((await list.json()).documents[0]).toMatchObject({ id: fresh.id, status: "processing" });
+    expect(docs.stored[0]!.dto.status).toBe("processing");
+  });
+
+  it("marks a stale processing document without chunks as failed", async () => {
+    signInAs(ALICE);
+    const created = await docs.createDocument(ALICE, { mode: "work", title: "Stopped", mediaType: "text/plain", charCount: 5 });
+    makeOld(docs.stored[0]!);
+
+    const list = await listWork();
+    expect((await list.json()).documents[0]).toMatchObject({ id: created.id, status: "failed" });
+    expect(embedder.embed).not.toHaveBeenCalled();
+  });
+
+  it("does not settle another user's stale document", async () => {
+    await docs.createDocument(BOB, { mode: "work", title: "Bob's", mediaType: "text/plain", charCount: 5 });
+    makeOld(docs.stored[0]!);
+    signInAs(ALICE);
+
+    expect((await listWork()).status).toBe(200);
+    expect(docs.stored[0]!.dto.status).toBe("processing");
+  });
+
+  it("still lists the documents when settling fails, and logs a warning", async () => {
+    signInAs(ALICE);
+    await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 5 });
+    vi.spyOn(docs, "settleStaleDocuments").mockRejectedValue(new Error("database unavailable"));
+
+    const list = await listWork();
+    expect(list.status).toBe(200);
+    expect((await list.json()).documents).toHaveLength(1);
+    const events = vi.mocked(console.warn).mock.calls.map((call) => JSON.parse(String(call[0])).event);
+    expect(events).toContain("documents_settle_failed");
   });
 });

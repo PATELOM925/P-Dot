@@ -1,4 +1,9 @@
-import { DOCUMENT_LIST_LIMIT, MAX_DOCUMENT_BODY_BYTES } from "@/lib/limits";
+import {
+  DOCUMENT_LIST_LIMIT,
+  DOCUMENT_PROCESSING_STALE_MS,
+  MAX_DOCUMENT_BODY_BYTES,
+  STALE_DOCUMENT_SETTLE_LIMIT,
+} from "@/lib/limits";
 import { createDocumentSchema, modeSchema } from "@/lib/schemas";
 import { budgetRefusal } from "@/server/assistant/spend";
 import { chunkText } from "@/server/assistant/chunk";
@@ -9,15 +14,26 @@ import { createDocumentRepository } from "@/server/db/documents";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
+import { logEvent } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
 
-/** GET /api/documents?mode=personal|work. Lists the signed-in user's documents for one mode. */
+/**
+ * GET /api/documents?mode=personal|work. Lists the signed-in user's documents for one mode.
+ * First it settles the user's stale "processing" documents (an upload that stopped
+ * before its final status write). If that fails, the list is still returned.
+ */
 export async function GET(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "documents.list" }, async ({ auth, requestId }) => {
     const mode = modeSchema.safeParse(new URL(request.url).searchParams.get("mode"));
     if (!mode.success) return errorResponse(400, "invalid_request", "Choose a mode: personal or work.", requestId);
 
-    const documents = await createDocumentRepository(auth.supabase).listDocuments(
+    const repository = createDocumentRepository(auth.supabase);
+    const staleBefore = new Date(Date.now() - DOCUMENT_PROCESSING_STALE_MS);
+    await repository.settleStaleDocuments(auth.userId, staleBefore, STALE_DOCUMENT_SETTLE_LIMIT).catch(() => {
+      logEvent("warn", "documents_settle_failed", { requestId, route: "documents.list" });
+    });
+
+    const documents = await repository.listDocuments(
       auth.userId,
       mode.data,
       DOCUMENT_LIST_LIMIT,
@@ -58,8 +74,15 @@ export async function POST(request: Request): Promise<Response> {
       );
       await documents.setStatus(auth.userId, document.id, "ready");
     } catch (error) {
-      // Mark the document failed. A failure while marking is ignored, so the first error still reaches the user.
-      await documents.setStatus(auth.userId, document.id, "failed").catch(() => {});
+      // Mark the document failed. If that write also fails, log it and keep the first error for the user.
+      // The document then stays "processing"; a later GET /api/documents settles it.
+      await documents.setStatus(auth.userId, document.id, "failed").catch(() => {
+        logEvent("warn", "document_status_write_failed", {
+          requestId,
+          route: "documents.create",
+          documentId: document.id,
+        });
+      });
 
       if (error instanceof EmbeddingBudgetError) {
         const refusal = budgetRefusal(error.limit, new Date());

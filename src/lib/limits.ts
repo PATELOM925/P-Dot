@@ -48,6 +48,14 @@ export const DOCUMENT_LIST_LIMIT = 100;
 export const DOCUMENT_CHUNK_CHARS = 2_000;
 export const DOCUMENT_CHUNK_OVERLAP_CHARS = 200;
 export const MAX_DOCUMENT_CHUNKS = 100;
+/**
+ * A document still "processing" after this time is stale: the upload stopped
+ * before its final status write. An upload takes at most a few minutes
+ * (4 embedding batches with a 20 s timeout each).
+ */
+export const DOCUMENT_PROCESSING_STALE_MS = 10 * 60 * 1000;
+/** Most stale documents one list request settles. Later requests settle the rest. */
+export const STALE_DOCUMENT_SETTLE_LIMIT = 5;
 export const MAX_REMINDER_TITLE_CHARS = 200;
 export const REMINDER_LIST_LIMIT = 200;
 export const MAX_ACTION_SUMMARY_CHARS = 300;
