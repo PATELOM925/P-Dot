@@ -126,4 +126,51 @@ describe("the chat screen and the route, when a response is lost while P-Dot sti
     // The same words sent later are a new message with a new key.
     expect(sendKey.headers({ conversationId }, "Plan my week")[REQUEST_KEY_HEADER]).not.toBe(firstKey);
   });
+
+  it("two sends with one key to a new conversation: the late one gets answered, not conflict, and the draft is not sent twice", async () => {
+    const repo = new MemoryRepository();
+    vi.mocked(createConversationRepository).mockReturnValue(repo);
+    const quota = new FakeQuota();
+    const spend = new FakeSpend();
+    const fake = fakeDeps({ repo, quota, spend });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+
+    // B's first key lookup misses, then B waits there while A saves everything.
+    const barrier = createBarrier();
+    const lookup = repo.findMessageByClientRequest.bind(repo);
+    let held = false;
+    repo.findMessageByClientRequest = async (userId, key) => {
+      const found = await lookup(userId, key);
+      if (!held) {
+        held = true;
+        await barrier.wait();
+      }
+      return found;
+    };
+
+    const sendKey = new ChatSendKey();
+    let draft = "Plan my week";
+    const body = { action: "send" as const, message: draft, webSearch: false, mode: "personal" as const };
+    const headers = sendKey.headers({ mode: "personal" }, draft);
+    const late = postChat(body, new AbortController().signal, headers).catch((error: unknown) => error);
+    await barrier.reached;
+
+    const first = await collect(readChatStream(await postChat(body, new AbortController().signal, headers)));
+    expect(first.at(-1)?.type).toBe("done");
+    barrier.release();
+
+    const refused = await late;
+    expect(refused).toBeInstanceOf(ApiError);
+    expect(sendKey.refused(refused)).toBe("answered");
+    const detail = await fetchConversation((refused as ApiError).conversationId!);
+    if (sendKey.reconcile(detail.messages, draft)) draft = "";
+    expect(draft).toBe("");
+    await Promise.all(fake.waited);
+
+    expect(repo.conversations).toHaveLength(1);
+    expect(repo.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(fake.calls).toHaveLength(1);
+    expect(quota.calls).toBe(1);
+    expect(spend.reservations.every((r) => r.settled !== null)).toBe(true);
+  });
 });

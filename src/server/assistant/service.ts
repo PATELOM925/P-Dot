@@ -175,7 +175,22 @@ export async function prepareChatTurn(
       id: input.requestKey,
       hash: await requestFingerprint(["chat.send.v1", target, request.message]),
     };
-    const saved = await deps.repo.findMessageByClientRequest(userId, clientRequest.id);
+    let saved = await deps.repo.findMessageByClientRequest(userId, clientRequest.id);
+    if (!saved && !existing) {
+      const created = await deps.repo.findConversationByClientRequest(userId, clientRequest.id);
+      if (created) {
+        if (created.hash !== clientRequest.hash) return keyMismatch;
+        const messages = await deps.repo.listRecentMessages(userId, created.conversation.id, HISTORY_MESSAGE_LIMIT);
+        if (messages.length === 0) {
+          existing = created.conversation;
+          recent = messages;
+        } else {
+          // Another request with this key can have saved its message since the first lookup.
+          saved = await deps.repo.findMessageByClientRequest(userId, clientRequest.id);
+          if (!saved) return keyMismatch;
+        }
+      }
+    }
     if (saved) {
       if (saved.hash !== clientRequest.hash) return keyMismatch;
       existing = await deps.repo.getConversation(userId, saved.conversationId);
@@ -183,14 +198,6 @@ export async function prepareChatTurn(
       recent = await deps.repo.listRecentMessages(userId, existing.id, HISTORY_MESSAGE_LIMIT);
       if (recent.at(-1)?.id !== saved.message.id) return alreadySent(existing.id);
       answering = saved.message;
-    } else if (!existing) {
-      const created = await deps.repo.findConversationByClientRequest(userId, clientRequest.id);
-      if (created) {
-        if (created.hash !== clientRequest.hash) return keyMismatch;
-        recent = await deps.repo.listRecentMessages(userId, created.conversation.id, HISTORY_MESSAGE_LIMIT);
-        if (recent.length > 0) return keyMismatch;
-        existing = created.conversation;
-      }
     }
   }
 
