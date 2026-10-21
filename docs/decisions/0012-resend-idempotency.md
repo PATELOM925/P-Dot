@@ -120,7 +120,7 @@ The 409 answers have three codes, so the screen can act on each:
 | A user message with K, same fingerprint, the last message of its conversation | Claims it. `claimed`: quota, holds, stream, as "Retry reply". `busy`: 409 `busy`. `answered`: 409 `answered`. |
 | A user message with K that is not the last message | 409 `answered`: "This message was already sent. Reload the conversation." |
 | No user message with K, a conversation with K, empty, same fingerprint | Uses that conversation. A fresh send into it. |
-| No user message with K, a conversation with K that has messages | 409 `conflict`. |
+| No user message with K, a conversation with K that has messages, same fingerprint | Another request with K can have saved its message since the first lookup, so the route reads the message with K again. Found: the rows above (claim, `busy` or `answered`). Not found: the conversation holds other messages, so 409 `conflict`. |
 | A row with K and another fingerprint | 409 `conflict`. Nothing is written. No quota, no hold. |
 | Two requests with K miss the lookup at the same time | The unique index refuses the second insert. That request gives its holds back and answers 500. One user message, one claim and one provider call. Its quota unit stays used. |
 
@@ -307,4 +307,6 @@ Rollback: a Worker version from before step 2 ignores the header and the new obj
 | Finding | Answer |
 | --- | --- |
 | P1: two requests with one key overlap; the second finds the first one's conversation with messages and answers `conflict`, so the screen clears the key and sends the draft again (confirmed) | Fixed. When the conversation with the key has messages and the fingerprint matches, the route reads the message with the key again and takes the normal claim path (`busy` or `answered`). Only a different fingerprint gets `conflict`. A client-to-route barrier test covers it. |
+| P3: a 409 `conflict` from "Retry reply" cleared the draft's key | Fixed. Only a send's answer can clear the key. Tested. |
+| P3: the gate client answered one object for a function that returns a table, where PostgREST answers an array | Fixed. The gate client answers an array for a set-returning function, so the gate uses the production shape. |
 | P2: `messages_reply_to_key` on `reply_to` alone shows whether another user's message has a reply (23503 or 23505) (confirmed) | Fixed. The index is on `(user_id, reply_to)`, so a reply to another user's message always gets 23503. The migration was not applied anywhere, so it was changed in place and its hash updated. The gate checks answered, unanswered and missing targets. |
