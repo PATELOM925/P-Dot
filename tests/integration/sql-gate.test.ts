@@ -680,75 +680,36 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
     });
   });
 
-  describe("the code on main keeps working until the contract step", () => {
-    it.runIf(defaults === "legacy")("can still write a flat log row and decide a proposal in two writes", async () => {
-      const owner = await gate.createUser();
-      await gate.as(user(owner), "insert into action_log (user_id, event, detail) values ($1, 'memory_added', '{\"memoryId\":\"m\"}')", [owner]);
-      const id = await propose(gate, owner, TASK);
-      await gate.as(user(owner), "update action_proposals set status = 'approved', decided_at = now() where id = $1 and status = 'proposed'", [id]);
-      await gate.as(user(owner), "update action_proposals set status = 'executed', result = '{\"taskId\":\"t\"}' where id = $1 and status = 'approved'", [id]);
-      expect((await gate.admin("select status from action_proposals where id = $1", [id])).rows).toEqual([{ status: "executed" }]);
-    });
-
-    it.runIf(defaults === "legacy")("records an outcome written by those two writes as not verified, with no task", async () => {
-      const owner = await gate.createUser();
-      const id = await propose(gate, owner, TASK);
-      const fake = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-      await gate.transactionAs(user(owner), async (tx) => {
-        // Naming the row in the setting does not help a caller: the role is still authenticated.
-        await tx.query("select set_config('pdot.deciding_proposal', $1, true)", [id]);
-        await tx.query("update action_proposals set status = 'approved', decided_at = now() where id = $1", [id]);
-        await tx.query(`update action_proposals set status = 'executed', result = '{"taskId":"${fake}"}' where id = $1`, [id]);
-      });
-      const row = await gate.admin("select status, decided_by_function from action_proposals where id = $1", [id]);
-      expect(row.rows).toEqual([{ status: "executed", decided_by_function: false }]);
-      expect(await countOwnedBy("tasks", owner)).toBe(0);
-      const log = await gate.admin<{ event: string; verified: boolean }>(
-        `select event, verified from action_log
-          where proposal_id = $1 and event in ('approved', 'executed') order by created_at`,
-        [id],
-      );
-      expect(log.rows).toEqual([
-        { event: "approved", verified: false },
-        { event: "executed", verified: false },
-      ]);
-    });
-
-    it.runIf(defaults === "legacy")("stores a log row inserted with the older grant as not verified, and drops a verified key", async () => {
-      const owner = await gate.createUser();
-      const inserted = await gate.as<{ verified: boolean; detail: Record<string, unknown> }>(
-        user(owner),
-        `insert into action_log (user_id, event, detail)
-         values ($1, 'executed', '{"kind":"create_task","verified":true,"taskId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}')
-         returning verified, detail`,
-        [owner],
-      );
-      expect(inserted.rows).toEqual([
-        { verified: false, detail: { kind: "create_task", taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } },
-      ]);
+  describe("after the contract step, only the database writes the log and decides a proposal", () => {
+    it("authenticated cannot insert into action_log", async () => {
       expect(
         await errorCode(() =>
-          gate.as(user(owner), "insert into action_log (user_id, event, verified) values ($1, 'executed', true) returning verified", [owner]),
+          gate.as(user(userA), "insert into action_log (user_id, event, detail) values ($1, 'executed', '{}')", [userA]),
         ),
-      ).toBeNull();
-      const forced = await gate.admin<{ n: number }>(
-        "select count(*)::int as n from action_log where user_id = $1 and verified",
-        [owner],
-      );
-      expect(forced.rows[0]!.n).toBe(0);
+      ).toBe(PERMISSION_DENIED);
+      const policies = await gate.admin("select policyname from pg_policies where tablename = 'action_log' and cmd = 'INSERT'");
+      expect(policies.rows).toEqual([]);
     });
 
-    it.runIf(defaults === "legacy")("cannot reset a decided proposal, change its result, or write nested log detail", async () => {
+    it("authenticated has no UPDATE privilege or update policy on action_proposals", async () => {
+      expect(await updatableColumns("action_proposals")).toEqual([]);
+      const granted = await gate.admin<{ granted: boolean }>(
+        "select has_any_column_privilege('authenticated', 'public.action_proposals', 'UPDATE') as granted",
+      );
+      expect(granted.rows[0]!.granted).toBe(false);
+      const policies = await gate.admin("select policyname from pg_policies where tablename = 'action_proposals' and cmd = 'UPDATE'");
+      expect(policies.rows).toEqual([]);
+    });
+
+    it("refuses the old two-write decision, so only decide_action_proposal can run an action", async () => {
       const owner = await gate.createUser();
       const id = await propose(gate, owner, TASK);
-      await decideAs(gate, owner, id, "approve");
-      expect(await errorCode(() => gate.as(user(owner), "update action_proposals set status = 'proposed', decided_at = null, result = null where id = $1", [id]))).toBe("23514");
-      expect(await errorCode(() => gate.as(user(owner), "update action_proposals set result = '{\"taskId\":\"fake\"}' where id = $1", [id]))).toBe("23514");
       expect(
         await errorCode(() =>
-          gate.as(user(owner), "insert into action_log (user_id, event, detail) values ($1, 'executed', '{\"taskId\":{\"a\":1}}')", [owner]),
+          gate.as(user(owner), "update action_proposals set status = 'approved', decided_at = now() where id = $1", [id]),
         ),
-      ).toBe("23514");
+      ).toBe(PERMISSION_DENIED);
+      expect((await decideAs(gate, owner, id, "approve")).outcome).toBe("executed");
     });
   });
 
@@ -975,5 +936,83 @@ describe("upgrade of a database that has rows the older schema allowed", () => {
     expect((await decideOld(RESET, "approve")).outcome).toBe("executed");
     expect((await decideOld(RESET, "approve")).outcome).toBe("already_decided");
     expect((await old.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(1);
+  });
+});
+
+describe("contract step over the expand window", () => {
+  const OWNER = "33333333-3333-4333-8333-333333333333";
+  const FORGED = "33333333-3333-4333-8333-000000000001";
+  const IN_FLIGHT = "33333333-3333-4333-8333-000000000002";
+  const FAKE_TASK = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const FORGED_LOG = "33333333-3333-4333-8333-000000000003";
+  let db: SqlGate;
+
+  beforeAll(async () => {
+    db = await startSqlGate({
+      defaults: "legacy",
+      beforeMigration: {
+        file: "20261021010000_memory_hardening_contract.sql",
+        // As the signed-in owner, with the older grants of the expand window.
+        sql: `
+          insert into auth.users (id) values ('${OWNER}');
+          set role authenticated;
+          select set_config('request.jwt.claims', '{"sub":"${OWNER}","role":"authenticated"}', false);
+          insert into action_proposals (id, user_id, kind, payload, summary) values
+            ('${FORGED}', '${OWNER}', 'create_task', '{"kind":"create_task","mode":"personal","title":"Forged"}', 'x'),
+            ('${IN_FLIGHT}', '${OWNER}', 'create_task', '{"kind":"create_task","mode":"personal","title":"Old"}', 'x');
+          update action_proposals set status = 'approved', decided_at = now() where id = '${FORGED}';
+          update action_proposals set status = 'executed', result = '{"taskId":"${FAKE_TASK}"}' where id = '${FORGED}';
+          -- The reviewer's case: a direct log insert that claims verification.
+          insert into action_log (id, user_id, event, detail) values
+            ('${FORGED_LOG}', '${OWNER}', 'executed', '{"kind":"create_task","verified":true,"taskId":"${FAKE_TASK}"}');
+          -- An older request claimed this one and has not stored its result yet.
+          update action_proposals set status = 'approved', decided_at = now() where id = '${IN_FLIGHT}';
+          reset role;
+          select set_config('request.jwt.claims', '', false);
+        `,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await db?.close();
+  });
+
+  it("keeps an outcome a caller wrote before the contract as not verified, in the row, the list and the log", async () => {
+    const row = await db.admin("select status, decided_by_function from action_proposals where id = $1", [FORGED]);
+    expect(row.rows).toEqual([{ status: "executed", decided_by_function: false }]);
+    const listed = await createActionProposalRepository(sqlGateClient(db, OWNER)).listProposals(OWNER, undefined, 10);
+    expect(listed.find((proposal) => proposal.id === FORGED)).toMatchObject({ status: "executed", verified: false });
+    const log = await db.admin<{ event: string; verified: boolean }>(
+      `select event, verified from action_log
+        where proposal_id = $1 and event in ('approved', 'executed') order by created_at`,
+      [FORGED],
+    );
+    expect(log.rows).toEqual([
+      { event: "approved", verified: false },
+      { event: "executed", verified: false },
+    ]);
+    expect((await db.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(0);
+  });
+
+  it("keeps a log row a caller inserted before the contract as not verified, with no verified key", async () => {
+    const row = await db.admin("select verified, detail ? 'verified' as has_key from action_log where id = $1", [FORGED_LOG]);
+    expect(row.rows).toEqual([{ verified: false, has_key: false }]);
+    const entries = await createActionLogRepository(sqlGateClient(db, OWNER)).list(OWNER, 50);
+    expect(entries.find((entry) => entry.id === FORGED_LOG)).toMatchObject({ event: "executed", verified: false });
+  });
+
+  it("leaves an older request's claim approved and not verified when the contract removes its result write, and never runs it again", async () => {
+    expect(
+      await errorCode(() =>
+        db.as(user(OWNER), `update action_proposals set status = 'executed', result = '{"taskId":"${FAKE_TASK}"}' where id = $1`, [
+          IN_FLIGHT,
+        ]),
+      ),
+    ).toBe(PERMISSION_DENIED);
+    const row = await db.admin("select status, result, decided_by_function from action_proposals where id = $1", [IN_FLIGHT]);
+    expect(row.rows).toEqual([{ status: "approved", result: null, decided_by_function: false }]);
+    expect((await decideAs(db, OWNER, IN_FLIGHT, "approve")).outcome).toBe("already_decided");
+    expect((await db.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(0);
   });
 });
