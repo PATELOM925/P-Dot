@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { WriteFaultError, WriteFaults, describeCase, hasFault, sweepWriteFaults } from "../support/write-faults";
+import {
+  ALL_WRITE_FAULTS,
+  WriteFaultError,
+  WriteFaults,
+  describeCase,
+  hasFault,
+  sweepWriteFaults,
+} from "../support/write-faults";
 
 class Store {
   rows: string[] = [];
@@ -29,6 +36,50 @@ describe("WriteFaults", () => {
     await expect(store.add("x")).rejects.toBeInstanceOf(WriteFaultError);
     expect(store.rows).toEqual([]);
     expect(faults.fired).toEqual([{ step: 1, fault: "refused", label: "Store.add" }]);
+  });
+
+  it("a delayed write throws at once and commits only when the scenario flushes it", async () => {
+    const faults = new WriteFaults().fail("delayed", 1);
+    const store = faults.wrap(new Store(), ["add"]);
+    await expect(store.add("x")).rejects.toBeInstanceOf(WriteFaultError);
+    expect(store.rows).toEqual([]);
+    faults.disarm();
+    await faults.flushDelayed();
+    expect(store.rows).toEqual(["x"]);
+    await faults.flushDelayed();
+    expect(store.rows).toEqual(["x"]);
+  });
+
+  it("a delayed write that the store refuses when it commits is dropped", async () => {
+    const faults = new WriteFaults().fail("delayed", 1);
+    const store = faults.wrap(new Store(), ["add"]);
+    await expect(store.add("x")).rejects.toBeInstanceOf(WriteFaultError);
+    store.add = async () => {
+      throw new Error("refused by the store");
+    };
+    await expect(faults.flushDelayed()).resolves.toBeUndefined();
+  });
+
+  it("counts a read, and the sweep makes a read fail only as refused", async () => {
+    const plans: string[] = [];
+    await sweepWriteFaults(
+      async (faults, sweepCase) => {
+        plans.push(describeCase(sweepCase));
+        const store = faults.wrap(new Store(), ["add"]);
+        faults.wrap(store, ["read"], { read: true });
+        await store.add("x").catch(() => undefined);
+        await store.read().catch(() => undefined);
+        expect(faults.reads).toEqual([false, true]);
+      },
+      { faults: ALL_WRITE_FAULTS, depth: 1 },
+    );
+    expect(plans).toEqual([
+      "no fault",
+      "refused write 1 (Store.add)",
+      "lost write 1 (Store.add)",
+      "delayed write 1 (Store.add)",
+      "refused write 2 (Store.read)",
+    ]);
   });
 
   it("a lost write commits and then throws", async () => {
