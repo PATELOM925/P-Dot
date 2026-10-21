@@ -185,17 +185,31 @@ describe.each(MODES)("resend keys and the reply claim with %s default grants", (
   });
 
   describe("one reply for each user message", () => {
-    it("refuses a second reply to one message, and a reply to another user's message", async () => {
+    it("refuses a second reply to one message", async () => {
       const conversation = await newConversation(alice);
       const question = await newMessage(alice, conversation, "user");
       await newMessage(alice, conversation, "assistant", question);
       expect(await errorCode(() => newMessage(alice, conversation, "assistant", question))).toBe(UNIQUE_VIOLATION);
 
-      const theirs = await newMessage(bob, await newConversation(bob), "user");
-      expect(await errorCode(() => newMessage(alice, conversation, "assistant", theirs))).toBe(FOREIGN_KEY_VIOLATION);
-      expect(
-        await errorCode(() => newMessage(alice, conversation, "assistant", "00000000-0000-4000-8000-000000000000")),
-      ).toBe(FOREIGN_KEY_VIOLATION);
+    });
+
+    it("gives the same error for a reply to another user's answered, unanswered or missing message", async () => {
+      const conversation = await newConversation(alice);
+      const theirConversation = await newConversation(bob);
+      const answered = await newMessage(bob, theirConversation, "user");
+      await newMessage(bob, theirConversation, "assistant", answered);
+      const unanswered = await newMessage(bob, theirConversation, "user");
+      const answers = [];
+      for (const target of [answered, unanswered, "00000000-0000-4000-8000-000000000000"]) {
+        try {
+          await newMessage(alice, conversation, "assistant", target);
+          answers.push("accepted");
+        } catch (error) {
+          answers.push(`${(error as { code?: string }).code}: ${(error as Error).message}`);
+        }
+      }
+      expect(new Set(answers).size).toBe(1);
+      expect(answers[0]).toMatch(new RegExp(`^${FOREIGN_KEY_VIOLATION}: `));
     });
 
     it("deleting a conversation removes its messages and their replies", async () => {

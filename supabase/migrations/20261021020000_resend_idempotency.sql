@@ -56,13 +56,15 @@ create unique index if not exists documents_user_client_request_key
 
 -- ---------------------------------------------------------------------------
 -- 2. One reply for each user message. The foreign key includes user_id, so a
--- reply can only point at a message of the same user.
+-- reply can only point at a message of the same user. The unique index also
+-- includes user_id, so a reply that points at another user's message always
+-- fails the foreign key (23503), whether or not that message has a reply.
 -- ---------------------------------------------------------------------------
 alter table public.messages add column if not exists reply_to uuid;
 alter table public.messages add constraint messages_reply_to_fkey
   foreign key (reply_to, user_id) references public.messages (id, user_id) on delete cascade;
 create unique index if not exists messages_reply_to_key
-  on public.messages (reply_to) where reply_to is not null;
+  on public.messages (user_id, reply_to) where reply_to is not null;
 
 -- ---------------------------------------------------------------------------
 -- 3. The claim to write the reply of a user message. A request that inserts a
@@ -103,7 +105,7 @@ begin
     return;
   end if;
 
-  select m.id into v_reply from public.messages m where m.reply_to = v_message.id;
+  select m.id into v_reply from public.messages m where m.user_id = v_user and m.reply_to = v_message.id;
   if v_reply is not null then
     return query select 'answered'::text, null::uuid, v_reply;
     return;
