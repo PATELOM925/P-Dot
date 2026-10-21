@@ -9,6 +9,16 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **A resend or a retry no longer repeats saved or running work** ([decision 0012](docs/decisions/0012-resend-idempotency.md)). ([PR #20](https://github.com/PATELOM925/P-Dot/pull/20))
+  - Problem: after a 500, the screen gives the draft back and the user sends it again. The resend saved an empty or second conversation, a second user message, a second memory or a second ready document, and a reply whose response was lost never got its "what was sent" record (eight `it.fails` tests). Two requests could also each write a reply to one message, and a stream cancelled before its first read kept its Nebius hold open.
+  - Resolution:
+    - Chat, Memory and Documents send an `Idempotency-Key` header. The key stays while the draft and its target stay the same, and goes when the server confirms the save. The server stores it with a SHA-256 fingerprint of the validated request. A resend finds the saved row before any quota, spend or provider call and continues from there. Another request under the same key gets 409 `conflict`.
+    - Each chat turn claims the right to write the reply (`claim_reply`, 300-second lease) before quota and spend, also for "Retry reply". A second request gets 409 `busy`, and a message that is already sent gets 409 `answered` with its conversation. The screen keeps the key and the draft on `busy`, reloads and reconciles the draft on `answered`, and clears the key on `conflict`. The reply stores `reply_to`, so the database keeps one reply for each message.
+    - The server picks the reply ID and reads the reply back after a failed insert, so a lost response still writes the context record.
+    - Documents settle with `settle_document`, after the chunk insert and after any error, and answer 201 only for `ready`.
+    - The prepared turn owns its holds and claim. `releaseTurn` gives back what no use took, under `waitUntil`, also when the stream is cancelled before its first read (lesson 12 in `docs/PROVIDER-RELIABILITY.md`).
+    - A missing column or function logs `schema_missing` and answers 500 before quota, spend and writes. There is no fallback: this PR merges only after the database step (PR #19) is applied.
+    - The eight `it.fails` tests now pass. New tests: the write-fault sweeps send the key and add `delayed` writes and failed reads; overlap tests with a barrier; a client-to-route test of the whole `busy` sequence; and the new repositories against the schema with and without the migration.
 - **Database step for safe resends: request keys, one reply for each message, and one rule for document status** ([decision 0012](docs/decisions/0012-resend-idempotency.md)). ([PR #19](https://github.com/PATELOM925/P-Dot/pull/19))
   - Problem: when a write commits but its response is lost, the route answers 500 and the screen gives the draft back. The resend cannot see what the first request saved or is still doing. Eight `it.fails` tests record the results: an empty or second conversation, a user message saved two times, a reply without its "what was sent" record, a second memory, and two ready copies of a document. Review also found that two requests can each write a reply to one message, and that a chunk insert that commits late can contradict a `failed` status.
   - Resolution:
