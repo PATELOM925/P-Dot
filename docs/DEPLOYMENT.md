@@ -88,6 +88,7 @@ When a change needs a new database function or must remove something that the li
 
 1. **Database (expand).** A migration that only adds. The code on main must keep working during and after it. The database gate checks main's code against it.
    - Check: the owner confirms in the Supabase dashboard that the migration is in the migration history and that its new objects exist. Agents never read the hosted database.
+   - Until this check passes, do not use a Preview of the step 2 or step 3 branch. Previews use the production database, so that code would save rows with no log entry and fail on decisions.
 2. **Code.** The code that uses the new objects. Merge it only after check 1.
    - Check: in the Cloudflare dashboard, the new Worker version serves 100% of traffic, and no Preview of an older branch is in use (Previews use the production database). Then wait a short drain time, for example 5 minutes, so that requests that started on the older version can end.
 3. **Contract.** A later migration that removes the old path. Merge it only after check 2.
