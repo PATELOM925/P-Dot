@@ -165,7 +165,7 @@ export interface ActionProposalDTO {
    * proposal, so `status` and `result` are a record of what the database ran.
    * False for a proposal decided by other writes (older code, or a user
    * during the expand step) and for older rows: their outcome is only what a
-   * caller wrote. The screens do not show this yet.
+   * caller wrote. The screens show these as "Marked done".
    */
   verified: boolean;
 }

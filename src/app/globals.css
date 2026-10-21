@@ -1444,6 +1444,11 @@ h3 {
   color: var(--accent-soft-text);
 }
 
+.status-unconfirmed {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
 /* Approval cards */
 
 .approval-list {
