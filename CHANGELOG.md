@@ -73,6 +73,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
 
 ### Fixed
+- **Owner SQL could not mark a legacy action as done on a new database session.** PR: [#13](https://github.com/PATELOM925/P-Dot/pull/13).
+  - Problem: the expand migration (PR #18) sets `action_proposals.decided_by_function` and `action_log.verified` from a session setting. On a session where no statement has set it, Postgres returns NULL, so both markers became NULL and the write failed the NOT NULL check. `confirm_executed` in `docs/decisions/0009-legacy-approved.sql` failed this way. App requests were not affected: the API roles always get `false`, and the database functions set the value first. An automated review on PR #18 found it.
+  - Resolution: migration `20261021000500_marker_unset_setting.sql` replaces the two trigger functions. An unset value now counts as not set. `tests/integration/sql-gate-fresh-session.test.ts` runs both writes as the first statement on a new database.
 - **One owner for the worst-case Nebius hold, and no hold is reduced to fit the ceiling.** PR: [#13](https://github.com/PATELOM925/P-Dot/pull/13) (review history in [#14](https://github.com/PATELOM925/P-Dot/pull/14)).
   - Problem: the spend hold was less than the real worst-case cost three times. A fallback price was below real prices and negative usage became zero (PR #2, 1945dda). The embedder copied the chat clamp and cut a hold down to the $0.25 ceiling (PR #6, 0dce68a). Chat still clamped, and the embedder kept its own copy of the hold math.
   - Resolution:
