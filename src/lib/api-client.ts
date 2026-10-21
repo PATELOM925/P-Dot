@@ -6,6 +6,8 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: ApiErrorCode | "network_error",
     message: string,
+    /** With a 409 "busy" or "answered" from POST /api/chat: the conversation of the saved message. */
+    public readonly conversationId?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -15,7 +17,9 @@ export class ApiError extends Error {
 async function toApiError(response: Response): Promise<ApiError> {
   try {
     const body = (await response.json()) as Partial<ApiErrorBody>;
-    if (body.error?.message) return new ApiError(response.status, body.error.code, body.error.message);
+    if (body.error?.message) {
+      return new ApiError(response.status, body.error.code, body.error.message, body.error.conversationId);
+    }
   } catch {
     // Non-JSON error page (e.g. a platform timeout).
   }
@@ -36,10 +40,15 @@ export async function apiRequest(path: string, init?: RequestInit): Promise<Resp
 }
 
 /** Sends `body` as JSON with the given method and returns the parsed JSON reply. */
-export async function sendJson<T>(path: string, method: "POST" | "PATCH", body: unknown): Promise<T> {
+export async function sendJson<T>(
+  path: string,
+  method: "POST" | "PATCH",
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   const response = await apiRequest(path, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   return (await response.json()) as T;
