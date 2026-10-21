@@ -5,7 +5,17 @@ import { getSupabaseConfig, isSupabaseConfigured } from "@/lib/supabase-config";
 // Used only by src/proxy.ts. Not marked `server-only` because the proxy bundle
 // is compiled separately from React Server Components.
 
-const PROTECTED_PREFIXES = ["/today", "/chat", "/workflows", "/connectors", "/settings", "/reset-password"];
+const PROTECTED_PREFIXES = [
+  "/today",
+  "/chat",
+  "/memory",
+  "/workflows",
+  "/connectors",
+  "/devices",
+  "/action-log",
+  "/settings",
+  "/reset-password",
+];
 const SIGNED_OUT_ONLY = ["/login", "/signup", "/forgot-password"];
 
 function matches(pathname: string, prefixes: string[]): boolean {

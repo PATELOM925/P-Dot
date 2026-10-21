@@ -10,7 +10,7 @@ interface SpeechResult {
   isFinal: boolean;
   0: SpeechResultAlternative;
 }
-interface SpeechResultEvent {
+export interface SpeechResultEvent {
   resultIndex: number;
   results: ArrayLike<SpeechResult>;
 }
@@ -36,15 +36,70 @@ function getCtor(): SpeechRecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
+/**
+ * Whether this page may use the microphone at all (the Permissions-Policy
+ * header in next.config.ts). Browsers without the API are assumed to allow it.
+ */
+function microphoneAllowedByPage(): boolean {
+  const doc = document as Document & {
+    permissionsPolicy?: { allowsFeature(feature: string): boolean };
+    featurePolicy?: { allowsFeature(feature: string): boolean };
+  };
+  const policy = doc.permissionsPolicy ?? doc.featurePolicy;
+  return policy ? policy.allowsFeature("microphone") : true;
+}
+
 const subscribeNothing = () => () => {};
 
+/** The final words in a result event, from the first new result on. */
+export function finalText(event: SpeechResultEvent): string {
+  let text = "";
+  for (let i = event.resultIndex; i < event.results.length; i += 1) {
+    const result = event.results[i];
+    if (result?.isFinal) text += result[0].transcript;
+  }
+  return text.trim();
+}
+
+/** Words heard but not settled yet, shown while the user speaks and never put into the message. */
+export function interimText(event: SpeechResultEvent): string {
+  let text = "";
+  for (let i = event.resultIndex; i < event.results.length; i += 1) {
+    const result = event.results[i];
+    if (result && !result.isFinal) text += result[0].transcript;
+  }
+  return text.trim();
+}
+
 const ERROR_MESSAGES: Record<string, string> = {
-  "not-allowed": "Microphone access was blocked. Allow it in your browser settings to dictate.",
-  "service-not-allowed": "Microphone access was blocked. Allow it in your browser settings to dictate.",
+  "not-allowed": "Microphone access is blocked. Allow the microphone for this site in your browser's site settings, then try again.",
+  "service-not-allowed": "This browser's speech service is turned off. Turn on speech recognition in its settings, or type instead.",
   "no-speech": "No speech was heard. Try again.",
   "audio-capture": "No microphone was found.",
   network: "Speech recognition needs an internet connection.",
+  "language-not-supported": "This browser cannot recognise English speech.",
 };
+
+/** What to tell the user for a recognition error. Null when it needs no message (dictation was stopped on purpose). */
+export function dictationErrorMessage(code: string): string | null {
+  if (code === "aborted") return null;
+  return ERROR_MESSAGES[code] ?? "Dictation stopped unexpectedly. Try again.";
+}
+
+/** The draft with a dictated phrase added after a space, cut at the message length limit. */
+export function appendDictation(draft: string, text: string, maxChars: number): string {
+  const next = draft.trim() ? `${draft.trimEnd()} ${text}` : text;
+  return next.slice(0, maxChars);
+}
+
+/**
+ * Chrome on Android repeats earlier words when recognition runs continuously,
+ * so there it listens for one phrase per tap. Elsewhere it keeps listening
+ * until the user taps again.
+ */
+export function listensContinuously(userAgent: string): boolean {
+  return !/Android/i.test(userAgent);
+}
 
 /**
  * Speech-to-text in English using the browser's own speech recognition. Final
@@ -53,8 +108,13 @@ const ERROR_MESSAGES: Record<string, string> = {
  * speech service may process it).
  */
 export function useDictation(onText: (text: string) => void) {
-  const supported = useSyncExternalStore(subscribeNothing, () => getCtor() !== null, () => false);
+  const supported = useSyncExternalStore(
+    subscribeNothing,
+    () => getCtor() !== null && microphoneAllowedByPage(),
+    () => false,
+  );
   const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const onTextRef = useRef(onText);
@@ -65,8 +125,19 @@ export function useDictation(onText: (text: string) => void) {
 
   useEffect(() => () => recognitionRef.current?.abort(), []);
 
+  /** Stops at once and drops anything still being recognised, for example when the message is sent. */
+  const cancel = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+    recognitionRef.current = null;
+    recognition.abort();
+    setListening(false);
+    setInterim("");
+  }, []);
+
   const toggle = useCallback(() => {
     if (recognitionRef.current) {
+      // Stop listening, but let the last phrase arrive.
       recognitionRef.current.stop();
       return;
     }
@@ -74,23 +145,27 @@ export function useDictation(onText: (text: string) => void) {
     if (!Ctor) return;
 
     const recognition = new Ctor();
+    // Handlers check this, so a cancelled recognition cannot add text afterwards.
+    const isCurrent = () => recognitionRef.current === recognition;
     recognition.lang = "en-US";
-    recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.continuous = listensContinuously(navigator.userAgent);
+    recognition.interimResults = true;
     recognition.onresult = (event) => {
-      let text = "";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        if (result?.isFinal) text += result[0].transcript;
-      }
-      if (text.trim()) onTextRef.current(text.trim());
+      if (!isCurrent()) return;
+      const text = finalText(event);
+      if (text) onTextRef.current(text);
+      setInterim(interimText(event));
     };
     recognition.onerror = (event) => {
-      setError(ERROR_MESSAGES[event.error] ?? "Dictation stopped unexpectedly.");
+      if (!isCurrent()) return;
+      const message = dictationErrorMessage(event.error);
+      if (message) setError(message);
     };
     recognition.onend = () => {
+      if (!isCurrent()) return;
       recognitionRef.current = null;
       setListening(false);
+      setInterim("");
     };
 
     setError(null);
@@ -104,5 +179,5 @@ export function useDictation(onText: (text: string) => void) {
     }
   }, []);
 
-  return { supported, listening, error, toggle };
+  return { supported, listening, interim, error, toggle, cancel };
 }

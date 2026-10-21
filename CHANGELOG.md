@@ -8,14 +8,70 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 
 ## Unreleased
 
+### Added
+- **A database test gate that runs in `npm test`.** PR: not opened yet.
+  - Problem: the same kind of database defect reached review three times. Grants let a signed-in user write rows the app trusts (`action_log` inserts, `action_proposals` updates that can reset an approved action, `context_records`). The database also accepted a nested `action_log` detail that the app's log reader refuses, so one row broke the whole list. Each time, a reviewer proved it by hand in a throwaway database.
+  - Resolution:
+    - `tests/integration/sql-gate.test.ts` applies every migration, unchanged and in name order, to an in-memory Postgres (PGlite 0.5.10 with pgvector 0.0.11, dev dependencies only). Stand-ins model the Supabase roles, `auth.uid()` and the Supabase default grants. A check on a new table proves that the stand-in grants are live.
+    - It checks that `anon` has no access to any table or function, that one user cannot read, change, delete or insert another user's rows in every table, that `id`, `user_id` and `created_at` cannot be updated, and that search returns only the caller's rows. A new table fails the gate until it is classified.
+    - It reads stored `action_log` and `action_proposals` rows, NULLs included, through the app's own repositories.
+    - Three checks fail on `main` and are marked as expected failures until the memory hardening migration lands: the nested log detail, the `action_log` insert grant and the `action_proposals` update grant.
+    - `tests/integration/frozen-migrations.test.ts` fails when a migration that is on `main` changes, and tells the author to add a new migration.
+    - Test hooks have 60 seconds (`vitest.config.ts`), because starting the database and applying every migration can take more than 10 seconds when test files run in parallel.
+- **Dynamic personal bot usage showcase on the landing page.** PR: not opened yet.
+  - Problem: the landing page showed only a single static example ("Get me ready for Friday and book a haircut"), with non-interactive buttons, giving visitors a narrow view of what a personal bot can do across different life and work domains.
+  - Resolution:
+    - Added `DynamicAgentCard` with interactive scenario tabs: Weekend errands & booking, Morning triage & inbox zero, Travel & reservations, Developer ops & hotfixes, and Meeting prep & executive briefs.
+    - Added an interactive human-in-the-loop approval simulator with "Approve" and "Skip" buttons that transition step status, badges, and feedback in real time to demonstrate P-Dot's safety-first architecture.
+    - Added automatic carousel cycle with pause on hover/focus and support for `prefers-reduced-motion`, plus keyboard accessibility and mobile horizontal tab scrolling.
+    - Added unit test coverage in `tests/unit/landing-use-cases.test.ts`.
+- **Screens for approvals, memory, documents, "what was sent", the action log and reminders** (decisions [0009](docs/decisions/0009-memory-documents-actions.md) and [0005](docs/decisions/0005-assistant-hub-proposal.md)). PR: not opened yet.
+  - Problem: the storage and routes from decision 0009 had no screens. Users could not see or edit what P-Dot keeps, approve an action, or check what went to the model.
+  - Resolution:
+    - Approval cards in chat (only that conversation's) and on Today: Approve, Edit then approve, Cancel. The details shown come from the stored payload, which is what runs, not from the assistant's one-line summary. A failed run, a decision made in another tab and a lost session each get a clear message.
+    - A Memory page for each mode: memories (add, keep a suggestion, edit, move to the other mode, delete) and documents (`.txt` and `.md`; file type, size and empty files are checked before anything is sent; list, delete).
+    - "What was sent" under each reply. The server saves the record just after the reply, so a reply under a minute old offers "Check again" instead of treating a 404 as final.
+    - An action log page, grouped by the viewer's local day, without IDs or text.
+    - Reminders on Workflows, and live counts for the built-in tools on Connectors. Routines and account connectors stay previews.
+    - Every page says plainly that replies do not use memories or documents yet and that the assistant does not propose actions yet.
+- **Chat shows P-Dot's suggestions under the reply that made them, and the Today tab counts what is waiting.** PR: not opened yet.
+  - Problem: chat listed every waiting card at the end of the conversation, so in a long conversation a card was far from the reply it came from, and a decided card disappeared after a reload. Memories P-Dot suggests had no place in chat, and proposals were easy to miss on other pages.
+  - Resolution:
+    - Each proposal goes under the reply of the turn it was made in (by database time, since proposals have no message link). Waiting ones are cards; decided ones are short lines with the outcome.
+    - Memories P-Dot suggested appear as "Remember this?" cards under the reply they came from: Keep, Edit then keep (one request, so the old text is never kept), Don't keep.
+    - The Today tab shows how many proposals wait in both modes. It reloads after a decision, after a reply and when the tab comes back into view.
+    - What the screens expect from the AI layer (timing, links, IDs) is written down in decision [0009](docs/decisions/0009-memory-documents-actions.md), so it can be built against them.
+- **Installable app for Android (PWA) and a Devices page** ([decision 0010](docs/decisions/0010-pwa-and-device-pairing.md)). PR: not opened yet.
+  - Problem: P-Dot could not be installed on a phone or ask to show notifications, though the landing page says it acts on your phone.
+  - Resolution: a manifest, a service worker that caches only the offline page and icons (never pages or API responses), the install prompt, notification permission with a local test notification, and a Devices page that shows what the browser supports and previews pairing. Push delivery and pairing need the open decisions in 0010.
+- **Storage and shared code for memory, documents, action proposals, the action log, reminders and "what was sent"** (decision [0009](docs/decisions/0009-memory-documents-actions.md)).
+  - Problem: the pitch needs memory the user can see and edit, search over their own documents, actions that run only after approval, a record of what happened, and a view of what was sent to the model. None of this had storage.
+  - Resolution: one additive migration with pgvector, RLS on every table, append-only log and context records, and similarity search that runs as the caller. Embeddings use Qwen3-Embedding-8B at 1,024 dimensions through the spend guard. Shared types, request schemas and limits for the API routes that follow.
+
+- **"Ask first" and "Auto" approval modes in chat** ([decision 0011](docs/decisions/0011-approval-modes.md)). PR: not opened yet.
+  - Problem: approving every small action is tedious, but some actions must never happen unseen.
+  - Resolution:
+    - Easy to find and set: a one-time card in chat asks which mode to use (Ask first recommended, or keep it with one click). After that, a button next to the microphone always shows the current mode and opens a menu that explains both (touch, mouse and keyboard; Esc closes it). Settings → Approvals has the same choice as radio cards, and the Today panel shows the mode with a Change link. The choice is saved on the device; Ask first is the default.
+    - The button is kept apart from the effort switch, whose "Auto" means the model choice, not approvals.
+    - One shared rule set (`src/lib/approval-policy.ts`): every action kind must name its effect, or it does not compile. In Auto only adding to P-Dot's own lists runs on its own, at most 3 per reply; saving something personal, changing or deleting, outside accounts, private data, money and settings always ask, and their cards say why.
+    - Auto acts only on replies to messages sent while it was on. It approves through the existing decision route, so the server still checks and logs each action, and shows "Done on its own" with Undo (the existing task and reminder delete routes).
+    - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
+
 ### Fixed
 - **Automatic deploys from GitHub (Workers Builds) failed on every merge.**
   - Problem: the build settings were empty, so Cloudflare used its defaults (`npm run build`, `npx wrangler deploy`). The plain Next.js build does not make the OpenNext Worker, so each deploy failed after about 45 seconds. The first three builds on 2026-10-19 failed this way, and PR #3 and #4 were deployed by hand.
   - Resolution: the commands from `docs/DEPLOYMENT.md` and the two public Supabase build variables were set on both the Production and Previews Base tabs. A rerun of `main` (`9a8bea2`) then built and deployed in 1 minute 42 seconds. A live sign-up and chat worked after it, and the reply showed "Nemotron 3.5 Lightning · everyday request". The fix itself is a dashboard setting. [PR #5](https://github.com/PATELOM925/P-Dot/pull/5) records it ([review, round 1](https://github.com/PATELOM925/P-Dot/pull/5#issuecomment-6258531931)).
+- **Database expand step for the memory hardening** (decision [0009](docs/decisions/0009-memory-documents-actions.md)). PR: [#18](https://github.com/PATELOM925/P-Dot/pull/18).
+  - Problem: the code that makes only the database write the action log and decide action proposals (PR #13) needs a new database function and log triggers. If that code went live before its migration, its writes would succeed with no log row. The migration must also not break the code on main.
+  - Resolution: migration `20261021000000_memory_hardening.sql` only adds. It adds the log triggers, `decide_action_proposal`, the `decided_by_function` trust marker, a protected `verified` column on the log (true only for a row the log triggers wrote, and for an action outcome only when the function decided it; a `verified` key in the detail is removed, so a caller cannot supply it), triggers that check new rows and changed columns only, a forward-only proposal status, explicit grants, and it removes TRUNCATE, REFERENCES and TRIGGER from the API roles. It keeps the older grants, so main keeps working. The database gate checks main's code against it. `docs/DEPLOYMENT.md` gives the order: this PR, then PR #13, then PR #17, with a check before each merge and the rollback rule.
+- **Dictation was blocked by P-Dot's own security header.** PR: not opened yet.
+  - Problem: `next.config.ts` sent `Permissions-Policy: microphone=()`, which turns the microphone off on every page, so the microphone button showed as available but Chrome refused it, and the message told users to change their own browser settings. Words heard after Send also landed in the next message.
+  - Resolution: the header now allows the microphone for P-Dot's own pages only (`microphone=(self)`; camera and location stay off), with a test. The button is disabled when a page cannot use the microphone. While listening, the words being heard show under the message box; finished phrases are added within the message length limit; Esc, Send and switching conversations stop listening and drop any later words; stopping on purpose shows no error; Chrome on Android listens for one phrase per tap, because continuous listening there repeats words.
 
 ### Changed
 - **Merge several pull requests first, then deploy once.** Owner rule, 2026-10-19: when pull requests or a stack are ready at about the same time, merge them all and let one build deploy them. Added to `AGENTS.md` and `docs/DEPLOYMENT.md`, with checks before each merge, a top-down merge for stacks that gives one production build, best-effort cancelling of older builds, and confirming that production runs the final `main`. ([PR #5](https://github.com/PATELOM925/P-Dot/pull/5), [review, round 1](https://github.com/PATELOM925/P-Dot/pull/5#issuecomment-6258531931), [round 2](https://github.com/PATELOM925/P-Dot/pull/5#issuecomment-6258580241), [round 3](https://github.com/PATELOM925/P-Dot/pull/5#issuecomment-6258608769))
 - `docs/DEPLOYMENT.md` now records which one-time setup steps are done and the Workers Builds failure above. ([PR #5](https://github.com/PATELOM925/P-Dot/pull/5), [review, round 1](https://github.com/PATELOM925/P-Dot/pull/5#issuecomment-6258531931))
+- **Icons and colours follow the design palette.** The favicon, Apple icon and app icons put the "P." mark on the indigo-to-violet accent gradient instead of the old flat blue. The manifest uses the page ground colour, so the bar does not flash when the app opens, and no longer locks the screen to portrait. PR: not opened yet.
 
 ## 2026-10-19
 

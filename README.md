@@ -2,7 +2,7 @@
 
 A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, and browser dictation. The Workflows and Connectors pages are previews only (nothing can be connected or automated yet). Unit tests use mocked providers; the database rules were tested against a local Supabase. A few small real Nebius calls checked the token usage and reasoning format (see [decision 0006](docs/decisions/0006-global-spend-guard.md)); a full chat through the live app has not been tested yet. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key is set. A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
+**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, browser dictation, approval cards, a Memory page for memories and documents, "What was sent" under each reply, an action log, reminders, and an installable app for Android. The assistant does not propose actions or use memories in replies yet, and nothing can be connected, automated or paired yet (those parts of Workflows, Connectors and Devices are previews). Unit tests use mocked providers; the database rules were tested against a local Supabase. A few small real Nebius calls checked the token usage and reasoning format (see [decision 0006](docs/decisions/0006-global-spend-guard.md)); a full chat through the live app has not been tested yet. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key is set. A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
 
 ## What works today
 
@@ -14,11 +14,21 @@ A personal assistant with a web interface, a Cloudflare Workers backend, Nebius 
 | Conversation list, **rename**, delete | Works |
 | **Personal / Work mode** toggle | Works: each conversation and task belongs to one mode, lists are filtered by mode, and the assistant is instructed to stay within that mode's topics |
 | **Today** page: to-do list per mode | Works (add, tick, delete) |
-| **Microphone** button: speech to English text | Works in browsers with speech recognition (Chrome, Edge, Safari); dictates into the message box, you press send |
-| Daily brief, approvals, **Workflows**, **Connectors** | Preview pages only. They show the planned design, say "not available yet", and run nothing |
+| **Microphone** button: speech to English text | Works in browsers with speech recognition (Chrome, Edge, Safari): the browser asks for the microphone the first time, shows the words it hears as you speak, and puts each finished phrase in the message box. You press send; sending or switching conversations stops listening. On Android it listens for one phrase per tap |
+| **Approval cards** in chat and on Today: approve, edit then approve, cancel | Works for proposals stored through the API. In chat each card sits under the reply that made it, with earlier decisions as short lines; the Today tab shows how many are waiting. The assistant does not create proposals yet, so none arrive from chat |
+| **Ask first / Auto** approval modes | Chat asks once per device which mode to use (Ask first is recommended). After that, the button next to the microphone shows the current mode and opens a menu that explains both; Settings → Approvals has the same choice, and the Today panel links to it. Works with today's API. In Auto, adding a task or a reminder runs on its own and shows "Done on its own" with Undo; saving a memory, deleting, outside accounts, private data, money and settings still ask (at most 3 on its own per reply). The choice is saved on the device; the server-side part is the recipe in [decision 0011](docs/decisions/0011-approval-modes.md) |
+| **Remember this?** in chat: keep, edit then keep, don't keep | Works for memories P-Dot suggested (`status = 'proposed'`, linked to a message). The assistant does not suggest memories yet |
+| **Memory** page: memories and documents (`.txt`, `.md`), add, keep, edit, move, delete | Works. Saving or changing text needs the Nebius key (embeddings); replies do not use memories or documents yet |
+| **What was sent** under each reply | Works for replies saved since context records began; older replies say they have none |
+| **Action log** page | Works: approvals, cancellations, runs and changes to memories, documents and reminders, without their text |
+| **Workflows**: reminders | Works (add, done, reopen, delete); P-Dot does not notify you when one is due yet. Routines are previews |
+| **Connectors** | Built-in tools (to-do list, reminders, memory, documents) show live counts; account connectors are previews |
+| **Installable app** (PWA): manifest, service worker, install prompt, notification permission | Works in Chrome on Android and desktop; iPhone users add it to the Home Screen. No push messages are sent yet ([decision 0010](docs/decisions/0010-pwa-and-device-pairing.md)) |
+| **Devices** page | Shows what this browser supports; device pairing is a preview |
+| Daily brief | Preview only |
 | Landing page agent example | Illustrative example, not real data |
 
-The design for all of this is in the "P-Dot Frontend Design" canvas; planned-but-unbuilt parts are tracked in [decision 0005](docs/decisions/0005-assistant-hub-proposal.md).
+The design for all of this is in the "P-Dot Frontend Design" canvas; planned-but-unbuilt parts are tracked in [decision 0005](docs/decisions/0005-assistant-hub-proposal.md) and [decision 0010](docs/decisions/0010-pwa-and-device-pairing.md).
 
 ## Stack
 
@@ -127,8 +137,14 @@ Open `http://localhost:3000` (not `127.0.0.1`, so cookies and email links share 
 | Click **Work** in the header, then start a chat | The sidebar shows only Work conversations; asking a personal question (dinner, gifts) gets a reply that it belongs in Personal mode |
 | Hover a conversation: pencil, then Enter | Renamed in the sidebar; the new name is stored |
 | **Today** → add a task, tick it, delete it | Persists after a reload; Work and Personal lists are separate |
-| Microphone button, allow the browser prompt, speak | English text appears in the message box (Chrome/Edge/Safari; button is disabled elsewhere) |
-| **Workflows** and **Connectors** pages | Show "not available yet"; Connect buttons are disabled |
+| Microphone button, allow the browser prompt, speak | "Listening…" with the words being heard, then English text in the message box (Chrome/Edge/Safari; button is disabled elsewhere). Esc or the button stops; Send stops it too |
+| **Workflows** and **Connectors** pages | Reminders work on Workflows; Connectors shows live counts for the built-in tools; routines and account Connect buttons are disabled previews |
+| Insert a row into `action_proposals` for your user (Studio → SQL Editor, `status = 'proposed'`, with a `conversation_id`), then open that conversation | An approval card appears under the reply of the latest turn before the row was made, and the Today tab shows the count. Approve, Edit then approve, and Cancel each change its status; approved tasks and reminders appear on Today and Workflows; each decision appears on **Action log**; after a reload, decided ones show as short lines |
+| Insert a row into `memories` with `status = 'proposed'`, `source = 'assistant'` and `source_message_id` set to a message in that conversation | A "Remember this?" card appears under that turn's reply. Keep moves it to Remembered on the Memory page; Don't keep deletes it |
+| **Memory** → add, keep, edit, move to the other mode, delete | Persists after a reload. Without a Nebius key, adding or changing text says the embedding service is not configured |
+| **Memory** → Documents → choose a `.md` or `.txt` file, check the title, Add | With a Nebius key it shows "Ready". Other file types and empty files are refused before anything is sent |
+| **What was sent** under a reply | Model, conversation size, memories, documents, web search and tokens for that reply |
+| **Settings** → App and notifications (Chrome on Android) | "Install P-Dot" opens the install dialog; "Allow notifications" asks for permission; the test notification appears |
 | Second user in a private window | Sees none of the first user's conversations |
 | Delete a conversation | Gone from the sidebar and from Studio |
 | Exceed `CHAT_REQUESTS_PER_WINDOW` (set it to 2 to try) | 429 "You have reached your request limit" |
@@ -157,6 +173,8 @@ npm test
 
 The 10 tests in `tests/integration/rls.test.ts` should then run instead of being skipped. One checks the model route columns on messages. They also reserve and give back a few micro-dollars through the spend guard functions.
 
+`npm test` also runs the database gate (`tests/integration/sql-gate.test.ts`) without any setup. It applies every migration to an in-memory Postgres (PGlite with pgvector) that has stand-ins for the Supabase roles, `auth.uid()` and the Supabase default grants, then checks grants and RLS as `anon` and as two signed-in users, and reads stored rows through the app's own parsers. `tests/integration/frozen-migrations.test.ts` fails if a migration that is on `main` changes: add a new migration instead. The pull request that adds a migration also adds its hash to `tests/integration/frozen-migrations.sha256`.
+
 ### Housekeeping
 
 | Command | Effect |
@@ -177,7 +195,7 @@ The 10 tests in `tests/integration/rls.test.ts` should then run instead of being
 | `npm run check:worker-env` | Check the last OpenNext build for secret values copied from `.env` files |
 | `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules) |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Vitest unit tests; the live RLS integration test is skipped unless configured |
+| `npm test` | Vitest unit tests and the database gate (in-memory Postgres, no setup); the live RLS integration test is skipped unless configured |
 | `npm run check` | Lint, type-check, and tests |
 
 To run the row-level security test against a **test** Supabase project, set the `SUPABASE_TEST_*` variables listed at the top of [`tests/integration/rls.test.ts`](tests/integration/rls.test.ts).
@@ -197,6 +215,12 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `DELETE /api/tasks/:id` | Delete a task |
 | `GET /api/conversations/:id` | One conversation with its messages (404 for missing or someone else's) |
 | `DELETE /api/conversations/:id` | Permanently delete a conversation and its messages |
+| `GET /api/memories?mode=&status=`, `POST /api/memories`, `PATCH`/`DELETE /api/memories/:id` | Memories the user can see, edit and delete ([decision 0009](docs/decisions/0009-memory-documents-actions.md)) |
+| `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | Plain text and Markdown documents, split and embedded on upload |
+| `GET /api/actions?status=`, `POST /api/actions/:id/decision` | Action proposals; `{ decision: "approve" \| "reject", payload? }` runs an approved action once |
+| `GET /api/action-log` | The append-only action log (IDs, kinds and counts only) |
+| `GET /api/reminders?mode=`, `POST /api/reminders`, `PATCH`/`DELETE /api/reminders/:id` | Reminders (no delivery yet) |
+| `GET /api/messages/:id/context` | "What was sent" for one assistant reply (404 when it has no record) |
 | `GET /api/health` | Liveness and configured integrations (booleans only) |
 | `GET /auth/confirm` | Landing page for email verification and password-recovery links |
 
@@ -204,19 +228,20 @@ All private endpoints require the Supabase session cookie and scope data to the 
 
 | Path | Contents |
 | --- | --- |
-| `src/app/` | Pages (landing, `(auth)`, `(workspace)`: today, chat, workflows, connectors, settings), API routes, `auth/confirm` |
+| `src/app/` | Pages (landing, `(auth)`, `(workspace)`: today, chat, memory, workflows, connectors, action-log, devices, settings), API routes, `auth/confirm`, the web app manifest (`manifest.ts`) |
 | `wrangler.jsonc`, `open-next.config.ts` | Cloudflare Worker and OpenNext adapter configuration |
 | `src/proxy.ts` | Session refresh and page redirects (Next.js 16 "proxy", formerly middleware) |
-| `src/features/` | Auth forms and server actions, chat workspace (rename, dictation), to-do list, mode switch |
-| `src/components/` | Shared layout components |
+| `src/features/` | Auth forms and server actions, chat workspace (rename, dictation, "What was sent"), to-do list, mode switch, approval cards and the action log (`actions/`), memory, documents, reminders, connectors status, the installable app (`pwa/`) |
+| `src/components/` | Shared layout components and `ui/LocalTime` (dates in the viewer's time zone) |
+| `public/` | Service worker (`sw.js`), offline page, app icons, `_headers` for static files |
 | `src/server/` | Server-only code: config, auth session, Supabase repositories, assistant orchestration, Nebius/Tavily adapters, HTTP helpers |
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
 | `supabase/migrations/` | Database schema, RLS policies, the quota function, the modes/rename/tasks migration, and the global spend guard |
-| `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
+| `tests/` | Unit tests (`unit/`), the database gate and the live Supabase RLS test (`integration/`), shared fakes (`support/`) |
 | `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
 | `CHANGELOG.md` | What changed, the problem, and how it was resolved, for each pull request |
 | `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle |
-| `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the brand blue) |
+| `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the indigo-to-violet accent); the app icons in `public/icons/` use the same mark |
 
 ## Deploying to Cloudflare
 
@@ -242,7 +267,9 @@ Real provider checks (2026-10-19): 4 small Nebius calls to `nvidia/nemotron-3-su
 
 Model routing was tested with a fake streaming provider and fake timers: router examples, retries with `Retry-After`, no retry on 400 and 401, 404 to the next model, first-token timeout, the hedge (winner, loser stopped and settled, at most one, never on heavy), the breaker, the deadline, budget refusal, Stop during a hedge, no switch after the first token, and the saved route. The new migration was run on an in-memory Postgres (PGlite) on top of existing rows.
 
-Not yet done: a real Tavily search, a full chat through the live app, a signed-in browser walkthrough (local or production), dictation in real browsers, end-to-end tests, Workers Builds (automatic deploys and previews), and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
+Signed-in walkthrough of the hub screens (2026-10-19, local): in the Claude desktop app's built-in browser (Chromium) against `npm run dev` and a local Supabase with every migration, with a new test account and fixture rows inserted with SQL for what the app cannot create yet (proposals, and a saved reply with its context record). Checked: chat shows only that conversation's approval cards; Approve, Edit then approve (title and due time) and Cancel; a failed run (approving a memory without a Nebius key) shows one clear error; Today's approvals panel, its other-mode hint and the to-do list refreshing after an approval; "What was sent" for a reply with a record, an old reply without one, and a new reply whose record arrives a moment later ("Check again"); memory keep, move and delete, and the "not configured" messages for adding and editing text; the document list, delete, file checks (a PDF and an empty file refused, a `.md` without a MIME type accepted) and the upload error; the action log; reminders (add, done, overdue flag); Connectors counts; the manifest, service worker and offline page; the install button with a stand-in install event; phone width (375 px, no sideways scrolling) and dark mode. The database rows matched each action. Then, for suggestions in chat: cards under the right reply in a two-turn conversation (including one made before its reply was saved), earlier decisions as short lines, "Remember this?" keep, edit (the "not configured" message) and don't keep, and the Today count after decisions in chat and on Today, after a conversation switch and when the tab comes back into view. Dictation: the pages now send `microphone=(self)` and the browser reports the microphone as allowed; a blocked microphone shows the right message; with a stand-in recognizer, the words being heard show while speaking, finished phrases land in the message box within the length limit, Esc stops, Send and switching conversations stop it and drop any later words, and Android listens one phrase per tap. Real speech was not tried (the built-in browser blocks microphone capture). Not checked: a reply from a real model, a successful document upload or memory save (both need the Nebius key), installing on a real Android phone, and granting notification permission.
+
+Not yet done: a real Tavily search, a full chat through the live app, a signed-in browser walkthrough in production, dictation in real browsers, end-to-end tests, Workers Builds (automatic deploys and previews), and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
 
 ## Usage limits
 

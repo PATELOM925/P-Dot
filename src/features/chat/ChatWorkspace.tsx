@@ -1,9 +1,25 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { ApprovalModeMenu, ApprovalModeSetup } from "@/features/actions/ApprovalModePicker";
+import { useApprovalMode } from "@/features/actions/approval-mode";
+import { notifyActionsChanged } from "@/features/actions/events";
+import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
+import { useProposals } from "@/features/actions/useProposals";
+import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
-import type { ChatRequest, ConversationSummary, Effort, Mode, ModelTier, SourceRef, WebSearchStatus } from "@/types/api";
+import type {
+  ActionProposalDTO,
+  ChatRequest,
+  ConversationSummary,
+  Effort,
+  Mode,
+  ModelTier,
+  SourceRef,
+  WebSearchStatus,
+} from "@/types/api";
 import {
   ApiError,
   deleteConversation,
@@ -13,9 +29,11 @@ import {
   renameConversation,
 } from "./api";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
+import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
+import { placeBySource, placeByTime } from "./placement";
 import { readChatStream } from "./stream";
-import { useDictation } from "./useDictation";
+import { appendDictation, useDictation } from "./useDictation";
 
 interface StreamingReply {
   text: string;
@@ -78,9 +96,14 @@ export function ChatWorkspace({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [savingRename, setSavingRename] = useState(false);
+  // Bumped after each reply so P-Dot's suggestions reload; a reply may come with new proposals or memories.
+  const [suggestionsKey, setSuggestionsKey] = useState(0);
+  // "Ask first" or "Auto". Auto acts only on replies to messages sent while it was on (their user message IDs).
+  const approvalMode = useApprovalMode();
+  const [autoTurns, setAutoTurns] = useState<ReadonlySet<string>>(() => new Set());
 
   const dictation = useDictation(
-    useCallback((text: string) => setDraft((current) => (current.trim() ? `${current.trimEnd()} ${text}` : text)), []),
+    useCallback((text: string) => setDraft((current) => appendDictation(current, text, MAX_MESSAGE_CHARS)), []),
   );
 
   const router = useRouter();
@@ -99,6 +122,17 @@ export function ChatWorkspace({
     },
     [router],
   );
+  const goToLogin = useCallback(() => router.replace("/login?next=/chat"), [router]);
+
+  // P-Dot's suggestions (actions to approve, memories to keep), shown under the reply they came from.
+  const suggestionsRefresh = `${activeId ?? ""}:${suggestionsKey}`;
+  const actions = useProposals({ refreshKey: suggestionsRefresh, enabled: activeId !== null, onUnauthorized: goToLogin });
+  const memorySuggestions = useMemorySuggestions({
+    mode,
+    refreshKey: suggestionsRefresh,
+    enabled: activeId !== null,
+    onUnauthorized: goToLogin,
+  });
 
   const loadMessages = useCallback(
     (id: string) => {
@@ -148,6 +182,8 @@ export function ChatWorkspace({
 
   function openConversation(id: string) {
     abortRef.current?.abort();
+    // Words still being dictated belong to the conversation the user is leaving.
+    dictation.cancel();
     setActiveId(id);
     setMessages([]);
     setError(null);
@@ -160,6 +196,7 @@ export function ChatWorkspace({
 
   function startNewConversation() {
     abortRef.current?.abort();
+    dictation.cancel();
     loadSeq.current += 1;
     setActiveId(null);
     setMessages([]);
@@ -182,6 +219,8 @@ export function ChatWorkspace({
         : { action, conversationId: activeId!, webSearch, effort };
 
     const sentEffort = { effort, version: effortVersion.current };
+    // The mode when the user pressed Send decides whether Auto may act on this reply.
+    const sentInAuto = approvalMode === "auto";
     const controller = new AbortController();
     abortRef.current = controller;
     const tempId = `pending-${Date.now()}`;
@@ -199,6 +238,8 @@ export function ChatWorkspace({
     setStreaming({ text: "", search: null });
     setStatus("Sending…");
     if (action === "send") {
+      // Stop dictating, so words heard after Send do not land in the next message.
+      dictation.cancel();
       setDraft("");
       setMessages((current) => [
         ...current,
@@ -221,6 +262,7 @@ export function ChatWorkspace({
         switch (event.type) {
           case "start":
             accepted = true;
+            if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
             setActiveId(event.conversation.id);
@@ -255,6 +297,8 @@ export function ChatWorkspace({
             finished = true;
             setMessages((current) => [...current, { ...event.message, truncated: event.truncated }]);
             setStreaming(null);
+            setSuggestionsKey((key) => key + 1);
+            notifyActionsChanged();
             setStatus("Reply complete.");
             break;
           case "error":
@@ -331,6 +375,44 @@ export function ChatWorkspace({
   const last = messages.at(-1);
   const canRetry = !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending;
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
+
+  // Oldest first, so a reply's suggestions read in the order P-Dot made them.
+  const conversationProposals = activeId
+    ? actions.proposals
+        .filter((p) => p.conversationId === activeId)
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    : [];
+  // In Auto, safe actions from replies to messages sent in Auto are approved through the normal decision route.
+  const auto = useAutoApprovals({
+    mode: approvalMode,
+    messages,
+    proposals: conversationProposals,
+    autoTurns,
+    onDecided: actions.decided,
+    onStale: actions.stale,
+    onUnauthorized: goToLogin,
+  });
+  const autoRunning = new Set(auto.running.map((p) => p.id));
+  const placedProposals = placeByTime(messages, conversationProposals);
+  const placedSuggestions = placeBySource(messages, memorySuggestions.items);
+  const showSuggestions = activeId !== null && !loadingMessages;
+  const suggestionsFor = (proposals?: ActionProposalDTO[], suggestions?: MemorySuggestion[]) =>
+    showSuggestions && (
+      <TurnExtras
+        proposals={proposals}
+        suggestions={suggestions}
+        approvalMode={approvalMode}
+        autoRunning={autoRunning}
+        autoRan={auto.ran}
+        askReasons={auto.asks}
+        decidedHere={actions.decidedHere}
+        onDecided={actions.decided}
+        onStale={actions.stale}
+        onKept={memorySuggestions.kept}
+        onDropped={memorySuggestions.dropped}
+        onUnauthorized={goToLogin}
+      />
+    );
 
   return (
     <div className="chat-layout">
@@ -468,7 +550,10 @@ export function ChatWorkspace({
             </div>
           )}
           {messages.map((message) => (
-            <MessageItem key={message.id} message={message} />
+            <Fragment key={message.id}>
+              <MessageItem message={message} />
+              {suggestionsFor(placedProposals.byMessage.get(message.id), placedSuggestions.get(message.id))}
+            </Fragment>
           ))}
           {streaming && (
             <article className="message message-assistant" aria-busy="true">
@@ -488,6 +573,7 @@ export function ChatWorkspace({
               {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
           )}
+          {suggestionsFor(placedProposals.rest)}
           <div ref={endRef} />
         </div>
 
@@ -504,6 +590,9 @@ export function ChatWorkspace({
             </button>
           </div>
         )}
+
+        {/* Once per device: choose Ask first or Auto. Outside the form, so Enter on an option cannot send. */}
+        <ApprovalModeSetup />
 
         <form
           className="composer"
@@ -525,6 +614,8 @@ export function ChatWorkspace({
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void submit("send");
+                } else if (event.key === "Escape" && dictation.listening) {
+                  dictation.toggle();
                 }
               }}
               rows={2}
@@ -532,6 +623,13 @@ export function ChatWorkspace({
               placeholder="Ask P-Dot anything…"
               aria-describedby="composer-hint"
             />
+            {dictation.listening && (
+              <p className="dictation-live">
+                <span role="status">Listening… speak now. Tap the microphone or press Esc to stop.</span>
+                {/* Not announced: it changes with every word. The settled words go into the message box. */}
+                {dictation.interim && <span className="dictation-interim">“{dictation.interim}”</span>}
+              </p>
+            )}
             <div className="composer-bar">
               <div className="tools-anchor">
                 {toolsOpen && (
@@ -544,7 +642,7 @@ export function ChatWorkspace({
                       <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />
                       <span>
                         <strong>Search the web</strong>
-                        <span className="hint">Powered by Tavily. Off unless you turn it on.</span>
+                        <span className="hint">Powered by Tavily</span>
                       </span>
                     </label>
                   </div>
@@ -596,6 +694,8 @@ export function ChatWorkspace({
                   ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`
                   : "Enter to send · Shift+Enter for a new line"}
               </span>
+              {/* Kept apart from the effort switch, whose "Auto" is about models, not approvals. */}
+              <ApprovalModeMenu />
               <button
                 type="button"
                 className={`round-button${dictation.listening ? " is-listening" : ""}`}
@@ -632,6 +732,12 @@ export function ChatWorkspace({
           {dictation.error && (
             <p className="alert alert-warning small" role="alert">
               {dictation.error}
+            </p>
+          )}
+          {approvalMode === "auto" && (
+            <p className="approval-mode-hint small">
+              <strong>Auto is on:</strong> tasks and reminders are added on their own, with Undo. Deleting, memories,
+              outside accounts and private data still ask. <Link href="/settings#approvals">What always asks</Link>
             </p>
           )}
           <p className="disclaimer">P-Dot is an AI and can make mistakes, so please double-check anything important.</p>

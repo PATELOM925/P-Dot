@@ -5,7 +5,9 @@ Status: Implemented for the MVP and unit-tested with mocked providers; not yet v
 ## System boundaries
 
 ```text
-Browser: Next.js pages and UI
+Browser: Next.js pages and UI, installable as an app
+   |-- service worker (public/sw.js): offline page and notifications only;
+   |   never caches pages or API responses (decision 0010)
    |
    | authenticated same-origin requests
    v
@@ -29,17 +31,29 @@ src/
   proxy.ts                 session refresh + redirects (Next.js 16 "proxy")
   app/
     page.tsx, layout.tsx   landing page, root layout, globals.css
+    manifest.ts            web app manifest (/manifest.webmanifest)
     (auth)/                login, signup, forgot-password, reset-password
-    (workspace)/           chat, settings (server-side auth guard in layout)
+    (workspace)/           today, chat, memory, workflows, connectors, action-log,
+                           devices, settings (server-side auth guard in layout)
     auth/confirm/          email verification and recovery link handler
     api/
       chat/                POST: streamed assistant reply (NDJSON)
-      conversations/       GET list; [id]/ GET detail, DELETE
+      conversations/       GET list; [id]/ GET detail, PATCH rename, DELETE
+      tasks/               to-do items per mode
+      memories/, documents/, actions/, action-log/, reminders/,
+      messages/[id]/context/   decision 0009
       health/              GET liveness + configured integrations
-  components/layout/       workspace header
+  components/layout/       workspace header, navigation, mode switch
+  components/ui/           LocalTime (dates in the viewer's time zone)
   features/
     auth/                  server actions, form component
-    chat/                  workspace UI, API client, NDJSON reader
+    chat/                  workspace UI, API client, NDJSON reader, "What was sent",
+                           placing suggestions under the reply they came from
+    actions/               approval cards, action log list, display helpers
+    memory/, documents/    the Memory page (memories, documents)
+    reminders/, today/     reminders panel, to-do list
+    connectors/            live status lines for the built-in tools
+    pwa/                   service worker registration, install prompt, notifications
   server/                  server-only modules
     config.ts              env validation (lazy; build needs no secrets)
     log.ts                 metadata-only structured logs
@@ -52,15 +66,17 @@ src/
     http/                  body limits, origin check, error responses, NDJSON
   lib/                     limits, zod schemas, URL safety, Supabase public config
   types/                   API contracts shared with the browser
+public/                    sw.js, offline.html, icons/, _headers (static file caching)
 supabase/migrations/       schema, RLS policies, quota function
 tests/
   unit/                    validation, providers, assistant, API routes
-  integration/             live RLS test (skipped unless configured)
+  integration/             database gate on in-memory Postgres (runs in npm test),
+                           live RLS test (skipped unless configured)
   support/                 in-memory fakes and stream helpers
 docs/decisions/            accepted and proposed decisions
 ```
 
-Parenthesized folders are Next.js route groups and do not appear in URLs. `src/components/ui/`, `src/features/settings/`, and `tests/e2e/` are still empty placeholders.
+Parenthesized folders are Next.js route groups and do not appear in URLs. `src/features/settings/` and `tests/e2e/` are still empty placeholders.
 
 ## Responsibilities
 

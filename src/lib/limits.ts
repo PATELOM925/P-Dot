@@ -35,3 +35,27 @@ export const TASK_LIST_LIMIT = 200;
 
 /** Conversations returned by the history list. */
 export const CONVERSATION_LIST_LIMIT = 50;
+
+// Memory, documents, actions, reminders (decision 0009).
+export const MAX_MEMORY_CHARS = 1_000;
+export const MEMORY_LIST_LIMIT = 200;
+export const MAX_DOCUMENT_TITLE_CHARS = 200;
+/** About 25,000 tokens: at most about 56 chunks, under $0.001 to embed. */
+export const MAX_DOCUMENT_CHARS = 100_000;
+/** Request body limit for a document upload (JSON with the text). */
+export const MAX_DOCUMENT_BODY_BYTES = 512 * 1024;
+export const DOCUMENT_LIST_LIMIT = 100;
+export const DOCUMENT_CHUNK_CHARS = 2_000;
+export const DOCUMENT_CHUNK_OVERLAP_CHARS = 200;
+export const MAX_DOCUMENT_CHUNKS = 100;
+export const MAX_REMINDER_TITLE_CHARS = 200;
+export const REMINDER_LIST_LIMIT = 200;
+export const MAX_ACTION_SUMMARY_CHARS = 300;
+export const ACTION_LIST_LIMIT = 100;
+export const ACTION_LOG_LIMIT = 200;
+/** Matches returned by similarity search (the database caps it at 20). */
+export const RETRIEVAL_MATCH_COUNT = 5;
+/** Embedding size. Must match vector(1024) in the database. */
+export const EMBEDDING_DIMENSIONS = 1_024;
+/** Texts per embedding request. */
+export const EMBEDDING_BATCH_SIZE = 32;

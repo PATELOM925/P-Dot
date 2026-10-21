@@ -1,0 +1,17 @@
+import { deleteResource, sendJson } from "@/lib/api-client";
+import type { Mode, ReminderDTO, ReminderStatus } from "@/types/api";
+
+export async function createReminder(mode: Mode, title: string, dueAt: string): Promise<ReminderDTO> {
+  return sendJson<ReminderDTO>("/api/reminders", "POST", { mode, title, dueAt });
+}
+
+export async function updateReminder(
+  id: string,
+  changes: { title?: string; dueAt?: string; status?: ReminderStatus },
+): Promise<ReminderDTO> {
+  return sendJson<ReminderDTO>(`/api/reminders/${encodeURIComponent(id)}`, "PATCH", changes);
+}
+
+export async function deleteReminder(id: string): Promise<void> {
+  await deleteResource(`/api/reminders/${encodeURIComponent(id)}`);
+}

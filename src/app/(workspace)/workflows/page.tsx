@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
+import { RemindersPanel } from "@/features/reminders/RemindersPanel";
+import { REMINDER_LIST_LIMIT } from "@/lib/limits";
 import { requireAuth } from "@/server/auth/session";
+import { createReminderRepository } from "@/server/db/reminders";
+import { getMode } from "@/server/mode";
 
 export const metadata: Metadata = { title: "Workflows · P-Dot" };
 
@@ -28,27 +32,38 @@ const PLANNED = [
 ];
 
 export default async function WorkflowsPage() {
-  await requireAuth("/workflows");
+  const auth = await requireAuth("/workflows");
+  const mode = await getMode();
+  const reminders = await createReminderRepository(auth.supabase).listReminders(
+    auth.userId,
+    mode,
+    REMINDER_LIST_LIMIT,
+  );
 
   return (
     <main className="page page-wide stack">
       <div>
         <h1>Workflows</h1>
         <p className="muted">
-          Repeatable routines P-Dot will run for you. Anything that sends, books or deletes will wait for your approval.
+          Reminders and repeatable routines. Anything that sends, books or deletes will wait for your approval.
         </p>
       </div>
 
-      <p className="alert alert-warning" role="status">
-        Workflows are not available yet. They need connectors and a scheduler, which are still being planned. This page
-        previews what they will look like; nothing here runs.
-      </p>
+      <RemindersPanel key={mode} mode={mode} initialReminders={reminders} />
+
+      <div className="section-heading">
+        <h2>Planned routines</h2>
+        <p className="muted">
+          Routines are not available yet. They need connectors and a scheduler, which are still being planned. These
+          cards preview what they will look like; nothing here runs.
+        </p>
+      </div>
 
       <div className="card-grid">
         {PLANNED.map((workflow) => (
           <article key={workflow.name} className="panel">
             <div className="panel-heading">
-              <h2>{workflow.name}</h2>
+              <h3>{workflow.name}</h3>
               <span className="status-pill">Coming soon</span>
             </div>
             <p className="muted">{workflow.when}</p>
