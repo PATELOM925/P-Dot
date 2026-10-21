@@ -17,6 +17,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - It reads stored `action_log` and `action_proposals` rows, NULLs included, through the app's own repositories.
     - Three checks fail on `main` and are marked as expected failures until the memory hardening migration lands: the nested log detail, the `action_log` insert grant and the `action_proposals` update grant.
     - `tests/integration/frozen-migrations.test.ts` fails when a migration that is on `main` changes, and tells the author to add a new migration.
+    - Test hooks have 60 seconds (`vitest.config.ts`), because starting the database and applying every migration can take more than 10 seconds when test files run in parallel.
 - **Dynamic personal bot usage showcase on the landing page.** PR: not opened yet.
   - Problem: the landing page showed only a single static example ("Get me ready for Friday and book a haircut"), with non-interactive buttons, giving visitors a narrow view of what a personal bot can do across different life and work domains.
   - Resolution:
