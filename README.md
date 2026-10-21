@@ -173,6 +173,8 @@ npm test
 
 The 10 tests in `tests/integration/rls.test.ts` should then run instead of being skipped. One checks the model route columns on messages. They also reserve and give back a few micro-dollars through the spend guard functions.
 
+`npm test` also runs the database gate (`tests/integration/sql-gate.test.ts`) without any setup. It applies every migration to an in-memory Postgres (PGlite with pgvector) that has stand-ins for the Supabase roles, `auth.uid()` and the Supabase default grants, then checks grants and RLS as `anon` and as two signed-in users, and reads stored rows through the app's own parsers. `tests/integration/frozen-migrations.test.ts` fails if a migration that is on `main` changes: add a new migration instead. The pull request that adds a migration also adds its hash to `tests/integration/frozen-migrations.sha256`.
+
 ### Housekeeping
 
 | Command | Effect |
@@ -193,7 +195,7 @@ The 10 tests in `tests/integration/rls.test.ts` should then run instead of being
 | `npm run check:worker-env` | Check the last OpenNext build for secret values copied from `.env` files |
 | `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules) |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Vitest unit tests; the live RLS integration test is skipped unless configured |
+| `npm test` | Vitest unit tests and the database gate (in-memory Postgres, no setup); the live RLS integration test is skipped unless configured |
 | `npm run check` | Lint, type-check, and tests |
 
 To run the row-level security test against a **test** Supabase project, set the `SUPABASE_TEST_*` variables listed at the top of [`tests/integration/rls.test.ts`](tests/integration/rls.test.ts).
@@ -235,7 +237,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `src/server/` | Server-only code: config, auth session, Supabase repositories, assistant orchestration, Nebius/Tavily adapters, HTTP helpers |
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
 | `supabase/migrations/` | Database schema, RLS policies, the quota function, the modes/rename/tasks migration, and the global spend guard |
-| `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
+| `tests/` | Unit tests (`unit/`), the database gate and the live Supabase RLS test (`integration/`), shared fakes (`support/`) |
 | `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
 | `CHANGELOG.md` | What changed, the problem, and how it was resolved, for each pull request |
 | `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle |

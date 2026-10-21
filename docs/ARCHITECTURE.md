@@ -70,7 +70,8 @@ public/                    sw.js, offline.html, icons/, _headers (static file ca
 supabase/migrations/       schema, RLS policies, quota function
 tests/
   unit/                    validation, providers, assistant, API routes
-  integration/             live RLS test (skipped unless configured)
+  integration/             database gate on in-memory Postgres (runs in npm test),
+                           live RLS test (skipped unless configured)
   support/                 in-memory fakes and stream helpers
 docs/decisions/            accepted and proposed decisions
 ```

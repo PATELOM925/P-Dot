@@ -9,6 +9,15 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **A database test gate that runs in `npm test`.** PR: not opened yet.
+  - Problem: the same kind of database defect reached review three times. Grants let a signed-in user write rows the app trusts (`action_log` inserts, `action_proposals` updates that can reset an approved action, `context_records`). The database also accepted a nested `action_log` detail that the app's log reader refuses, so one row broke the whole list. Each time, a reviewer proved it by hand in a throwaway database.
+  - Resolution:
+    - `tests/integration/sql-gate.test.ts` applies every migration, unchanged and in name order, to an in-memory Postgres (PGlite 0.5.10 with pgvector 0.0.11, dev dependencies only). Stand-ins model the Supabase roles, `auth.uid()` and the Supabase default grants. A check on a new table proves that the stand-in grants are live.
+    - It checks that `anon` has no access to any table or function, that one user cannot read, change, delete or insert another user's rows in every table, that `id`, `user_id` and `created_at` cannot be updated, and that search returns only the caller's rows. A new table fails the gate until it is classified.
+    - It reads stored `action_log` and `action_proposals` rows, NULLs included, through the app's own repositories.
+    - Three checks fail on `main` and are marked as expected failures until the memory hardening migration lands: the nested log detail, the `action_log` insert grant and the `action_proposals` update grant.
+    - `tests/integration/frozen-migrations.test.ts` fails when a migration that is on `main` changes, and tells the author to add a new migration.
+    - Test hooks have 60 seconds (`vitest.config.ts`), because starting the database and applying every migration can take more than 10 seconds when test files run in parallel.
 - **Dynamic personal bot usage showcase on the landing page.** PR: not opened yet.
   - Problem: the landing page showed only a single static example ("Get me ready for Friday and book a haircut"), with non-interactive buttons, giving visitors a narrow view of what a personal bot can do across different life and work domains.
   - Resolution:
@@ -49,6 +58,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - No server change. Decision 0011 holds the backend recipe: the mode in the chat request, `decided_by`, running in the tool loop before `done`, sensitive reads as proposals, and tests.
 
 ### Fixed
+- **Database expand step for the memory hardening** (decision [0009](docs/decisions/0009-memory-documents-actions.md)). PR: [#18](https://github.com/PATELOM925/P-Dot/pull/18).
+  - Problem: the code that makes only the database write the action log and decide action proposals (PR #13) needs a new database function and log triggers. If that code went live before its migration, its writes would succeed with no log row. The migration must also not break the code on main.
+  - Resolution: migration `20261021000000_memory_hardening.sql` only adds. It adds the log triggers, `decide_action_proposal`, the `decided_by_function` trust marker, a protected `verified` column on the log (true only for a row the log triggers wrote, and for an action outcome only when the function decided it; a `verified` key in the detail is removed, so a caller cannot supply it), triggers that check new rows and changed columns only, a forward-only proposal status, explicit grants, and it removes TRUNCATE, REFERENCES and TRIGGER from the API roles. It keeps the older grants, so main keeps working. The database gate checks main's code against it. `docs/DEPLOYMENT.md` gives the order: this PR, then PR #13, then PR #17, with a check before each merge and the rollback rule.
 - **Dictation was blocked by P-Dot's own security header.** PR: not opened yet.
   - Problem: `next.config.ts` sent `Permissions-Policy: microphone=()`, which turns the microphone off on every page, so the microphone button showed as available but Chrome refused it, and the message told users to change their own browser settings. Words heard after Send also landed in the next message.
   - Resolution: the header now allows the microphone for P-Dot's own pages only (`microphone=(self)`; camera and location stay off), with a test. The button is disabled when a page cannot use the microphone. While listening, the words being heard show under the message box; finished phrases are added within the message length limit; Esc, Send and switching conversations stop listening and drop any later words; stopping on purpose shows no error; Chrome on Android listens for one phrase per tap, because continuous listening there repeats words.
