@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 import { LocalTime } from "@/components/ui/LocalTime";
 import { ApiError } from "@/lib/api-client";
 import { MAX_MEMORY_CHARS } from "@/lib/limits";
+import { RequestKey } from "@/lib/request-key";
 import { MODE_LABELS } from "@/lib/mode";
 import type { MemoryDTO, Mode } from "@/types/api";
 import { createMemory, deleteMemory, memoryErrorMessage as friendlyError, updateMemory } from "./api";
@@ -21,6 +22,8 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  // One key for the memory being added, so a resend after an error cannot save it twice.
+  const [requestKey] = useState(() => new RequestKey());
 
   const onError = (err: unknown, fallback: string) => {
     if (err instanceof ApiError && err.status === 401) {
@@ -37,11 +40,13 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
     setAdding(true);
     setError(null);
     try {
-      const memory = await createMemory(mode, content);
-      setMemories((list) => [memory, ...list]);
+      const memory = await createMemory(mode, content, requestKey.keyFor(JSON.stringify([mode, content])));
+      requestKey.clear();
+      setMemories((list) => [memory, ...list.filter((m) => m.id !== memory.id)]);
       setDraft("");
       setStatus("Memory saved.");
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) requestKey.clear();
       onError(err, "Could not save the memory.");
     } finally {
       setAdding(false);

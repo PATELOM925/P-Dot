@@ -6,10 +6,15 @@
  * - "refused": the write does not happen and the call fails.
  * - "lost": the write happens (it commits) and then the call fails, as if the
  *   response was lost on the way back.
+ * - "delayed": the call fails at once, and the write commits later, when the
+ *   scenario calls `flushDelayed()` (a timeout while the database still runs it).
+ *
+ * A method wrapped as a read fails only as "refused": a read has nothing to commit.
  */
-export type WriteFault = "refused" | "lost";
+export type WriteFault = "refused" | "lost" | "delayed";
 
 export const WRITE_FAULTS: readonly WriteFault[] = ["refused", "lost"];
+export const ALL_WRITE_FAULTS: readonly WriteFault[] = ["refused", "lost", "delayed"];
 
 type AsyncMethodKey<T> = {
   [K in keyof T]-?: T[K] extends (...args: never[]) => Promise<unknown> ? K : never;
@@ -35,13 +40,18 @@ export interface WrapOptions {
   detail?: (method: string, args: unknown[]) => string;
   /** The result of a failed call. Default: the call throws WriteFaultError. */
   failWith?: (error: WriteFaultError) => unknown;
+  /** The methods read and do not write. They count, and fail only as "refused". */
+  read?: boolean;
 }
 
 export class WriteFaults {
   /** The label of every counted write, in order. */
   readonly calls: string[] = [];
+  /** True for each counted call that is a read, in the same order as `calls`. */
+  readonly reads: boolean[] = [];
   readonly fired: FiredFault[] = [];
   private readonly planned = new Map<number, WriteFault>();
+  private readonly delayed: (() => Promise<unknown>)[] = [];
   private counting = true;
 
   fail(fault: WriteFault, ...steps: number[]): this {
@@ -55,6 +65,11 @@ export class WriteFaults {
     this.planned.clear();
   }
 
+  /** Commits the delayed writes now, in order. A write the store now refuses is dropped. */
+  async flushDelayed(): Promise<void> {
+    for (const write of this.delayed.splice(0)) await write().catch(() => undefined);
+  }
+
   wrap<T extends object>(target: T, methods: readonly AsyncMethodKey<T>[], options: WrapOptions = {}): T {
     const prefix = options.label ?? target.constructor.name;
     for (const method of methods) {
@@ -65,10 +80,12 @@ export class WriteFaults {
         const detail = options.detail?.(name, args);
         const label = `${prefix}.${name}${detail ? `:${detail}` : ""}`;
         this.calls.push(label);
+        this.reads.push(options.read === true);
         const step = this.calls.length;
         const fault = this.planned.get(step);
         if (!fault) return original.apply(target, args);
         if (fault === "lost") await original.apply(target, args);
+        if (fault === "delayed") this.delayed.push(() => original.apply(target, args));
         const fired = { step, fault, label };
         this.fired.push(fired);
         const error = new WriteFaultError(fired);
@@ -132,7 +149,8 @@ export async function sweepWriteFaults(
 
     if (plan.length >= depth) continue;
     for (let step = (plan.at(-1)?.step ?? 0) + 1; step <= run.calls.length; step += 1) {
-      for (const fault of faults) queue.push([...plan, { step, fault, label: run.calls[step - 1]! }]);
+      const allowed = run.reads[step - 1] ? faults.filter((fault) => fault === "refused") : faults;
+      for (const fault of allowed) queue.push([...plan, { step, fault, label: run.calls[step - 1]! }]);
     }
     if (queue.length - 1 > maxCases) {
       throw new Error(`The sweep needs more than ${maxCases} cases. Lower the depth or raise maxCases.`);

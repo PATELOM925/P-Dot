@@ -107,6 +107,13 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - **Numbers (2026-10-20):** the largest valid chat turn (Work mode, 41 messages of 3-byte characters that fill the 24,000-character history budget, search on, Ultra, 8,192 output tokens) holds 138,233 micro-dollars. With worst-case search results its final prompt needs 130,279. A test through the real Tavily adapter checks both and keeps the hold under 150,000.
 - **Sources:** PR #2 commit 1945dda and fix eab3260; PR #6 commit 0dce68a; [PR #14](https://github.com/PATELOM925/P-Dot/pull/14).
 
+### 12. A stream cancelled before its first read kept its hold
+
+- **What happened:** `prepareChatTurn` reserves the Nebius hold before the response exists. The hold was given back in the `finally` of the stream generator. If the client cancels the response before the first read, `toNdjsonStream` calls `events.return()` on a generator that never started, so its body and its `finally` never run, and the hold stays counted. A review of decision 0012 found this with `toNdjsonStream(...).cancel()` on main.
+- **Fix:** the prepared turn owns its holds (`TurnHolds`): the Nebius hold, the Tavily credit and the reply claim. `releaseTurn` gives back each part that no use took, once, under `waitUntil`. The generator's `finally` calls it, and the chat route passes it to `toNdjsonStream` as `onCancel`. A part leaves the holds when its use starts (an attempt takes the hold, the search starts), so a hold whose provider use is unknown is never given back.
+- **Rule:** cleanup that must always run cannot live only in a generator's `finally`. Give it an owner that exists before the stream starts, and test a cancel before the first read.
+- **Sources:** [decision 0012](decisions/0012-resend-idempotency.md), review round 1; `tests/unit/api-routes.test.ts` ("cancelled before its first read").
+
 ## Checklists
 
 **Add or change a model**

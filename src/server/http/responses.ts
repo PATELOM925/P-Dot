@@ -26,8 +26,9 @@ export function errorResponse(
   message: string,
   requestId: string,
   headers?: Record<string, string>,
+  extra: { conversationId?: string } = {},
 ): Response {
-  const body: ApiErrorBody = { error: { code, message, requestId } };
+  const body: ApiErrorBody = { error: { code, message, requestId, ...extra } };
   return jsonResponse(body, requestId, { status, headers });
 }
 

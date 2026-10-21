@@ -23,8 +23,8 @@ const failure = (error: unknown): Reply => ({
 /**
  * A Supabase client that runs repository calls in the SQL gate as the
  * signed-in user, so RLS, grants and triggers apply. It supports
- * `from().select().eq().order().limit()`, `from().update().eq().select().maybeSingle()`
- * and `rpc()`. Rows come back through `json_agg` or `to_json`, which is how
+ * `from().select().eq().order().limit()`, `from().update().eq().select().maybeSingle()`,
+ * `from().insert().select().single()` and `rpc()`. Rows come back through `json_agg` or `to_json`, which is how
  * PostgREST builds its response, so timestamps are strings and NULLs stay
  * NULL, as in production.
  */
@@ -35,6 +35,7 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
     let ordering = "";
     let limit: number | null = null;
     let changes: Record<string, unknown> | null = null;
+    let inserted: Record<string, unknown> | null = null;
     let single = false;
 
     const where = (offset: number) =>
@@ -72,8 +73,26 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
       }
     };
 
+    // An object or array value is sent as JSON text; Postgres casts it to the jsonb column.
+    const parameter = (value: unknown) => (value !== null && typeof value === "object" ? JSON.stringify(value) : value);
+
+    const runInsert = async (): Promise<Reply> => {
+      const entries = Object.entries(inserted ?? {});
+      const names = entries.map(([column]) => identifier(column)).join(", ");
+      const values = entries.map((_, index) => `$${index + 1}`).join(", ");
+      const sql = `with t as (
+          insert into public.${identifier(table)} (${names}) values (${values}) returning ${columns}
+        ) select coalesce(json_agg(t), '[]'::json) as data from t`;
+      try {
+        const result = await gate.as<{ data: unknown[] }>(user(userId), sql, entries.map(([, value]) => parameter(value)));
+        return { data: result.rows[0]!.data, error: null };
+      } catch (error) {
+        return failure(error);
+      }
+    };
+
     const run = async (): Promise<Reply> => {
-      const reply = changes ? await runUpdate() : await runSelect();
+      const reply = inserted ? await runInsert() : changes ? await runUpdate() : await runSelect();
       if (!single || reply.error) return reply;
       const rows = reply.data as unknown[];
       if (rows.length > 1) return { data: null, error: { code: "PGRST116", message: "more than one row" } };
@@ -90,6 +109,10 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
       },
       update(values: Record<string, unknown>) {
         changes = values;
+        return builder;
+      },
+      insert(values: Record<string, unknown>) {
+        inserted = values;
         return builder;
       },
       eq(column: string, value: unknown) {
@@ -109,6 +132,10 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
         single = true;
         return builder;
       },
+      single() {
+        single = true;
+        return builder;
+      },
       then<R1, R2>(
         onFulfilled?: ((value: Reply) => R1 | PromiseLike<R1>) | null,
         onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null,
@@ -119,7 +146,20 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
     return builder;
   };
 
-  /** Calls a function with named arguments, as PostgREST does. An object argument is sent as jsonb. */
+  const returnsSet = async (name: string): Promise<boolean> => {
+    const result = await gate.admin<{ set: boolean }>(
+      `select p.proretset as set from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.proname = $1`,
+      [name],
+    );
+    return result.rows[0]?.set === true;
+  };
+
+  /**
+   * Calls a function with named arguments, as PostgREST does: a function that
+   * returns a table answers an array of rows, any other function its value.
+   * An object argument is sent as jsonb.
+   */
   const rpc = async (name: string, args: Record<string, unknown> = {}): Promise<Reply> => {
     const entries = Object.entries(args);
     const list = entries
@@ -127,8 +167,12 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
       .join(", ");
     const params = entries.map(([, value]) => (value !== null && typeof value === "object" ? JSON.stringify(value) : value));
     try {
-      const result = await gate.as<{ data: unknown }>(user(userId), `select to_json(public.${identifier(name)}(${list})) as data`, params);
-      return { data: result.rows[0]!.data, error: null };
+      const call = `public.${identifier(name)}(${list}) f`;
+      const sql = (await returnsSet(name))
+        ? `select coalesce(json_agg(to_json(f)), '[]'::json) as data from ${call}`
+        : `select to_json(f) as data from ${call}`;
+      const result = await gate.as<{ data: unknown }>(user(userId), sql, params);
+      return { data: result.rows[0]?.data ?? null, error: null };
     } catch (error) {
       return failure(error);
     }

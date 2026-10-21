@@ -1,4 +1,5 @@
 import { ApiError, deleteResource, errorMessage, getJson, sendJson } from "@/lib/api-client";
+import { REQUEST_KEY_HEADER } from "@/lib/request-key";
 import type { MemoryDTO, MemoryStatus, Mode } from "@/types/api";
 
 export async function fetchMemories(mode: Mode, status?: MemoryStatus, signal?: AbortSignal): Promise<MemoryDTO[]> {
@@ -6,8 +7,8 @@ export async function fetchMemories(mode: Mode, status?: MemoryStatus, signal?: 
   return (await getJson<{ memories: MemoryDTO[] }>(`/api/memories?${query}`, signal)).memories;
 }
 
-export async function createMemory(mode: Mode, content: string): Promise<MemoryDTO> {
-  return sendJson<MemoryDTO>("/api/memories", "POST", { mode, content });
+export async function createMemory(mode: Mode, content: string, requestKey: string): Promise<MemoryDTO> {
+  return sendJson<MemoryDTO>("/api/memories", "POST", { mode, content }, { [REQUEST_KEY_HEADER]: requestKey });
 }
 
 /** Edit the text or mode, or approve a proposed memory with status "active". */

@@ -1,6 +1,7 @@
 import "server-only";
 import { ConfigError } from "@/lib/supabase-config";
 import { getAuthContext, type AuthContext } from "@/server/auth/session";
+import { SchemaMissingError } from "@/server/db/conversations";
 import { logEvent } from "@/server/log";
 import { isSameOrigin } from "./request";
 import { errorResponse, newRequestId, notConfigured, unauthorized } from "./responses";
@@ -44,6 +45,9 @@ export async function withAuthenticatedRoute(
     if (error instanceof ConfigError) {
       logEvent("error", "config_missing", { requestId, route: options.route, missing: error.missing.join(",") });
       return finish(notConfigured(requestId));
+    }
+    if (error instanceof SchemaMissingError) {
+      logEvent("error", "schema_missing", { requestId, route: options.route });
     }
     logEvent("error", "unhandled_route_error", {
       requestId,

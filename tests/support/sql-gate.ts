@@ -78,16 +78,20 @@ async function enterRole(tx: Transaction, actor: Actor): Promise<void> {
 /**
  * Starts an in-memory Postgres, applies the Supabase stand-ins, then every
  * migration unchanged. `beforeMigration` runs as the owner just before the
- * named file, to seed rows that an older schema allowed.
+ * named file, to seed rows that an older schema allowed. `stopBefore` leaves
+ * out the named file and every later one, to run code against an older schema.
  */
 export async function startSqlGate(
-  options: { defaults?: DefaultGrants; beforeMigration?: { file: string; sql: string } } = {},
+  options: { defaults?: DefaultGrants; beforeMigration?: { file: string; sql: string }; stopBefore?: string } = {},
 ): Promise<SqlGate> {
   const defaults = options.defaults ?? "legacy";
   const pg = await PGlite.create({ extensions: { vector } });
   await pg.exec(SUPABASE_BOOTSTRAP);
   if (defaults === "legacy") await pg.exec(LEGACY_DEFAULT_GRANTS);
-  for (const file of migrationFiles()) {
+  const files = migrationFiles();
+  if (options.stopBefore && !files.includes(options.stopBefore)) throw new Error(`No migration ${options.stopBefore}`);
+  for (const file of files) {
+    if (file === options.stopBefore) break;
     if (options.beforeMigration?.file === file) await pg.exec(options.beforeMigration.sql);
     try {
       await pg.exec(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));

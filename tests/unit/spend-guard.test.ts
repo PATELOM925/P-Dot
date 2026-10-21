@@ -263,7 +263,10 @@ describe("chat flow with the spend guard", () => {
     release();
     await cancelled;
     expect(spend.reservations[0]!.settled).toBe(spend.reservations[0]!.held);
-    expect(waited).toHaveLength(1);
+    // The settle, and the end of the reply claim: both run under waitUntil.
+    expect(waited).toHaveLength(2);
+    const repo = deps.repo as MemoryRepository;
+    expect(repo.claimOf(prepared.turn.userMessage.id)).toBeNull();
   });
 
   it("does not fail the reply when the settle fails", async () => {

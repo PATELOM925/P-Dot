@@ -1,11 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { REPLY_CLAIM_LEASE_SECONDS } from "@/lib/limits";
 import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
+import { requestFingerprint } from "@/server/http/request-key";
 import { readChatStream } from "@/features/chat/stream";
 import { FakeContextRecords, FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps, testRouting } from "../support/fakes";
+import { createBarrier } from "../support/barrier";
 import { collect } from "../support/streams";
-import { WriteFaults, describeCase, hasFault, sweepWriteFaults, type SweepCase, type WriteFault } from "../support/write-faults";
+import {
+  ALL_WRITE_FAULTS,
+  WriteFaults,
+  describeCase,
+  hasFault,
+  sweepWriteFaults,
+  type SweepCase,
+  type WriteFault,
+} from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -18,7 +29,7 @@ vi.mock("@/server/db/conversations", async (importOriginal) => ({
 const { getAuthContext } = await import("@/server/auth/session");
 const { getAssistantConfig } = await import("@/server/config");
 const { createAssistantDeps } = await import("@/server/assistant/deps");
-const { createConversationRepository } = await import("@/server/db/conversations");
+const { createConversationRepository, SchemaMissingError } = await import("@/server/db/conversations");
 const chatRoute = await import("@/app/api/chat/route");
 const listRoute = await import("@/app/api/conversations/route");
 const itemRoute = await import("@/app/api/conversations/[id]/route");
@@ -170,40 +181,26 @@ describe("POST /api/chat", () => {
 
 describe("POST /api/chat when one write fails", () => {
   const MESSAGE = "Plan my week";
+  const KEY = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const LEASE_MS = REPLY_CLAIM_LEASE_SECONDS * 1000;
   type Variant = "new" | "existing" | "search";
 
   /**
-   * Faults that leave a duplicate today (see the it.fails tests below). A case
-   * with one of them is still checked for stuck rows and for an error answer.
+   * One chat turn with faults, then recovery as the chat screen does it: a
+   * resend of the same draft with the same request key, or "Retry reply". A
+   * 409 "busy" means a claim is still live; the user tries again after the lease.
    */
-  const KNOWN_DUPLICATES: Record<Variant, [WriteFault, string][]> = {
-    new: [
-      ["refused", "MemoryRepository.insertMessage:user"],
-      ["lost", "MemoryRepository.createConversation"],
-      ["lost", "MemoryRepository.insertMessage:user"],
-    ],
-    search: [
-      ["refused", "MemoryRepository.insertMessage:user"],
-      ["lost", "MemoryRepository.createConversation"],
-      ["lost", "MemoryRepository.insertMessage:user"],
-    ],
-    existing: [["lost", "MemoryRepository.insertMessage:user"]],
-  };
-
-  async function chatScenario(
-    variant: Variant,
-    faults: WriteFaults,
-    sweepCase: SweepCase,
-    checkDuplicates = !KNOWN_DUPLICATES[variant].some(([fault, label]) => hasFault(sweepCase, fault, label)),
-    strictRecord = false,
-  ) {
+  async function chatScenario(variant: Variant, faults: WriteFaults, sweepCase: SweepCase, strictRecord = false) {
     const at = `${variant} conversation, ${describeCase(sweepCase)}`;
     repo = new MemoryRepository();
+    let clock = Date.UTC(2026, 9, 14, 12, 0, 0);
+    repo.now = () => clock;
     const spend = new FakeSpend();
     const quota = new FakeQuota();
     const contextRecords = new FakeContextRecords();
     const existing = variant === "existing" ? await repo.createConversation(ALICE, "Earlier", "personal") : null;
-    faults.wrap(repo, ["createConversation", "insertMessage"], {
+    faults.wrap(repo, ["findMessageByClientRequest", "findConversationByClientRequest", "getMessage"], { read: true });
+    faults.wrap(repo, ["createConversation", "insertMessage", "claimReply", "releaseReplyClaim"], {
       detail: (method, args) => (method === "insertMessage" ? String((args[1] as { role: string }).role) : ""),
     });
     faults.wrap(spend, ["reserve", "settle"], {
@@ -217,34 +214,44 @@ describe("POST /api/chat when one write fails", () => {
     signInAs(ALICE);
 
     const webSearch = variant === "search";
-    const send = () =>
-      chatRoute.POST(
-        chatRequest({ action: "send", message: MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) }),
-      );
     const events = async (response: Response) => {
       const read = response.status === 200 ? await collect(readChatStream(response.body!)) : [];
       await Promise.all(fake.waited.splice(0));
       return read;
     };
+    const send = () =>
+      chatRoute.POST(
+        chatRequest(
+          { action: "send", message: MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) },
+          { "Idempotency-Key": KEY },
+        ),
+      );
+    const retry = (conversationId: string) => chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch }));
+    const afterBusy = async (request: () => Promise<Response>) => {
+      const response = await request();
+      if (response.status !== 409 || (await response.clone().json()).error.code !== "busy") return response;
+      clock += LEASE_MS + 1000;
+      return request();
+    };
 
     const first = await send();
     const firstEvents = await events(first);
     faults.disarm();
+    await faults.flushDelayed();
     const started = firstEvents.find((e) => e.type === "start");
     const done = firstEvents.some((e) => e.type === "done");
     if (!started) expect(first.status, `${at}: an error before the stream`).toBeGreaterThanOrEqual(500);
     if (started && !done) expect(firstEvents.at(-1)?.type, at).toBe("error");
 
-    // Recover like the chat screen: no start means the draft comes back and the user sends
-    // again; a start without done means the screen offers "Retry reply".
     if (!started) {
-      const again = await events(await send());
+      const again = await events(await afterBusy(send));
       expect(again.at(-1)?.type, `${at}: resend`).toBe("done");
     } else if (!done) {
       const conversationId = started.type === "start" ? started.conversation.id : "";
-      const retry = await chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch }));
-      const retried = await events(retry);
-      if (retry.status !== 409) expect(retried.at(-1)?.type, `${at}: retry`).toBe("done");
+      const retried = await afterBusy(() => retry(conversationId));
+      const retriedEvents = await events(retried);
+      if (retried.status === 409) expect((await retried.json()).error.code, `${at}: retry`).toBe("answered");
+      else expect(retriedEvents.at(-1)?.type, `${at}: retry`).toBe("done");
     }
 
     const spendFaults = faults.fired.filter((f) => f.label.startsWith("FakeSpend")).length;
@@ -260,33 +267,42 @@ describe("POST /api/chat when one write fails", () => {
     const thread = repo.messages.filter((m) => m.conversationId === target?.id);
     const reply = thread.at(-1);
     expect(reply?.role, `${at}: the last message has its reply`).toBe("assistant");
+    expect(mine, `${at}: no extra conversation`).toHaveLength(1);
+    expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
+    expect(fake.calls.length, `${at}: at most one provider call for each claim`).toBeLessThanOrEqual(quota.calls);
 
     const records = contextRecords.records.filter((r) => r.messageId === reply?.id);
-    // A refused record write only logs a warning (decision 0009). A lost reply response is the known defect below.
+    // A refused record write only logs a warning (decision 0009). A reply whose save could not be
+    // confirmed in its own request (lost or delayed insert, refused read-back) has no record.
+    const replySaveUnconfirmed = ["lost", "delayed"].some((fault) =>
+      hasFault(sweepCase, fault as WriteFault, "MemoryRepository.insertMessage:assistant"),
+    );
     const recordMayBeMissing =
       hasFault(sweepCase, "refused", "FakeContextRecords.insertContextRecord") ||
-      (!strictRecord && hasFault(sweepCase, "lost", "MemoryRepository.insertMessage:assistant"));
+      hasFault(sweepCase, "delayed", "FakeContextRecords.insertContextRecord") ||
+      (!strictRecord && replySaveUnconfirmed);
     if (!recordMayBeMissing) expect(records, `${at}: one "what was sent" record for the reply`).toHaveLength(1);
     expect(records.length, at).toBeLessThanOrEqual(1);
     expect(contextRecords.records.length, `${at}: no record without a saved reply`).toBeLessThanOrEqual(1);
-
-    if (!checkDuplicates) return;
-    expect(mine, `${at}: no extra conversation`).toHaveLength(1);
-    expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
   }
 
   it.each(["new", "existing", "search"] as const)(
-    "%s conversation: every write, up to two faults, ends with one message, its reply and its record",
+    "%s conversation: every write and read, up to two faults, ends with one message, its reply and its record",
     async (variant) => {
-      const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase));
+      const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase), {
+        faults: ALL_WRITE_FAULTS,
+        maxCases: 1500,
+      });
       const labels = new Set(cases.map((c) => c.at(-1)!.label));
       for (const label of [
+        "MemoryRepository.findMessageByClientRequest",
         "FakeQuota.consume",
         "FakeSpend.reserve:nebius",
         "MemoryRepository.insertMessage:user",
         "MemoryRepository.insertMessage:assistant",
         "FakeSpend.settle:nebius",
         "FakeContextRecords.insertContextRecord",
+        ...(variant === "existing" ? [] : ["MemoryRepository.findConversationByClientRequest", "MemoryRepository.createConversation"]),
         ...(variant === "search" ? ["FakeSpend.reserve:tavily"] : []),
       ]) {
         expect(labels, label).toContain(label);
@@ -294,30 +310,278 @@ describe("POST /api/chat when one write fails", () => {
     },
   );
 
-  // Defect: these writes happen before the stream starts, so the route answers 500 and the
-  // screen gives the draft back. A resend then repeats work the first request already saved.
-  it.fails.each([
+  it.each([
     ["new", "refused", "MemoryRepository.insertMessage:user", "leaves an empty conversation"],
     ["new", "lost", "MemoryRepository.createConversation", "leaves an empty conversation"],
     ["new", "lost", "MemoryRepository.insertMessage:user", "leaves a second conversation with the same message"],
     ["existing", "lost", "MemoryRepository.insertMessage:user", "saves the user message twice"],
-  ] as const)("%s conversation, %s %s, then a resend: %s", async (variant, fault, label, _defect) => {
+  ] as const)("%s conversation, %s %s, then a resend with the same key: no longer %s", async (variant, fault, label, _defect) => {
     void _defect;
     const dry = new WriteFaults();
     await chatScenario(variant, dry, []);
     const step = dry.calls.indexOf(label) + 1;
     expect(step).toBeGreaterThan(0);
-    await chatScenario(variant, new WriteFaults().fail(fault, step), [{ step, fault, label }], true);
+    await chatScenario(variant, new WriteFaults().fail(fault, step), [{ step, fault, label }]);
   });
 
-  // Defect: the reply is saved but its response is lost, so the turn ends with an error and
-  // writes no "what was sent" record. The retry gets 409, so the saved reply never gets one.
-  it.fails("a lost response on the reply write: the saved reply has its record", async () => {
+  it("a lost response on the reply write: the reply is read back by its ID and gets its record", async () => {
     const label = "MemoryRepository.insertMessage:assistant";
     const dry = new WriteFaults();
     await chatScenario("existing", dry, []);
     const step = dry.calls.indexOf(label) + 1;
-    await chatScenario("existing", new WriteFaults().fail("lost", step), [{ step, fault: "lost", label }], true, true);
+    await chatScenario("existing", new WriteFaults().fail("lost", step), [{ step, fault: "lost", label }], true);
+  });
+});
+
+describe("POST /api/chat with a request key (decision 0012)", () => {
+  const KEY = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const keyed = { "Idempotency-Key": KEY };
+  const send = (body: Record<string, unknown> = {}, headers: Record<string, string> = keyed) =>
+    chatRoute.POST(chatRequest({ action: "send", message: "Plan my week", webSearch: false, ...body }, headers));
+  const errorOf = async (response: Response) => (await response.json()).error as { code: string; conversationId?: string };
+
+  /** A provider that waits at a barrier before it answers, so a second request can overlap the first. */
+  function heldTurn(options: { search?: boolean } = {}) {
+    const barrier = createBarrier();
+    const quota = new FakeQuota();
+    const spend = new FakeSpend();
+    const fake = fakeDeps({
+      repo,
+      quota,
+      spend,
+      ...(options.search ? { search: async () => [] } : {}),
+      reply: async function* () {
+        await barrier.wait();
+        yield { type: "text" as const, text: "Here is your week." };
+        yield { type: "finish" as const, finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5 } };
+      },
+    });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+    return { barrier, quota, spend, fake };
+  }
+
+  beforeEach(() => signInAs(ALICE));
+
+  it("a resend and a Retry reply while the first reply is still running get 409 busy, and only one reply is made", async () => {
+    const { barrier, quota, spend, fake } = heldTurn();
+    const first = await send();
+    const reading = collect(readChatStream(first.body!));
+    await barrier.reached;
+    const conversationId = repo.conversations[0]!.id;
+
+    const resend = await send();
+    expect(resend.status).toBe(409);
+    expect(await errorOf(resend)).toMatchObject({ code: "busy", conversationId });
+    const retry = await chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch: false }));
+    expect(retry.status).toBe(409);
+    expect((await errorOf(retry)).code).toBe("busy");
+
+    barrier.release();
+    expect((await reading).at(-1)?.type).toBe("done");
+    await Promise.all(fake.waited);
+    expect(repo.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(fake.calls).toHaveLength(1);
+    expect(quota.calls).toBe(1);
+    expect(spend.reservations.every((r) => r.settled !== null)).toBe(true);
+
+    const after = await send();
+    expect(after.status).toBe(409);
+    expect(await errorOf(after)).toMatchObject({ code: "answered", conversationId });
+  });
+
+  it("two sends with one key that both miss the lookup save one conversation, one message and one reply", async () => {
+    const barrier = createBarrier(2);
+    const quota = new FakeQuota();
+    const consume = quota.consume.bind(quota);
+    quota.consume = async () => {
+      await barrier.wait();
+      return consume();
+    };
+    const spend = new FakeSpend();
+    const fake = fakeDeps({ repo, quota, spend });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+
+    const a = send();
+    const b = send();
+    await barrier.reached;
+    barrier.release();
+    const [first, second] = await Promise.all([a, b]);
+    const answers = await Promise.all(
+      [first, second].map(async (response) => (response.status === 200 ? (await collect(readChatStream(response.body!))).at(-1)?.type : response.status)),
+    );
+    await Promise.all(fake.waited);
+    expect(answers.sort()).toEqual([500, "done"].sort());
+    expect(repo.conversations).toHaveLength(1);
+    expect(repo.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(fake.calls).toHaveLength(1);
+    expect(quota.calls).toBe(2);
+    expect(spend.reservations.every((r) => r.settled !== null)).toBe(true);
+  });
+
+  it("a claim whose lease ended can be claimed again", async () => {
+    let clock = Date.UTC(2026, 9, 21, 12, 0, 0);
+    repo.now = () => clock;
+    const conversation = await repo.createConversation(ALICE, "Stopped", "personal");
+    await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "user", content: "Hi", replyClaimId: "dead-worker" });
+    const fake = fakeDeps({ repo });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+    const retry = () => chatRoute.POST(chatRequest({ action: "retry", conversationId: conversation.id, webSearch: false }));
+
+    expect((await retry()).status).toBe(409);
+    clock += REPLY_CLAIM_LEASE_SECONDS * 1000 + 1;
+    const events = await collect(readChatStream((await retry()).body!));
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("a reply that the reply link refuses ends with an error event, and no second reply is saved", async () => {
+    const { barrier, fake } = heldTurn();
+    const response = await send();
+    const reading = collect(readChatStream(response.body!));
+    await barrier.reached;
+    const question = repo.messages[0]!;
+    // Another request saved a reply after this claim's lease ended.
+    await repo.insertMessage(ALICE, { conversationId: question.conversationId, role: "assistant", content: "Late", replyTo: question.id });
+    barrier.release();
+    expect((await reading).at(-1)).toMatchObject({ type: "error", code: "internal_error" });
+    await Promise.all(fake.waited);
+    expect(repo.messages.map((m) => m.content)).toEqual(["Plan my week", "Late"]);
+  });
+
+  it("refuses a key that was used for another text, conversation or mode with 409 conflict, before quota", async () => {
+    const quota = new FakeQuota();
+    const fake = fakeDeps({ repo, quota });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+    expect((await send({ mode: "personal" })).status).toBe(200);
+    const other = await repo.createConversation(ALICE, "Other", "personal");
+    for (const body of [{ message: "Something else" }, { conversationId: other.id }, { mode: "work" }]) {
+      const response = await send(body);
+      expect(response.status).toBe(409);
+      expect((await errorOf(response)).code).toBe("conflict");
+    }
+    expect(quota.calls).toBe(1);
+    expect(repo.messages.filter((m) => m.role === "user")).toHaveLength(1);
+  });
+
+  it("checks the fingerprint when only the conversation with the key exists", async () => {
+    const quota = new FakeQuota();
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo, quota }).deps);
+    const hash = await requestFingerprint(["chat.send.v1", "new:personal", "Another draft"]);
+    await repo.createConversation(ALICE, "Another draft", "personal", { clientRequest: { id: KEY, hash } });
+
+    const response = await send();
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe("conflict");
+    expect(quota.calls).toBe(0);
+    expect(repo.messages).toHaveLength(0);
+  });
+
+  it("uses an empty conversation with the key, and refuses one that already has messages", async () => {
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo }).deps);
+    const hash = await requestFingerprint(["chat.send.v1", "new:personal", "Plan my week"]);
+    const empty = await repo.createConversation(ALICE, "Plan my week", "personal", { clientRequest: { id: KEY, hash } });
+    expect((await collect(readChatStream((await send()).body!))).at(-1)?.type).toBe("done");
+    expect(repo.conversations).toHaveLength(1);
+    expect(repo.messages.map((m) => m.conversationId)).toEqual([empty.id, empty.id]);
+
+    repo = new MemoryRepository();
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo }).deps);
+    const used = await repo.createConversation(ALICE, "Plan my week", "personal", { clientRequest: { id: KEY, hash } });
+    await repo.insertMessage(ALICE, { conversationId: used.id, role: "user", content: "Another message" });
+    const response = await send();
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe("conflict");
+  });
+
+  it("answers 409 answered for a saved message that is no longer the last one", async () => {
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo }).deps);
+    const hash = await requestFingerprint(["chat.send.v1", "new:personal", "Plan my week"]);
+    const conversation = await repo.createConversation(ALICE, "Plan my week", "personal");
+    await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "user", content: "Plan my week", clientRequest: { id: KEY, hash } });
+    await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "user", content: "Later message" });
+    const response = await send();
+    expect(response.status).toBe(409);
+    expect(await errorOf(response)).toMatchObject({ code: "answered", conversationId: conversation.id });
+  });
+
+  it("refuses a key that is not a UUID before any work", async () => {
+    const response = await send({}, { "Idempotency-Key": "not-a-uuid" });
+    expect(response.status).toBe(400);
+    expect(createAssistantDeps).not.toHaveBeenCalled();
+  });
+
+  it("does no lookup without a key", async () => {
+    const lookup = vi.spyOn(repo, "findMessageByClientRequest");
+    const response = await send({}, {});
+    expect((await collect(readChatStream(response.body!))).at(-1)?.type).toBe("done");
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("does not find another user's key: Bob's send with Alice's key makes Bob's own rows", async () => {
+    vi.mocked(createAssistantDeps).mockReturnValue(fakeDeps({ repo }).deps);
+    await collect(readChatStream((await send()).body!));
+    signInAs(BOB);
+    await collect(readChatStream((await send()).body!));
+    expect(repo.conversations.map((c) => c.userId)).toEqual([ALICE, BOB]);
+    expect(repo.messages.filter((m) => m.userId === BOB).map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it.each([false, true])(
+    "gives back the holds and ends the claim when the stream is cancelled before its first read (web search: %s)",
+    async (search) => {
+      const spend = new FakeSpend();
+      const fake = fakeDeps({ repo, spend, ...(search ? { search: async () => [] } : {}) });
+      vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+      const response = await send({ webSearch: search });
+      expect(response.status).toBe(200);
+      await response.body!.cancel();
+      await Promise.all(fake.waited);
+
+      expect(spend.reservations.map((r) => [r.provider, r.settled])).toEqual(
+        search ? [["nebius", 0], ["tavily", 0]] : [["nebius", 0]],
+      );
+      expect(fake.waited.length).toBeGreaterThan(0);
+      expect(repo.claimOf(repo.messages[0]!.id)).toBeNull();
+      expect(fake.calls).toHaveLength(0);
+    },
+  );
+
+  it("a lost reservation response, then a resend: one reply, and only that hold stays counted", async () => {
+    const spend = new FakeSpend();
+    const faults = new WriteFaults().fail("lost", 1);
+    faults.wrap(spend, ["reserve"]);
+    const fake = fakeDeps({ repo, spend });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+    expect((await send()).status).toBe(500);
+    faults.disarm();
+    expect((await collect(readChatStream((await send()).body!))).at(-1)?.type).toBe("done");
+    await Promise.all(fake.waited);
+    expect(repo.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(spend.reservations.filter((r) => r.settled === null)).toHaveLength(1);
+  });
+
+  it.each([
+    ["the key lookup", "findMessageByClientRequest", async () => () => send()],
+    ["the claim of Retry reply", "claimReply", async () => {
+      const conversation = await repo.createConversation(ALICE, "t", "personal");
+      await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "user", content: "Hi" });
+      return () => chatRoute.POST(chatRequest({ action: "retry", conversationId: conversation.id, webSearch: false }));
+    }],
+  ] as const)("fails closed with schema_missing when %s finds no new column or function", async (_label, method, setUp) => {
+    const quota = new FakeQuota();
+    const spend = new FakeSpend();
+    const fake = fakeDeps({ repo, quota, spend });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+    const run = await setUp();
+    vi.spyOn(repo, method).mockRejectedValue(new SchemaMissingError(method));
+    const before = repo.messages.length;
+
+    const response = await run();
+    expect(response.status).toBe(500);
+    const logged = vi.mocked(console.error).mock.calls.map((call) => JSON.parse(String(call[0])));
+    expect(logged).toContainEqual(expect.objectContaining({ event: "schema_missing", route: "chat" }));
+    expect(quota.calls).toBe(0);
+    expect(spend.reservations).toHaveLength(0);
+    expect(repo.messages.length).toBe(before);
   });
 });
 

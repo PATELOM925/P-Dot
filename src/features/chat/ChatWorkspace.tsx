@@ -32,6 +32,7 @@ import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./Message
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
+import { ChatSendKey } from "./send-key";
 import { readChatStream } from "./stream";
 import { appendDictation, useDictation } from "./useDictation";
 
@@ -107,6 +108,8 @@ export function ChatWorkspace({
   );
 
   const router = useRouter();
+  // The request key of the draft: a resend of the same draft after an error uses the same key.
+  const [sendKey] = useState(() => new ChatSendKey());
   const abortRef = useRef<AbortController | null>(null);
   const loadSeq = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -207,6 +210,32 @@ export function ChatWorkspace({
     inputRef.current?.focus();
   }
 
+  /**
+   * After a 409 "answered": the message is already saved. Opens its conversation,
+   * and when a saved user message has the draft text, the draft was sent: clear it.
+   */
+  async function showSavedMessage(conversationId: string | null, draftText: string) {
+    if (!conversationId) return;
+    setActiveId(conversationId);
+    syncUrl(conversationId);
+    const seq = ++loadSeq.current;
+    try {
+      const [detail, list] = await Promise.all([fetchConversation(conversationId), fetchConversations(mode)]);
+      if (seq !== loadSeq.current) return;
+      setMessages(detail.messages);
+      setConversations(list);
+      if (sendKey.reconcile(detail.messages, draftText)) {
+        setDraft((current) => (current.trim() === draftText ? "" : current));
+        setError(null);
+        setStatus("This message was already sent.");
+      }
+    } catch (err) {
+      if (seq === loadSeq.current && !redirectIfUnauthorized(err)) {
+        setError({ message: "Could not load the conversation. Reload the page." });
+      }
+    }
+  }
+
   async function submit(action: "send" | "retry") {
     if (sending) return;
     const text = draft.trim();
@@ -218,6 +247,7 @@ export function ChatWorkspace({
         ? { action, message: text, webSearch, effort, ...(activeId ? { conversationId: activeId } : { mode }) }
         : { action, conversationId: activeId!, webSearch, effort };
 
+    const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
     // The mode when the user pressed Send decides whether Auto may act on this reply.
     const sentInAuto = approvalMode === "auto";
@@ -257,11 +287,12 @@ export function ChatWorkspace({
     }
 
     try {
-      const stream = await postChat(body, controller.signal);
+      const stream = await postChat(body, controller.signal, keyHeaders);
       for await (const event of readChatStream(stream)) {
         switch (event.type) {
           case "start":
             accepted = true;
+            if (action === "send") sendKey.saved();
             if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
@@ -322,6 +353,9 @@ export function ChatWorkspace({
         if (!accepted) restoreDraft();
         setError({ message: err instanceof Error ? err.message : "Something went wrong. Please retry." });
         setStatus("");
+        if (!accepted && sendKey.refused(err, action) === "answered") {
+          void showSavedMessage((err as ApiError).conversationId ?? activeId, action === "send" ? text : "");
+        }
       }
     } finally {
       setSending(false);

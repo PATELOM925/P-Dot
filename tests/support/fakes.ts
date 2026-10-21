@@ -1,4 +1,5 @@
-import type { ConversationRepository, NewMessage } from "@/server/db/conversations";
+import type { ConversationRepository, NewConversation, NewMessage, ReplyClaim } from "@/server/db/conversations";
+import type { ClientRequest } from "@/server/http/request-key";
 import type { QuotaGate } from "@/server/db/quota";
 import type { SpendCaps, SpendGuard, SpendLimit, SpendProvider, SpendReservation } from "@/server/db/spend";
 import type { AssistantDeps } from "@/server/assistant/service";
@@ -14,11 +15,17 @@ import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
+  clientRequest?: ClientRequest | null;
 }
 
 interface StoredMessage extends MessageDTO {
   userId: string;
   conversationId: string;
+  clientRequest?: ClientRequest | null;
+  replyTo?: string;
+  replyClaimId?: string | null;
+  /** Milliseconds on the repository clock. */
+  replyClaimedAt?: number | null;
 }
 
 function toDto(message: StoredMessage): MessageDTO {
@@ -28,13 +35,19 @@ function toDto(message: StoredMessage): MessageDTO {
 
 /**
  * In-memory repository that mirrors the database's ownership rules (RLS):
- * every read and write is scoped to the given user ID.
+ * every read and write is scoped to the given user ID. It also has the rules
+ * of decision 0012: one row for each request key and user, one reply for each
+ * user message, and the reply claim with its lease. The claim calls have no
+ * session, so they do not check the user; the routes reach them only through
+ * the user's own conversation.
  */
 export class MemoryRepository implements ConversationRepository {
   conversations: StoredConversation[] = [];
   messages: StoredMessage[] = [];
   private counter = 0;
   failInsertForRole: "user" | "assistant" | null = null;
+  /** The clock of the claim lease. A test moves it forward to end a lease. */
+  now = () => Date.now();
 
   private nextId(): string {
     this.counter += 1;
@@ -58,8 +71,19 @@ export class MemoryRepository implements ConversationRepository {
       .map(({ id, title, mode: m, updatedAt }) => ({ id, title, mode: m, updatedAt }));
   }
 
-  async createConversation(userId: string, title: string, mode: Mode = "personal") {
-    const conversation = { id: this.nextId(), title, mode, updatedAt: this.timestamp(), userId };
+  async createConversation(userId: string, title: string, mode: Mode = "personal", options: NewConversation = {}) {
+    const key = options.clientRequest?.id;
+    if (key && this.conversations.some((c) => c.userId === userId && c.clientRequest?.id === key)) {
+      throw new Error("duplicate key value violates unique constraint conversations_user_client_request_key");
+    }
+    const conversation = {
+      id: options.id ?? this.nextId(),
+      title,
+      mode,
+      updatedAt: this.timestamp(),
+      userId,
+      clientRequest: options.clientRequest ?? null,
+    };
     this.conversations.push(conversation);
     return { id: conversation.id, title, mode, updatedAt: conversation.updatedAt };
   }
@@ -90,8 +114,20 @@ export class MemoryRepository implements ConversationRepository {
     if (this.failInsertForRole === message.role) throw new Error("insert failed");
     const owner = this.conversations.find((c) => c.id === message.conversationId);
     if (!owner || owner.userId !== userId) throw new Error("RLS: conversation not owned by user");
+    const key = message.clientRequest?.id;
+    if (key && this.messages.some((m) => m.userId === userId && m.clientRequest?.id === key)) {
+      throw new Error("duplicate key value violates unique constraint messages_user_client_request_key");
+    }
+    if (message.replyTo) {
+      if (!this.messages.some((m) => m.id === message.replyTo && m.userId === userId)) {
+        throw new Error("insert violates foreign key constraint messages_reply_to_fkey");
+      }
+      if (this.messages.some((m) => m.replyTo === message.replyTo)) {
+        throw new Error("duplicate key value violates unique constraint messages_reply_to_key");
+      }
+    }
     const stored: StoredMessage = {
-      id: this.nextId(),
+      id: message.id ?? this.nextId(),
       role: message.role,
       content: message.content,
       webSearch: message.webSearch ?? "off",
@@ -100,10 +136,55 @@ export class MemoryRepository implements ConversationRepository {
       createdAt: this.timestamp(),
       userId,
       conversationId: message.conversationId,
+      clientRequest: message.clientRequest ?? null,
+      replyTo: message.replyTo,
+      replyClaimId: message.replyClaimId ?? null,
+      replyClaimedAt: message.replyClaimId ? this.now() : null,
     };
     this.messages.push(stored);
     owner.updatedAt = stored.createdAt;
     return toDto(stored);
+  }
+
+  async getMessage(userId: string, messageId: string) {
+    const found = this.messages.find((m) => m.id === messageId && m.userId === userId);
+    return found ? toDto(found) : null;
+  }
+
+  async findMessageByClientRequest(userId: string, key: string) {
+    const found = this.messages.find((m) => m.userId === userId && m.role === "user" && m.clientRequest?.id === key);
+    return found ? { message: toDto(found), conversationId: found.conversationId, hash: found.clientRequest!.hash } : null;
+  }
+
+  async findConversationByClientRequest(userId: string, key: string) {
+    const found = this.conversations.find((c) => c.userId === userId && c.clientRequest?.id === key);
+    if (!found) return null;
+    const { id, title, mode, updatedAt } = found;
+    return { conversation: { id, title, mode, updatedAt }, hash: found.clientRequest!.hash };
+  }
+
+  async claimReply(messageId: string, leaseSeconds: number): Promise<ReplyClaim> {
+    const message = this.messages.find((m) => m.id === messageId && m.role === "user");
+    if (!message) return { outcome: "not_found" };
+    const reply = this.messages.find((m) => m.replyTo === messageId);
+    if (reply) return { outcome: "answered", replyId: reply.id };
+    if (message.replyClaimId && (message.replyClaimedAt ?? 0) > this.now() - leaseSeconds * 1000) return { outcome: "busy" };
+    message.replyClaimId = `claim-${this.nextId()}`;
+    message.replyClaimedAt = this.now();
+    return { outcome: "claimed", claimId: message.replyClaimId };
+  }
+
+  async releaseReplyClaim(messageId: string, claimId: string) {
+    const message = this.messages.find((m) => m.id === messageId && m.replyClaimId === claimId);
+    if (message) {
+      message.replyClaimId = null;
+      message.replyClaimedAt = null;
+    }
+  }
+
+  /** The claim on a user message, for checks. */
+  claimOf(messageId: string): string | null {
+    return this.messages.find((m) => m.id === messageId)?.replyClaimId ?? null;
   }
 }
 

@@ -21,10 +21,18 @@ interface Call {
  */
 type Result = { data?: unknown; error?: unknown; count?: number | null };
 
-/** Pass one result for every call, or a list with one result per `from()` call in order. */
-function fakeSupabase(results: Result | Result[] = {}) {
+/**
+ * Pass one result for every call, or a list with one result per `from()` call
+ * in order. `rpcResults` answers `rpc()` calls in order.
+ */
+function fakeSupabase(results: Result | Result[] = {}, rpcResults: Result[] = []) {
   const calls: Call[] = [];
+  const rpcs: { name: string; args: unknown }[] = [];
   const supabase = {
+    rpc(name: string, args: unknown) {
+      rpcs.push({ name, args });
+      return Promise.resolve(rpcResults[rpcs.length - 1] ?? { data: null, error: null });
+    },
     from(table: string) {
       const call: Call = { table, op: "select", filters: [] };
       const result = Array.isArray(results) ? (results[calls.length] ?? {}) : results;
@@ -75,7 +83,7 @@ function fakeSupabase(results: Result | Result[] = {}) {
       return builder;
     },
   };
-  return { supabase: supabase as unknown as SupabaseClient, calls };
+  return { supabase: supabase as unknown as SupabaseClient, calls, rpcs };
 }
 
 const row = {
@@ -169,15 +177,65 @@ describe("document repository", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("changes only the status, and only for the given user", async () => {
-    const { supabase, calls } = fakeSupabase({ data: null, error: null });
-    await createDocumentRepository(supabase).setStatus(ALICE, DOC, "failed");
-
-    expect(calls[0]).toMatchObject({ table: "documents", op: "update", payload: { status: "failed" } });
-    expect(calls[0]!.filters).toEqual([
-      ["id", DOC],
-      ["user_id", ALICE],
+  it("settles one document with settle_document and answers the status after it", async () => {
+    const { supabase, calls, rpcs } = fakeSupabase({}, [
+      { data: "ready", error: null },
+      { data: null, error: null },
     ]);
+    const repository = createDocumentRepository(supabase);
+    expect(await repository.settleDocument(DOC)).toBe("ready");
+    expect(await repository.settleDocument(DOC)).toBeNull();
+    expect(rpcs).toEqual([
+      { name: "settle_document", args: { p_document_id: DOC } },
+      { name: "settle_document", args: { p_document_id: DOC } },
+    ]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses an answer of settle_document that is not a status", async () => {
+    const { supabase } = fakeSupabase({}, [{ data: "done", error: null }]);
+    await expect(createDocumentRepository(supabase).settleDocument(DOC)).rejects.toThrow(
+      "Database operation failed: settleDocument",
+    );
+  });
+
+  it("names a missing function or column as a schema error", async () => {
+    const { supabase } = fakeSupabase({}, [{ data: null, error: { code: "PGRST202", message: "Could not find the function" } }]);
+    const error = await createDocumentRepository(supabase)
+      .settleDocument(DOC)
+      .catch((e: unknown) => e);
+    expect((error as Error).name).toBe("SchemaMissingError");
+  });
+
+  it("stores the request key and fingerprint with a new document", async () => {
+    const { supabase, calls } = fakeSupabase({ data: { ...row, status: "processing" }, error: null });
+    await createDocumentRepository(supabase).createDocument(ALICE, {
+      mode: "work",
+      title: "Handbook",
+      mediaType: "text/markdown",
+      charCount: 1200,
+      clientRequest: { id: DOC, hash: "a".repeat(64) },
+    });
+    expect(calls[0]).toMatchObject({
+      table: "documents",
+      op: "insert",
+      payload: { user_id: ALICE, status: "processing", client_request_id: DOC, client_request_hash: "a".repeat(64) },
+    });
+  });
+
+  it("finds the document with a key that is not failed, for the given user", async () => {
+    const failed = { ...row, id: "f", status: "failed", client_request_hash: "b".repeat(64) };
+    const current = { ...row, status: "processing", client_request_hash: "a".repeat(64) };
+    const { supabase, calls } = fakeSupabase({ data: [failed, current], error: null });
+    const found = await createDocumentRepository(supabase).findDocumentByClientRequest(ALICE, DOC);
+    expect(found).toMatchObject({ document: { id: DOC, status: "processing" }, hash: "a".repeat(64) });
+    expect(calls[0]!.filters).toEqual([
+      ["user_id", ALICE],
+      ["client_request_id", DOC],
+    ]);
+
+    const onlyFailed = fakeSupabase({ data: [failed], error: null });
+    expect(await createDocumentRepository(onlyFailed.supabase).findDocumentByClientRequest(ALICE, DOC)).toBeNull();
   });
 
   it("deletes only the user's document and reports whether one was removed", async () => {
@@ -218,61 +276,24 @@ describe("document repository", () => {
       ]);
     });
 
-    it("marks a document ready when it has chunks and none lacks an embedding", async () => {
-      const { supabase, calls } = fakeSupabase([
-        { data: [{ id: DOC }], error: null },
-        { data: null, error: null, count: 3 },
-        { data: null, error: null, count: 0 },
-        { data: null, error: null, count: 1 },
+    it("settles each stale document with settle_document and counts the ones it settled", async () => {
+      const { supabase, rpcs } = fakeSupabase([{ data: [{ id: DOC }, { id: DOC2 }], error: null }], [
+        { data: "ready", error: null },
+        // A parallel request settled this one first: it is no longer processing.
+        { data: null, error: null },
       ]);
       expect(await createDocumentRepository(supabase).settleStaleDocuments(ALICE, BEFORE, 5)).toBe(1);
-
-      expect(calls[1]).toMatchObject({ table: "document_chunks", op: "select" });
-      expect(calls[1]!.filters).toEqual([
-        ["user_id", ALICE],
-        ["document_id", DOC],
-      ]);
-      expect(calls[2]!.filters).toEqual([
-        ["user_id", ALICE],
-        ["document_id", DOC],
-        ["embedding is", null],
-      ]);
-      expect(calls[3]).toMatchObject({ table: "documents", op: "update", payload: { status: "ready" } });
-      expect(calls[3]!.filters).toEqual([
-        ["id", DOC],
-        ["user_id", ALICE],
-        ["status", "processing"],
-      ]);
+      expect(rpcs.map((call) => call.args)).toEqual([{ p_document_id: DOC }, { p_document_id: DOC2 }]);
     });
 
-    it("marks a document failed when it has no chunks or a chunk without an embedding", async () => {
-      const { supabase, calls } = fakeSupabase([
-        { data: [{ id: DOC }, { id: DOC2 }], error: null },
-        { data: null, error: null, count: 0 },
-        { data: null, error: null, count: 0 },
-        { data: null, error: null, count: 1 },
-        { data: null, error: null, count: 2 },
-        { data: null, error: null, count: 1 },
-        // A parallel request settled this one first: the conditional update changes nothing.
-        { data: null, error: null, count: 0 },
+    it("stops at a failed settle and throws a repository error", async () => {
+      const { supabase, rpcs } = fakeSupabase([{ data: [{ id: DOC }, { id: DOC2 }], error: null }], [
+        { data: null, error: { message: "connection lost" } },
       ]);
-      expect(await createDocumentRepository(supabase).settleStaleDocuments(ALICE, BEFORE, 5)).toBe(1);
-
-      expect(calls[3]).toMatchObject({ op: "update", payload: { status: "failed" }, filters: [["id", DOC], ["user_id", ALICE], ["status", "processing"]] });
-      expect(calls[6]).toMatchObject({ op: "update", payload: { status: "failed" }, filters: [["id", DOC2], ["user_id", ALICE], ["status", "processing"]] });
-    });
-
-    it("changes nothing when a chunk count is missing or fails", async () => {
-      const { supabase, calls } = fakeSupabase([
-        { data: [{ id: DOC }], error: null },
-        { data: null, error: null, count: null },
-        { data: null, error: null, count: 0 },
-      ]);
-      const error = await createDocumentRepository(supabase)
-        .settleStaleDocuments(ALICE, BEFORE, 5)
-        .catch((e: unknown) => e);
-      expect((error as Error).message).toBe("Database operation failed: countDocumentChunks");
-      expect(calls.some((call) => call.op === "update")).toBe(false);
+      await expect(createDocumentRepository(supabase).settleStaleDocuments(ALICE, BEFORE, 5)).rejects.toThrow(
+        "Database operation failed: settleDocument",
+      );
+      expect(rpcs).toHaveLength(1);
     });
   });
 });
