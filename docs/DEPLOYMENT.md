@@ -37,21 +37,21 @@ Workers Builds was connected on 2026-10-19. Each push to `main` starts one produ
 When two or more pull requests, or a stack of pull requests, are ready at about the same time, merge them together and aim for one deploy. Each build costs build minutes and CI time, and a build of an in-between state is replaced minutes later. Workers Builds starts a build for every push to `main` ([branch builds](https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/)), so there are these options:
 
 - **One production build, top down (ordinary stacks):** use this when each pull request is based on the branch below it, and the bottom one is based on `main`. Merge the top pull request into the branch below it, then that pull request into the branch below it, and so on. Do not change any base. Only the last merge, the bottom pull request into `main`, pushes to `main`, so only one production build runs. The merges into lower branches can start preview builds, but they do not change production. Each pull request keeps its own base and its own review. Its diff grows with each merge from above, so check it again before its own merge (step 1).
-- **GitHub native stack (group merge):** use this when the pull requests were made as a GitHub native stack. GitHub lands the selected pull request and all lower unmerged pull requests together, so the top-down steps do not apply. When every pull request in the stack has a SHIP verdict for its current head and passing required checks, use GitHub's group merge once. It lands the stack on `main` in one operation. See [merging stacked pull requests on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-stacked-pull-requests).
+- **GitHub native stack (group merge):** use this when the pull requests were made as a GitHub native stack. GitHub lands the selected pull request and all lower unmerged pull requests together, so the top-down steps do not apply. When every pull request in the stack has a SHIP verdict for its current head and a passing `Workers Builds: pdot` check, use GitHub's group merge once. It lands the stack on `main` in one operation. See [merging stacked pull requests on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-stacked-pull-requests).
 - **Several merges (best effort):** merge one after another and cancel the older builds. An older build can still finish and deploy before you cancel it, so an in-between version can go live for a short time.
 
 1. **Before each merge,** check the pull request again:
    - its base is `main`, or the branch below it in the stack;
    - its diff contains only the changes you expect: its own, and any merged into it from above;
    - its review verdict (SHIP) is for its current head commit;
-   - its required checks pass on that head.
+   - the `Workers Builds: pdot` check passes on that head.
 
-   With several merges, change the base of the next pull request to `main` after each merge. If it was based on a squash merge, rebase it first and review the new diff.
+   With several merges, if the next pull request was based on the merged branch, change its base to `main`. If it was based on a squash merge, rebase it first and review the new diff.
 
    On the top-down path, each upper merge gives the next pull request a new head and a larger diff. Before you merge that pull request:
    - inspect the new head and the combined diff;
    - post a review verdict (SHIP) for that new head on that pull request;
-   - wait for its required checks to pass on that head.
+   - wait for the `Workers Builds: pdot` check to pass on that head.
 
    The review can check the content that was already reviewed and the result of the merge. Do not skip these checks to save build minutes. Use "Create a merge commit" for the top-down path, so each pull request keeps its history.
 2. **Merge in one sitting,** top down for a stack, or one after another for separate pull requests, as described above. Do not wait for production builds of `main` between merges. Do wait for the checks in step 1 on each new head before you merge it.
@@ -61,7 +61,7 @@ When two or more pull requests, or a stack of pull requests, are ready at about 
 
 Other rules:
 
-- A stack with a database expand or contract step does not merge as one deploy, top down or as a native stack. Each step merges to `main` and deploys on its own, in the order and with the checks in [Expand, then contract](#expand-then-contract).
+- A set of pull requests with a database expand or contract step does not merge as one deploy, top down or as a native stack. Each step merges to `main` and deploys on its own, in the order and with the checks in [Expand, then contract](#expand-then-contract).
 - Do not push small follow-up fixes to `main` one by one. Put them in one pull request.
 - Each merge into `main` applies its own migration (Supabase GitHub integration) at once. The matching code goes live only when a build finishes, which is later: minutes later with several merges, or later still if a build fails. During that time the new migrations run with the old code. So every migration must be safe for the code that is live now, and new code must work on the old schema ([lesson 6](PROVIDER-RELIABILITY.md#6-new-code-can-run-before-its-migration)). If the last build fails, this time is longer, so fix it first.
 - These steps are for the owner. Agents still must not merge or deploy (see [Rules for coding agents](#rules-for-coding-agents)).
