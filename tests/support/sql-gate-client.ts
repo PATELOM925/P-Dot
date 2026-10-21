@@ -146,7 +146,20 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
     return builder;
   };
 
-  /** Calls a function with named arguments, as PostgREST does. An object argument is sent as jsonb. */
+  const returnsSet = async (name: string): Promise<boolean> => {
+    const result = await gate.admin<{ set: boolean }>(
+      `select p.proretset as set from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.proname = $1`,
+      [name],
+    );
+    return result.rows[0]?.set === true;
+  };
+
+  /**
+   * Calls a function with named arguments, as PostgREST does: a function that
+   * returns a table answers an array of rows, any other function its value.
+   * An object argument is sent as jsonb.
+   */
   const rpc = async (name: string, args: Record<string, unknown> = {}): Promise<Reply> => {
     const entries = Object.entries(args);
     const list = entries
@@ -154,12 +167,11 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
       .join(", ");
     const params = entries.map(([, value]) => (value !== null && typeof value === "object" ? JSON.stringify(value) : value));
     try {
-      // A scalar result comes back as its value; a table result as its first row.
-      const result = await gate.as<{ data: unknown }>(
-        user(userId),
-        `select to_json(f) as data from public.${identifier(name)}(${list}) f`,
-        params,
-      );
+      const call = `public.${identifier(name)}(${list}) f`;
+      const sql = (await returnsSet(name))
+        ? `select coalesce(json_agg(to_json(f)), '[]'::json) as data from ${call}`
+        : `select to_json(f) as data from ${call}`;
+      const result = await gate.as<{ data: unknown }>(user(userId), sql, params);
       return { data: result.rows[0]?.data ?? null, error: null };
     } catch (error) {
       return failure(error);

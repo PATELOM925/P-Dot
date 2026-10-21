@@ -53,6 +53,11 @@ describe("decision 0012 repositories with every migration", () => {
     expect(await repo.findMessageByClientRequest(owner, crypto.randomUUID())).toBeNull();
 
     expect(await repo.claimReply(question.id, 300)).toEqual({ outcome: "busy" });
+    // Like PostgREST: a function that returns a table answers an array, a scalar function its value.
+    const raw = await sqlGateClient(gate, owner).rpc("claim_reply", { p_message_id: question.id, p_lease_seconds: 300 });
+    expect(raw.data).toEqual([{ outcome: "busy", claim_id: null, reply_id: null }]);
+    const scalar = await sqlGateClient(gate, owner).rpc("settle_document", { p_document_id: question.id });
+    expect(scalar.data).toBeNull();
     await repo.releaseReplyClaim(question.id, claimId);
     const claim = await repo.claimReply(question.id, 300);
     expect(claim.outcome).toBe("claimed");
