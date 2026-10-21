@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ConfigError } from "@/lib/supabase-config";
 import { getAuthContext } from "@/server/auth/session";
+import { DynamicAgentCard } from "@/features/landing/DynamicAgentCard";
 
 async function isSignedIn(): Promise<boolean> {
   try {
@@ -12,15 +13,6 @@ async function isSignedIn(): Promise<boolean> {
     throw error;
   }
 }
-
-// Illustrative example only (not real data): how P-Dot is designed to work on a task.
-const EXAMPLE_STEPS = [
-  { title: "Understood the goal", detail: "Prepare for Friday, book a haircut for Saturday morning.", state: "done" },
-  { title: "Checked your calendar", tool: "Calendar", detail: "Two meetings Friday. Saturday 11:00 is free.", state: "done" },
-  { title: "Read your inbox and drafted a reply", tool: "Gmail", detail: "One email needs an answer. Draft saved, not sent.", state: "done" },
-  { title: "Ready to call the salon", state: "approval" },
-  { title: "Then send your brief", tool: "Telegram", detail: "Summary and to-do list to your own chat.", state: "next" },
-] as const;
 
 export default async function LandingPage() {
   const signedIn = await isSignedIn();
@@ -95,50 +87,7 @@ export default async function LandingPage() {
           </p>
         </section>
 
-        <section className="agent-card" aria-label="Example of an agent run">
-          <div className="agent-card-head">
-            <div>
-              <p className="small muted agent-label">Task</p>
-              <p className="agent-task">Get me ready for Friday and book a haircut</p>
-            </div>
-            <span className="chip chip-warning">1 step needs you</span>
-          </div>
-          <ol className="agent-steps">
-            {EXAMPLE_STEPS.map((step, index) => (
-              <li key={step.title} className={`agent-step agent-step-${step.state}`}>
-                <span className="agent-bullet" aria-hidden="true">
-                  {index + 1}
-                </span>
-                <div className="agent-step-body">
-                  <p className="agent-step-title">{step.title}</p>
-                  {"tool" in step && (
-                    <p className="agent-step-detail">
-                      <span className={`chip chip-${step.tool.toLowerCase()}`}>{step.tool}</span> {step.detail}
-                    </p>
-                  )}
-                  {step.state === "done" && !("tool" in step) && <p className="agent-step-detail">{step.detail}</p>}
-                  {step.state === "approval" && (
-                    <div className="agent-approval">
-                      <p className="small">Book Saturday 11:00 by phone. P-Dot only calls after you approve.</p>
-                      <div className="actions">
-                        <span className="button button-primary button-small" aria-hidden="true">
-                          Approve
-                        </span>
-                        <span className="button button-small" aria-hidden="true">
-                          Skip
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
-          <p className="small muted agent-foot">
-            Illustrative example of the planned design; automations and connectors are not available yet. AI can make
-            mistakes, so P-Dot will show each step and check with you first.
-          </p>
-        </section>
+        <DynamicAgentCard />
       </main>
     </div>
   );
