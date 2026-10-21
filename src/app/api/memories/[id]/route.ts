@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES } from "@/lib/limits";
 import { updateMemorySchema } from "@/lib/schemas";
-import { createActionLogRepository } from "@/server/db/action-log";
 import { createMemoryRepository } from "@/server/db/memories";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
@@ -29,19 +28,30 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
       return errorResponse(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request.", requestId);
     }
 
-    // Only a new text needs a new vector. A mode or status change keeps the
-    // stored vector, so it does not call the embedder.
-    const changes = parsed.data;
+    // Read the user's row first. A missing or foreign ID gets 404 before any
+    // embedder work, so it cannot use provider spend or budget.
+    const memories = createMemoryRepository(auth.supabase);
+    const existing = await memories.getMemory(auth.userId, id.data);
+    if (!existing) return memoryNotFound(requestId);
+
+    // Only a changed text needs a new vector. The same text is not written at
+    // all, so it cannot put old text back next to a newer text's vector. A
+    // mode or status change keeps the stored vector and model.
+    const changes = { ...parsed.data };
+    if (changes.content === existing.content) delete changes.content;
     const embedding = changes.content === undefined ? undefined : await embedMemoryText(auth, requestId, changes.content);
+    if (changes.content === undefined && changes.mode === undefined && changes.status === undefined) {
+      return jsonResponse(existing, requestId);
+    }
 
-    const memory = await createMemoryRepository(auth.supabase).updateMemory(auth.userId, id.data, changes, embedding);
-    if (!memory) return memoryNotFound(requestId);
+    // The update applies only while the text is still the one read above.
+    // If another edit came first, the client reloads instead.
+    const memory = await memories.updateMemory(auth.userId, id.data, changes, embedding, existing.content);
+    if (!memory) {
+      if (!(await memories.getMemory(auth.userId, id.data))) return memoryNotFound(requestId);
+      return errorResponse(409, "conflict", "This memory changed. Reload it and try again.", requestId);
+    }
 
-    await createActionLogRepository(auth.supabase).append(auth.userId, "memory_edited", {
-      memoryId: memory.id,
-      mode: memory.mode,
-      source: memory.source,
-    });
     return jsonResponse(memory, requestId);
   });
 }
@@ -52,18 +62,9 @@ export async function DELETE(request: Request, context: Context): Promise<Respon
     const id = idSchema.safeParse((await context.params).id);
     if (!id.success) return memoryNotFound(requestId);
 
-    // Read the row first so the log can name its mode and source.
-    const memories = createMemoryRepository(auth.supabase);
-    const existing = await memories.getMemory(auth.userId, id.data);
-    if (!existing) return memoryNotFound(requestId);
-    const deleted = await memories.deleteMemory(auth.userId, id.data);
+    // The database writes the action log row for the delete.
+    const deleted = await createMemoryRepository(auth.supabase).deleteMemory(auth.userId, id.data);
     if (!deleted) return memoryNotFound(requestId);
-
-    await createActionLogRepository(auth.supabase).append(auth.userId, "memory_deleted", {
-      memoryId: existing.id,
-      mode: existing.mode,
-      source: existing.source,
-    });
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store", "X-Request-Id": requestId } });
   });
 }

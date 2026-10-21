@@ -43,7 +43,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
  * cancelled unless it is passed to waitUntil. Outside Workers (next dev,
  * tests) there is no context, and the work simply runs.
  */
-function waitUntil(work: Promise<unknown>): void {
+export function waitUntil(work: Promise<unknown>): void {
   try {
     getCloudflareContext().ctx.waitUntil(work);
   } catch {

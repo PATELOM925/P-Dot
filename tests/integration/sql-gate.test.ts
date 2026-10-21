@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createActionLogRepository } from "@/server/db/action-log";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
@@ -182,8 +184,6 @@ async function updatableColumns(table: string): Promise<string[]> {
   );
   return result.rows.map((row) => row.column_name);
 }
-
-
 
 describe.each(MODES)("database gate with %s default grants", (defaults) => {
   beforeAll(async () => {
@@ -680,75 +680,205 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
     });
   });
 
-  describe("the code on main keeps working until the contract step", () => {
-    it.runIf(defaults === "legacy")("can still write a flat log row and decide a proposal in two writes", async () => {
-      const owner = await gate.createUser();
-      await gate.as(user(owner), "insert into action_log (user_id, event, detail) values ($1, 'memory_added', '{\"memoryId\":\"m\"}')", [owner]);
-      const id = await propose(gate, owner, TASK);
-      await gate.as(user(owner), "update action_proposals set status = 'approved', decided_at = now() where id = $1 and status = 'proposed'", [id]);
-      await gate.as(user(owner), "update action_proposals set status = 'executed', result = '{\"taskId\":\"t\"}' where id = $1 and status = 'approved'", [id]);
-      expect((await gate.admin("select status from action_proposals where id = $1", [id])).rows).toEqual([{ status: "executed" }]);
+  describe("after the contract step, only the database writes the log and decides a proposal", () => {
+    it("authenticated cannot insert into action_log", async () => {
+      expect(
+        await errorCode(() =>
+          gate.as(user(userA), "insert into action_log (user_id, event, detail) values ($1, 'executed', '{}')", [userA]),
+        ),
+      ).toBe(PERMISSION_DENIED);
+      const policies = await gate.admin("select policyname from pg_policies where tablename = 'action_log' and cmd = 'INSERT'");
+      expect(policies.rows).toEqual([]);
     });
 
-    it.runIf(defaults === "legacy")("records an outcome written by those two writes as not verified, with no task", async () => {
+    it("authenticated has no UPDATE privilege or update policy on action_proposals", async () => {
+      expect(await updatableColumns("action_proposals")).toEqual([]);
+      const granted = await gate.admin<{ granted: boolean }>(
+        "select has_any_column_privilege('authenticated', 'public.action_proposals', 'UPDATE') as granted",
+      );
+      expect(granted.rows[0]!.granted).toBe(false);
+      const policies = await gate.admin("select policyname from pg_policies where tablename = 'action_proposals' and cmd = 'UPDATE'");
+      expect(policies.rows).toEqual([]);
+    });
+
+    it("refuses the old two-write decision, so only decide_action_proposal can run an action", async () => {
       const owner = await gate.createUser();
       const id = await propose(gate, owner, TASK);
-      const fake = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-      await gate.transactionAs(user(owner), async (tx) => {
-        // Naming the row in the setting does not help a caller: the role is still authenticated.
-        await tx.query("select set_config('pdot.deciding_proposal', $1, true)", [id]);
-        await tx.query("update action_proposals set status = 'approved', decided_at = now() where id = $1", [id]);
-        await tx.query(`update action_proposals set status = 'executed', result = '{"taskId":"${fake}"}' where id = $1`, [id]);
-      });
-      const row = await gate.admin("select status, decided_by_function from action_proposals where id = $1", [id]);
-      expect(row.rows).toEqual([{ status: "executed", decided_by_function: false }]);
-      expect(await countOwnedBy("tasks", owner)).toBe(0);
-      const log = await gate.admin<{ event: string; verified: boolean }>(
-        `select event, verified from action_log
-          where proposal_id = $1 and event in ('approved', 'executed') order by created_at`,
+      expect(
+        await errorCode(() =>
+          gate.as(user(owner), "update action_proposals set status = 'approved', decided_at = now() where id = $1", [id]),
+        ),
+      ).toBe(PERMISSION_DENIED);
+      expect((await decideAs(gate, owner, id, "approve")).outcome).toBe("executed");
+    });
+  });
+
+  describe("legacy proposals left approved (decision 0009)", () => {
+    /** The owner statements, read from the file the decision links to, so the two cannot drift. */
+    const statements = new Map(
+      readFileSync(resolve(process.cwd(), "docs/decisions/0009-legacy-approved.sql"), "utf8")
+        .split(/^-- name: /m)
+        .slice(1)
+        .map((block) => {
+          const [header, ...body] = block.split("\n");
+          return [header!.split(" ")[0]!, { header: header!, sql: body.join("\n").trim().replace(/;$/, "") }] as const;
+        }),
+    );
+    const run = <T,>(name: string, params: unknown[]) => gate.admin<T>(statements.get(name)!.sql, params);
+
+    async function legacyApproved(owner: string, title: string): Promise<string> {
+      const row = await gate.admin<{ id: string }>(
+        `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
+         values ($1, 'create_task', jsonb_build_object('kind', 'create_task', 'mode', 'personal', 'title', $2::text), 'x', 'approved', now())
+         returning id`,
+        [owner, title],
+      );
+      return row.rows[0]!.id;
+    }
+
+    async function taskFor(owner: string, title: string): Promise<string> {
+      const row = await gate.admin<{ id: string }>(
+        "insert into tasks (user_id, mode, title) values ($1, 'personal', $2) returning id",
+        [owner, title],
+      );
+      return row.rows[0]!.id;
+    }
+
+    const statusOf = async (id: string) =>
+      (await gate.admin<{ status: string }>("select status from action_proposals where id = $1", [id])).rows[0]!.status;
+
+    it("each statement says whether it is read-only, and only confirm_executed writes", () => {
+      expect([...statements.keys()]).toEqual([
+        "find_approved",
+        "find_reminder",
+        "list_tasks_near_decision",
+        "list_memories_near_decision",
+        "confirm_executed",
+      ]);
+      for (const [name, { header, sql }] of statements) {
+        const readOnly = header.includes("(read-only)");
+        expect(readOnly || header.includes("(writes"), name).toBe(true);
+        expect(/^select\b/i.test(sql), name).toBe(readOnly);
+        expect(sql, name).toContain("user_id = $1");
+      }
+    });
+
+    it("the decision function answers already_decided, runs nothing and leaves the row approved", async () => {
+      const owner = await gate.createUser();
+      const id = await legacyApproved(owner, "Legacy task");
+      const answer = await gate.as<{ answer: { outcome: string } }>(
+        user(owner),
+        "select public.decide_action_proposal($1, 'approve') as answer",
         [id],
       );
-      expect(log.rows).toEqual([
-        { event: "approved", verified: false },
-        { event: "executed", verified: false },
-      ]);
+      expect(answer.rows[0]!.answer.outcome).toBe("already_decided");
+      expect(await statusOf(id)).toBe("approved");
+      expect(await countOwnedBy("tasks", owner)).toBe(0);
     });
 
-    it.runIf(defaults === "legacy")("stores a log row inserted with the older grant as not verified, and drops a verified key", async () => {
+    it("the read-only statements return only the chosen user's rows", async () => {
       const owner = await gate.createUser();
-      const inserted = await gate.as<{ verified: boolean; detail: Record<string, unknown> }>(
+      const other = await gate.createUser();
+      const mine = await legacyApproved(owner, "Mine");
+      const theirs = await legacyApproved(other, "Theirs");
+      await taskFor(owner, "Mine");
+      await taskFor(other, "Theirs");
+
+      const found = await run<{ id: string }>("find_approved", [owner]);
+      expect(found.rows.map((r) => r.id)).toEqual([mine]);
+      const tasks = await run<{ title: string }>("list_tasks_near_decision", [owner, mine]);
+      expect(tasks.rows.map((r) => r.title)).toEqual(["Mine"]);
+      expect((await run("list_tasks_near_decision", [owner, theirs])).rows).toEqual([]);
+      expect((await run("list_memories_near_decision", [owner, mine])).rows).toEqual([]);
+      expect((await run("find_reminder", [owner, theirs])).rows).toEqual([]);
+    });
+
+    it("an edited task still shows in the list, and the row is set executed only for the row the user confirms", async () => {
+      const owner = await gate.createUser();
+      const other = await gate.createUser();
+      const id = await legacyApproved(owner, "Pay the invoice");
+      const task = await taskFor(owner, "Pay the invoice");
+      await gate.admin("update tasks set title = 'Paid, edited later' where id = $1", [task]);
+      const othersTask = await taskFor(other, "Pay the invoice");
+
+      const listed = await run<{ id: string }>("list_tasks_near_decision", [owner, id]);
+      expect(listed.rows.map((r) => r.id)).toEqual([task]);
+
+      // Another user's row, or another user's proposal, changes nothing.
+      expect((await run("confirm_executed", [owner, id, othersTask])).rows).toEqual([]);
+      expect((await run("confirm_executed", [other, id, task])).rows).toEqual([]);
+      expect(await statusOf(id)).toBe("approved");
+
+      expect((await run<{ id: string }>("confirm_executed", [owner, id, task])).rows.map((r) => r.id)).toEqual([id]);
+      const proposals = await createActionProposalRepository(sqlGateClient(gate, owner)).listProposals(owner, undefined, 50);
+      // A person confirmed it, not the decision function: it stays not verified, so the screens say "Marked done".
+      expect(proposals.find((p) => p.id === id)).toMatchObject({ status: "executed", result: { taskId: task }, verified: false });
+      const log = await gate.admin<{ event: string; verified: boolean }>(
+        "select event, verified from action_log where user_id = $1 and proposal_id = $2 and event = 'executed'",
+        [owner, id],
+      );
+      expect(log.rows).toEqual([{ event: "executed", verified: false }]);
+      expect((await run("confirm_executed", [owner, id, task])).rows).toEqual([]);
+    });
+
+    it("refuses a row that another proposal already names as its result", async () => {
+      const owner = await gate.createUser();
+      const first = await legacyApproved(owner, "Call Sam");
+      const second = await legacyApproved(owner, "Call Sam");
+      const task = await taskFor(owner, "Call Sam");
+      expect((await run<{ id: string }>("list_tasks_near_decision", [owner, second])).rows.map((r) => r.id)).toEqual([task]);
+
+      expect((await run<{ id: string }>("confirm_executed", [owner, first, task])).rows.map((r) => r.id)).toEqual([first]);
+      expect((await run("confirm_executed", [owner, second, task])).rows).toEqual([]);
+      expect(await statusOf(second)).toBe("approved");
+      const log = await gate.admin("select 1 from action_log where user_id = $1 and event = 'executed'", [owner]);
+      expect(log.rows).toHaveLength(1);
+    });
+
+    it("refuses a reminder linked to another proposal, and accepts one linked to this proposal", async () => {
+      const owner = await gate.createUser();
+      const legacyReminder = async () =>
+        (
+          await gate.admin<{ id: string }>(
+            `insert into action_proposals (user_id, kind, payload, summary, status, decided_at)
+             values ($1, 'create_reminder', '{"kind":"create_reminder","mode":"work","title":"Dentist","dueAt":"2026-10-30T17:00:00Z"}', 'x', 'approved', now())
+             returning id`,
+            [owner],
+          )
+        ).rows[0]!.id;
+      const id = await legacyReminder();
+      const other = await legacyReminder();
+      const reminderFor = async (proposalId: string) =>
+        (
+          await gate.admin<{ id: string }>(
+            "insert into reminders (user_id, mode, title, due_at, proposal_id) values ($1, 'work', 'Dentist', now(), $2) returning id",
+            [owner, proposalId],
+          )
+        ).rows[0]!.id;
+      const linkedElsewhere = await reminderFor(other);
+      const linkedHere = await reminderFor(id);
+
+      expect((await run("confirm_executed", [owner, id, linkedElsewhere])).rows).toEqual([]);
+      expect(await statusOf(id)).toBe("approved");
+      expect((await run<{ id: string }>("find_reminder", [owner, id])).rows.map((r) => r.id)).toEqual([linkedHere]);
+      expect((await run<{ id: string }>("confirm_executed", [owner, id, linkedHere])).rows.map((r) => r.id)).toEqual([id]);
+    });
+
+    it("a row with an unknown outcome stays approved and an approval cannot make a second task", async () => {
+      const owner = await gate.createUser();
+      const id = await legacyApproved(owner, "Call Sam");
+      const task = await taskFor(owner, "Call Sam");
+      await gate.admin("delete from tasks where id = $1", [task]);
+      expect((await run("list_tasks_near_decision", [owner, id])).rows).toEqual([]);
+
+      const answer = await gate.as<{ answer: { outcome: string } }>(
         user(owner),
-        `insert into action_log (user_id, event, detail)
-         values ($1, 'executed', '{"kind":"create_task","verified":true,"taskId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}')
-         returning verified, detail`,
-        [owner],
+        "select public.decide_action_proposal($1, 'approve') as answer",
+        [id],
       );
-      expect(inserted.rows).toEqual([
-        { verified: false, detail: { kind: "create_task", taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } },
-      ]);
-      expect(
-        await errorCode(() =>
-          gate.as(user(owner), "insert into action_log (user_id, event, verified) values ($1, 'executed', true) returning verified", [owner]),
-        ),
-      ).toBeNull();
-      const forced = await gate.admin<{ n: number }>(
-        "select count(*)::int as n from action_log where user_id = $1 and verified",
-        [owner],
-      );
-      expect(forced.rows[0]!.n).toBe(0);
-    });
-
-    it.runIf(defaults === "legacy")("cannot reset a decided proposal, change its result, or write nested log detail", async () => {
-      const owner = await gate.createUser();
-      const id = await propose(gate, owner, TASK);
-      await decideAs(gate, owner, id, "approve");
-      expect(await errorCode(() => gate.as(user(owner), "update action_proposals set status = 'proposed', decided_at = null, result = null where id = $1", [id]))).toBe("23514");
-      expect(await errorCode(() => gate.as(user(owner), "update action_proposals set result = '{\"taskId\":\"fake\"}' where id = $1", [id]))).toBe("23514");
-      expect(
-        await errorCode(() =>
-          gate.as(user(owner), "insert into action_log (user_id, event, detail) values ($1, 'executed', '{\"taskId\":{\"a\":1}}')", [owner]),
-        ),
-      ).toBe("23514");
+      expect(answer.rows[0]!.answer.outcome).toBe("already_decided");
+      expect(await statusOf(id)).toBe("approved");
+      expect(await countOwnedBy("tasks", owner)).toBe(0);
     });
   });
 });
@@ -806,5 +936,83 @@ describe("upgrade of a database that has rows the older schema allowed", () => {
     expect((await decideOld(RESET, "approve")).outcome).toBe("executed");
     expect((await decideOld(RESET, "approve")).outcome).toBe("already_decided");
     expect((await old.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(1);
+  });
+});
+
+describe("contract step over the expand window", () => {
+  const OWNER = "33333333-3333-4333-8333-333333333333";
+  const FORGED = "33333333-3333-4333-8333-000000000001";
+  const IN_FLIGHT = "33333333-3333-4333-8333-000000000002";
+  const FAKE_TASK = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const FORGED_LOG = "33333333-3333-4333-8333-000000000003";
+  let db: SqlGate;
+
+  beforeAll(async () => {
+    db = await startSqlGate({
+      defaults: "legacy",
+      beforeMigration: {
+        file: "20261021010000_memory_hardening_contract.sql",
+        // As the signed-in owner, with the older grants of the expand window.
+        sql: `
+          insert into auth.users (id) values ('${OWNER}');
+          set role authenticated;
+          select set_config('request.jwt.claims', '{"sub":"${OWNER}","role":"authenticated"}', false);
+          insert into action_proposals (id, user_id, kind, payload, summary) values
+            ('${FORGED}', '${OWNER}', 'create_task', '{"kind":"create_task","mode":"personal","title":"Forged"}', 'x'),
+            ('${IN_FLIGHT}', '${OWNER}', 'create_task', '{"kind":"create_task","mode":"personal","title":"Old"}', 'x');
+          update action_proposals set status = 'approved', decided_at = now() where id = '${FORGED}';
+          update action_proposals set status = 'executed', result = '{"taskId":"${FAKE_TASK}"}' where id = '${FORGED}';
+          -- The reviewer's case: a direct log insert that claims verification.
+          insert into action_log (id, user_id, event, detail) values
+            ('${FORGED_LOG}', '${OWNER}', 'executed', '{"kind":"create_task","verified":true,"taskId":"${FAKE_TASK}"}');
+          -- An older request claimed this one and has not stored its result yet.
+          update action_proposals set status = 'approved', decided_at = now() where id = '${IN_FLIGHT}';
+          reset role;
+          select set_config('request.jwt.claims', '', false);
+        `,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await db?.close();
+  });
+
+  it("keeps an outcome a caller wrote before the contract as not verified, in the row, the list and the log", async () => {
+    const row = await db.admin("select status, decided_by_function from action_proposals where id = $1", [FORGED]);
+    expect(row.rows).toEqual([{ status: "executed", decided_by_function: false }]);
+    const listed = await createActionProposalRepository(sqlGateClient(db, OWNER)).listProposals(OWNER, undefined, 10);
+    expect(listed.find((proposal) => proposal.id === FORGED)).toMatchObject({ status: "executed", verified: false });
+    const log = await db.admin<{ event: string; verified: boolean }>(
+      `select event, verified from action_log
+        where proposal_id = $1 and event in ('approved', 'executed') order by created_at`,
+      [FORGED],
+    );
+    expect(log.rows).toEqual([
+      { event: "approved", verified: false },
+      { event: "executed", verified: false },
+    ]);
+    expect((await db.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(0);
+  });
+
+  it("keeps a log row a caller inserted before the contract as not verified, with no verified key", async () => {
+    const row = await db.admin("select verified, detail ? 'verified' as has_key from action_log where id = $1", [FORGED_LOG]);
+    expect(row.rows).toEqual([{ verified: false, has_key: false }]);
+    const entries = await createActionLogRepository(sqlGateClient(db, OWNER)).list(OWNER, 50);
+    expect(entries.find((entry) => entry.id === FORGED_LOG)).toMatchObject({ event: "executed", verified: false });
+  });
+
+  it("leaves an older request's claim approved and not verified when the contract removes its result write, and never runs it again", async () => {
+    expect(
+      await errorCode(() =>
+        db.as(user(OWNER), `update action_proposals set status = 'executed', result = '{"taskId":"${FAKE_TASK}"}' where id = $1`, [
+          IN_FLIGHT,
+        ]),
+      ),
+    ).toBe(PERMISSION_DENIED);
+    const row = await db.admin("select status, result, decided_by_function from action_proposals where id = $1", [IN_FLIGHT]);
+    expect(row.rows).toEqual([{ status: "approved", result: null, decided_by_function: false }]);
+    expect((await decideAs(db, OWNER, IN_FLIGHT, "approve")).outcome).toBe("already_decided");
+    expect((await db.admin<{ n: number }>("select count(*)::int as n from tasks where user_id = $1", [OWNER])).rows[0]!.n).toBe(0);
   });
 });

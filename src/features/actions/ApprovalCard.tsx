@@ -8,7 +8,15 @@ import { MAX_MEMORY_CHARS, MAX_REMINDER_TITLE_CHARS, MAX_TASK_CHARS } from "@/li
 import { MODE_LABELS } from "@/lib/mode";
 import type { ActionPayload, ActionProposalDTO, Mode } from "@/types/api";
 import { decideAction } from "./api";
-import { KIND_LABELS, KIND_RESULT_LINKS, fromLocalInputValue, payloadDetails, toLocalInputValue } from "./format";
+import {
+  KIND_LABELS,
+  KIND_RESULT_LINKS,
+  UNCONFIRMED_HINT,
+  fromLocalInputValue,
+  isUnconfirmedDone,
+  payloadDetails,
+  toLocalInputValue,
+} from "./format";
 
 interface Draft {
   mode: Mode;
@@ -124,20 +132,28 @@ export function ApprovalCard({
     void decide("approve", payload);
   }
 
-  const statusLabel = {
-    proposed: "Needs your OK",
-    approved: "Running…",
-    rejected: "Cancelled",
-    executed: "Done",
-    failed: "Failed",
-  }[proposal.status];
-  const detailsLabel = waiting ? "What will happen" : proposal.status === "executed" ? "What was done" : "What was proposed";
+  const unconfirmed = isUnconfirmedDone(proposal);
+  const statusLabel = unconfirmed
+    ? "Marked done"
+    : {
+        proposed: "Needs your OK",
+        approved: "Running…",
+        rejected: "Cancelled",
+        executed: "Done",
+        failed: "Failed",
+      }[proposal.status];
+  const pillClass = unconfirmed ? "status-unconfirmed" : `status-${proposal.status}`;
+  const detailsLabel = waiting
+    ? "What will happen"
+    : proposal.status === "executed" && !unconfirmed
+      ? "What was done"
+      : "What was proposed";
 
   return (
     <article className={`approval-card approval-${proposal.status}`} aria-labelledby={`${id}-title`}>
       <div className="approval-head">
         <span className="approval-kind">{KIND_LABELS[kind]}</span>
-        <span className={`status-pill status-${proposal.status}`}>{statusLabel}</span>
+        <span className={`status-pill ${pillClass}`}>{statusLabel}</span>
       </div>
       <p id={`${id}-title`} className="approval-summary">
         {proposal.summary}
@@ -258,7 +274,8 @@ export function ApprovalCard({
         </div>
       )}
 
-      {proposal.status === "executed" && (
+      {unconfirmed && <p className="approval-outcome small muted">Marked done. {UNCONFIRMED_HINT}</p>}
+      {proposal.status === "executed" && !unconfirmed && (
         <p className="approval-outcome small">
           {approvedEdit ? "Done, with your changes. " : "Done. "}
           <Link href={KIND_RESULT_LINKS[kind].href}>{KIND_RESULT_LINKS[kind].label}</Link>

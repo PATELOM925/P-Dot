@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { createActionLogRepository } from "@/server/db/action-log";
 import { createDocumentRepository } from "@/server/db/documents";
 import { errorResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
@@ -22,7 +21,6 @@ export async function DELETE(request: Request, context: Context): Promise<Respon
     const deleted = await createDocumentRepository(auth.supabase).deleteDocument(auth.userId, id.data);
     if (!deleted) return documentNotFound(requestId);
 
-    await createActionLogRepository(auth.supabase).append(auth.userId, "document_deleted", { documentId: id.data });
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store", "X-Request-Id": requestId } });
   });
 }

@@ -6,7 +6,7 @@ import { deleteReminder } from "@/features/reminders/api";
 import { deleteTask } from "@/features/today/api";
 import { ApiError, errorMessage } from "@/lib/api-client";
 import type { ActionProposalDTO } from "@/types/api";
-import { KIND_LABELS, KIND_RESULT_LINKS } from "./format";
+import { KIND_LABELS, KIND_RESULT_LINKS, UNCONFIRMED_HINT, isUnconfirmedDone } from "./format";
 
 type UndoState = "idle" | "busy" | "undone";
 
@@ -34,7 +34,8 @@ export function AutoRanProposal({ proposal, running }: { proposal: ActionProposa
   const [state, setState] = useState<UndoState>("idle");
   const [error, setError] = useState<string | null>(null);
   const result = KIND_RESULT_LINKS[proposal.payload.kind];
-  const done = !running && proposal.status === "executed";
+  const unconfirmed = !running && isUnconfirmedDone(proposal);
+  const done = !running && proposal.status === "executed" && !unconfirmed;
 
   async function onUndo() {
     setState("busy");
@@ -54,7 +55,9 @@ export function AutoRanProposal({ proposal, running }: { proposal: ActionProposa
       ? { label: "Undone", className: "status-rejected" }
       : done
         ? { label: "Done on its own", className: "status-executed" }
-        : { label: "Failed", className: "status-failed" };
+        : unconfirmed
+          ? { label: "Marked done", className: "status-unconfirmed" }
+          : { label: "Failed", className: "status-failed" };
 
   return (
     <li className="past-action auto-action">
@@ -69,7 +72,9 @@ export function AutoRanProposal({ proposal, running }: { proposal: ActionProposa
               ? "Undone. It was removed."
               : done
                 ? "P-Dot did this on its own because Auto mode is on."
-                : "Auto mode tried this, but it could not be completed."}
+                : unconfirmed
+                  ? UNCONFIRMED_HINT
+                  : "Auto mode tried this, but it could not be completed."}
           {done && state !== "undone" && (
             <>
               {" "}

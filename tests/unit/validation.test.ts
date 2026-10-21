@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
-import { safeNextPath, toSafeHttpUrl } from "@/lib/safe-url";
+import { MAX_SAFE_URL_CHARS, safeNextPath, toSafeHttpUrl } from "@/lib/safe-url";
 import { chatRequestSchema, newPasswordSchema } from "@/lib/schemas";
 
 const ID = "3f8e2a4c-9b1d-4e7f-8a2b-1c3d5e7f9a0b";
@@ -66,6 +66,15 @@ describe("toSafeHttpUrl", () => {
     null,
   ])("rejects %s", (url) => {
     expect(toSafeHttpUrl(url)).toBeNull();
+  });
+
+  it("rejects a URL that is short enough before normalization but too long after it", () => {
+    // Each CJK character becomes 9 ASCII bytes: %E4%B8%AD.
+    const fits = `https://e0.com/${"中".repeat(225)}${"a".repeat(8)}`;
+    expect(toSafeHttpUrl(fits)).toHaveLength(MAX_SAFE_URL_CHARS);
+    const expands = `https://e0.com/${"中".repeat(226)}`;
+    expect(expands.length).toBeLessThan(MAX_SAFE_URL_CHARS);
+    expect(toSafeHttpUrl(expands)).toBeNull();
   });
 });
 

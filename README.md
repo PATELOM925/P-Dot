@@ -173,7 +173,7 @@ npm test
 
 The 10 tests in `tests/integration/rls.test.ts` should then run instead of being skipped. One checks the model route columns on messages. They also reserve and give back a few micro-dollars through the spend guard functions.
 
-`npm test` also runs the database gate (`tests/integration/sql-gate.test.ts`) without any setup. It applies every migration to an in-memory Postgres (PGlite with pgvector) that has stand-ins for the Supabase roles, `auth.uid()` and the Supabase default grants, then checks grants and RLS as `anon` and as two signed-in users, and reads stored rows through the app's own parsers. `tests/integration/frozen-migrations.test.ts` fails if a migration that is on `main` changes: add a new migration instead. The pull request that adds a migration also adds its hash to `tests/integration/frozen-migrations.sha256`.
+`npm test` also runs the database gate (`tests/integration/sql-gate.test.ts`) without any setup. It applies every migration to an in-memory Postgres (PGlite with pgvector) that has stand-ins for the Supabase roles, `auth.uid()` and the Supabase default grants, then checks grants and RLS as `anon` and as two signed-in users, and reads stored rows through the app's own parsers. `tests/integration/frozen-migrations.test.ts` fails if a migration is not listed in `tests/integration/frozen-migrations.sha256` or no longer matches its hash. The pull request that adds a migration adds its hash. After merge, never edit the file: add a new migration.
 
 ### Housekeeping
 
@@ -193,7 +193,7 @@ The 10 tests in `tests/integration/rls.test.ts` should then run instead of being
 | `npm run deploy` | Owner only. Build for Cloudflare, check that no secret is in the bundle, and deploy (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)) |
 | `npm run upload` | Owner only. Same as deploy, but uploads a new version without sending traffic to it |
 | `npm run check:worker-env` | Check the last OpenNext build for secret values copied from `.env` files |
-| `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules) |
+| `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules), then `scripts/check-changelog.mjs` on the Unreleased entries |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest unit tests and the database gate (in-memory Postgres, no setup); the live RLS integration test is skipped unless configured |
 | `npm run check` | Lint, type-check, and tests |
@@ -218,7 +218,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `GET /api/memories?mode=&status=`, `POST /api/memories`, `PATCH`/`DELETE /api/memories/:id` | Memories the user can see, edit and delete ([decision 0009](docs/decisions/0009-memory-documents-actions.md)) |
 | `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | Plain text and Markdown documents, split and embedded on upload |
 | `GET /api/actions?status=`, `POST /api/actions/:id/decision` | Action proposals; `{ decision: "approve" \| "reject", payload? }` runs an approved action once |
-| `GET /api/action-log` | The append-only action log (IDs, kinds and counts only) |
+| `GET /api/action-log` | The action log, written only by the database (IDs, kinds, modes, counts and flags only) |
 | `GET /api/reminders?mode=`, `POST /api/reminders`, `PATCH`/`DELETE /api/reminders/:id` | Reminders (no delivery yet) |
 | `GET /api/messages/:id/context` | "What was sent" for one assistant reply (404 when it has no record) |
 | `GET /api/health` | Liveness and configured integrations (booleans only) |
@@ -240,7 +240,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `tests/` | Unit tests (`unit/`), the database gate and the live Supabase RLS test (`integration/`), shared fakes (`support/`) |
 | `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
 | `CHANGELOG.md` | What changed, the problem, and how it was resolved, for each pull request |
-| `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle |
+| `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle. `check-changelog.mjs` and `changelog-rules.mjs`: changelog entry check |
 | `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the indigo-to-violet accent); the app icons in `public/icons/` use the same mark |
 
 ## Deploying to Cloudflare
