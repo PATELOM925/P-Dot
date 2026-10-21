@@ -29,6 +29,14 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - It reads stored `action_log` and `action_proposals` rows, NULLs included, through the app's own repositories.
     - Three checks fail on `main` and pass with the memory hardening migration in this PR: the nested log detail, the `action_log` insert grant and the `action_proposals` update grant.
     - `tests/integration/frozen-migrations.test.ts` fails when a migration is not listed in `frozen-migrations.sha256` or its file no longer matches its hash. The message tells the author what to do.
+    - Test hooks have 60 seconds (`vitest.config.ts`), because starting the database and applying every migration can take more than 10 seconds when test files run in parallel.
+- **Dynamic personal bot usage showcase on the landing page.** Landed without a pull request in [commit b45b695](https://github.com/PATELOM925/P-Dot/commit/b45b695).
+  - Problem: the landing page showed only a single static example ("Get me ready for Friday and book a haircut"), with non-interactive buttons, giving visitors a narrow view of what a personal bot can do across different life and work domains.
+  - Resolution:
+    - Added `DynamicAgentCard` with interactive scenario tabs: Weekend errands & booking, Morning triage & inbox zero, Travel & reservations, Developer ops & hotfixes, and Meeting prep & executive briefs.
+    - Added an interactive human-in-the-loop approval simulator with "Approve" and "Skip" buttons that transition step status, badges, and feedback in real time to demonstrate P-Dot's safety-first architecture.
+    - Added automatic carousel cycle with pause on hover/focus and support for `prefers-reduced-motion`, plus keyboard accessibility and mobile horizontal tab scrolling.
+    - Added unit test coverage in `tests/unit/landing-use-cases.test.ts`.
 - **Screens for approvals, memory, documents, "what was sent", the action log and reminders** (decisions [0009](docs/decisions/0009-memory-documents-actions.md) and [0005](docs/decisions/0005-assistant-hub-proposal.md)). Landed without a pull request in [commit e78ebc7](https://github.com/PATELOM925/P-Dot/commit/e78ebc7).
   - Problem: the storage and routes from decision 0009 had no screens. Users could not see or edit what P-Dot keeps, approve an action, or check what went to the model.
   - Resolution:
