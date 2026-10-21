@@ -36,7 +36,7 @@ Six rules. Each one closes a named defect, and no rule repeats another.
 5. **Every prepared turn has one cleanup owner.** `prepareChatTurn` returns the turn with an idempotent `release()`. It gives back a hold that no attempt took, gives back a Tavily credit if the search did not start, and ends the claim. The generator's `finally` calls it, and so does the stream's `cancel()`, also before the first pull. A hold that an attempt took is settled by that attempt only, from its outcome.
 6. **One database rule decides a document's status.** `settle_document(id)` locks the document row, counts its chunks and writes `ready` or `failed` only while the row is `processing`. It answers the status that the row has after the call. A trigger on `document_chunks` locks the same row and refuses chunks for a document that is not `processing`. So a chunk insert and a settle cannot pass each other. Both run as the caller (SECURITY INVOKER), so RLS applies and a caller learns nothing about another user's document.
 
-The server also picks the ID of each row it inserts in these flows (conversation, user message, reply, memory, document). After a failed reply insert it reads the reply by that ID. If the reply is there, the turn writes the context record and sends `done`. After a failed memory insert with a key, it reads the memory by the key.
+The server picks the ID of the user message and of the reply before it inserts them. The user message ID lets a turn end its claim even when the insert response is lost. After a failed reply insert, the server reads the reply by its ID. If the reply is there, the turn writes the context record and sends `done`. After a failed memory insert with a key, it reads the memory by the key.
 
 ### Fingerprints
 
@@ -126,7 +126,7 @@ The 409 answers have three codes, so the screen can act on each:
 
 ### `POST /api/chat`, action `retry`
 
-The precondition does not change: the last message must be from the user. Then the claim, as in step 4. Two "Retry reply" requests at the same time give one reply: the second gets 409 `busy`.
+If the last message is a reply, the route answers 409 `answered` with the conversation: the reply is saved, but its response may have been lost, so the screen reloads. If the last message is from the user, the claim, as in step 4. An empty conversation gets 409 `conflict`, as before. Two "Retry reply" requests at the same time give one reply: the second gets 409 `busy`.
 
 ### Reply save inside the stream
 
@@ -220,7 +220,7 @@ Each `it.fails` becomes a passing `it`. The tests send the same K on both reques
 - `memories-routes.test.ts`: the lost insert case passes. The sweep sends K and drops the duplicate exception. A replay makes no embedding call. Fingerprint 409. Edited after the lost response: 201 with the current text. Deleted, then sent again: saved again. Barrier: two requests miss the lookup; one row, both 201, two embedding charges and no open hold.
 - `documents-routes.test.ts`: both resend cases pass. The sweep sends K, includes `delayed` on the chunk insert and `refused` on `settle_document`, and drops the `failedButReady` exception. A `processing` row with all chunks: 201 and no embedding. A `failed` row does not block K. Fingerprint 409. A delayed chunk commit after a settle wrote `failed` is refused, and the list never shows two ready copies.
 - `request-key.test.ts`: same scope, same key; changed text, target, mode, title or file, new key; `clear()`, new key.
-- The lease is more than the longest deadline plus the Tavily timeout, with a margin.
+- `request-key.test.ts` also checks that the lease is more than the longest deadline plus the Tavily timeout, with a margin.
 
 ### Database gate (both grant modes)
 
