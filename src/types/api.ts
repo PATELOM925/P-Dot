@@ -57,6 +57,8 @@ export type ApiErrorCode =
   | "payload_too_large"
   | "not_found"
   | "conflict"
+  | "busy"
+  | "answered"
   | "rate_limited"
   | "budget_exhausted"
   | "not_configured"
@@ -70,6 +72,8 @@ export interface ApiErrorBody {
     code: ApiErrorCode;
     message: string;
     requestId: string;
+    /** With "busy" and "answered" from POST /api/chat: the conversation of the saved message. */
+    conversationId?: string;
   };
 }
 

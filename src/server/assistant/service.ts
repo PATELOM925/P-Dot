@@ -3,6 +3,7 @@ import {
   HISTORY_CHAR_BUDGET,
   HISTORY_MESSAGE_LIMIT,
   MAX_ASSISTANT_CHARS,
+  REPLY_CLAIM_LEASE_SECONDS,
 } from "@/lib/limits";
 import type {
   ApiErrorCode,
@@ -17,6 +18,7 @@ import type { ContextRecordRepository } from "@/server/db/context-records";
 import type { ConversationRepository } from "@/server/db/conversations";
 import type { QuotaGate } from "@/server/db/quota";
 import type { SpendGuard } from "@/server/db/spend";
+import { requestFingerprint, type ClientRequest } from "@/server/http/request-key";
 import type { Logger } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
 import { isValidUsage } from "@/server/providers/nebius/pricing";
@@ -78,6 +80,19 @@ export interface NebiusHold {
   heldMicroUsd: number;
 }
 
+/**
+ * What a turn holds before its stream runs. `releaseTurn` gives back each part
+ * that is still here; a part leaves when its use starts or ends.
+ */
+export interface TurnHolds {
+  /** Leaves when the first attempt takes it. That attempt settles it from its outcome. */
+  nebius: NebiusHold | null;
+  /** Leaves when the search starts: a search that was sent keeps its credit. */
+  tavily: string | null;
+  /** The claim to write the reply (decision 0012). Leaves when the reply is saved. */
+  claim: { messageId: string; claimId: string } | null;
+}
+
 export interface PreparedTurn {
   requestId: string;
   userId: string;
@@ -90,8 +105,8 @@ export interface PreparedTurn {
   searchBudgetExhausted: boolean;
   /** The tier for this reply and why the router chose it. */
   route: RouteDecision;
-  /** Held before streaming. It pays for the first attempt, on any model of the tier. */
-  nebiusHold: NebiusHold;
+  /** The Nebius hold pays for the first attempt, on any model of the tier. */
+  holds: TurnHolds;
 }
 
 export type PrepareResult =
@@ -102,17 +117,42 @@ export type PrepareResult =
       code: ApiErrorCode;
       message: string;
       headers?: Record<string, string>;
+      /** With "busy" and "answered": the conversation of the saved message. */
+      conversationId?: string;
     };
+
+const keyMismatch: PrepareResult = {
+  ok: false,
+  status: 409,
+  code: "conflict",
+  message: "This request key was used for a different message. Send the message again.",
+};
+
+const alreadySent = (conversationId: string): PrepareResult => ({
+  ok: false,
+  status: 409,
+  code: "answered",
+  message: "This message was already sent. Reload the conversation.",
+  conversationId,
+});
+
+const stillReplying = (conversationId: string): PrepareResult => ({
+  ok: false,
+  status: 409,
+  code: "busy",
+  message: "P-Dot is still replying. Try again in a few minutes.",
+  conversationId,
+});
 
 /**
  * Everything that must succeed before the response stream starts: ownership
- * check, retry precondition, usage quota, global spend caps, and saving the
- * user's message.
+ * check, the request key lookup, the claim to write the reply, usage quota,
+ * global spend caps, and saving the user's message (decision 0012).
  * `userId` must come from the verified session, never from the request body.
  */
 export async function prepareChatTurn(
   deps: AssistantDeps,
-  input: { userId: string; requestId: string; request: ChatRequest },
+  input: { userId: string; requestId: string; request: ChatRequest; requestKey?: string | null },
 ): Promise<PrepareResult> {
   const { userId, requestId, request } = input;
 
@@ -126,80 +166,126 @@ export async function prepareChatTurn(
     recent = await deps.repo.listRecentMessages(userId, existing.id, HISTORY_MESSAGE_LIMIT);
   }
 
-  if (request.action === "retry" && recent.at(-1)?.role !== "user") {
-    return {
-      ok: false,
-      status: 409,
-      code: "conflict",
-      message: "There is no unanswered message to retry.",
+  // A saved user message that this turn answers: "Retry reply", or a resend whose message was saved.
+  let answering: MessageDTO | null = null;
+  let clientRequest: ClientRequest | null = null;
+  if (request.action === "send" && input.requestKey) {
+    const target = request.conversationId ?? `new:${request.mode ?? "personal"}`;
+    clientRequest = {
+      id: input.requestKey,
+      hash: await requestFingerprint(["chat.send.v1", target, request.message]),
     };
+    const saved = await deps.repo.findMessageByClientRequest(userId, clientRequest.id);
+    if (saved) {
+      if (saved.hash !== clientRequest.hash) return keyMismatch;
+      existing = await deps.repo.getConversation(userId, saved.conversationId);
+      if (!existing) return keyMismatch;
+      recent = await deps.repo.listRecentMessages(userId, existing.id, HISTORY_MESSAGE_LIMIT);
+      if (recent.at(-1)?.id !== saved.message.id) return alreadySent(existing.id);
+      answering = saved.message;
+    } else if (!existing) {
+      const created = await deps.repo.findConversationByClientRequest(userId, clientRequest.id);
+      if (created) {
+        if (created.hash !== clientRequest.hash) return keyMismatch;
+        recent = await deps.repo.listRecentMessages(userId, created.conversation.id, HISTORY_MESSAGE_LIMIT);
+        if (recent.length > 0) return keyMismatch;
+        existing = created.conversation;
+      }
+    }
   }
 
-  const decision = await deps.quota.consume();
-  if (!decision.allowed) {
-    const seconds = Math.max(1, Math.ceil((decision.resetsAt.getTime() - deps.now().getTime()) / 1000));
-    return {
-      ok: false,
-      status: 429,
-      code: "rate_limited",
-      message: "You have reached your request limit for now. Please try again later.",
-      headers: { "Retry-After": String(seconds) },
-    };
+  if (request.action === "retry") {
+    const last = recent.at(-1);
+    // The reply is saved, though this screen may not show it yet (its response was lost).
+    if (last?.role === "assistant") return alreadySent(existing!.id);
+    if (last?.role !== "user") {
+      return {
+        ok: false,
+        status: 409,
+        code: "conflict",
+        message: "There is no unanswered message to retry.",
+      };
+    }
+    answering = last;
   }
 
-  // Global spend caps, after the per-user quota and before any paid call.
-  // The hold is the worst case for the prompt this turn will send.
-  const mode = existing?.mode ?? (request.action === "send" ? (request.mode ?? "personal") : "personal");
-  const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
-  if (request.action === "send") pendingHistory.push({ role: "user", content: request.message });
-  const searchWanted = request.webSearch && deps.search !== null;
-  const route = routeRequest({
-    message: pendingHistory.at(-1)?.content ?? "",
-    historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
-    webSearch: request.webSearch,
-    effort: request.effort ?? "auto",
-  });
-  const plan = deps.routing[route.tier];
-  const promptBound = buildPromptMessages({
-    history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
-    webSearch: request.webSearch ? "failed" : "off",
-    results: [],
-    now: deps.now(),
-    mode,
-  });
-  // The first attempt can run on any model of the tier (the breaker can skip
-  // the first one), so hold for the most expensive one.
-  let heldMicroUsd: number;
+  const holds: TurnHolds = { nebius: null, tavily: null, claim: null };
+  if (answering) {
+    const claim = await deps.repo.claimReply(answering.id, REPLY_CLAIM_LEASE_SECONDS);
+    if (claim.outcome === "busy") return stillReplying(existing!.id);
+    if (claim.outcome !== "claimed") return alreadySent(existing!.id);
+    holds.claim = { messageId: answering.id, claimId: claim.claimId };
+  }
+
   try {
-    heldMicroUsd = Math.max(
-      ...plan.models.map((model) =>
-        nebiusHoldMicroUsd(model, promptBound, plan.maxOutputTokens, searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0),
-      ),
-    );
-  } catch (error) {
-    if (!(error instanceof NebiusHoldTooLargeError)) throw error;
-    deps.log("warn", "spend_hold_too_large", { requestId, route: "chat", tier: route.tier });
-    return {
-      ok: false,
-      status: 413,
-      code: "payload_too_large",
-      message: "This request is too large to answer. Start a new conversation or turn off web search.",
+    const refused = async (result: PrepareResult): Promise<PrepareResult> => {
+      await releaseHolds(deps, requestId, holds);
+      return result;
     };
-  }
-  const nebius = await deps.spend.reserve("nebius", heldMicroUsd);
-  if (!nebius.allowed) {
-    deps.log("warn", "spend_limit_reached", { requestId, route: "chat", provider: "nebius", limit: nebius.limit });
-    return { ok: false, ...budgetRefusal(nebius.limit, deps.now()) };
-  }
-  const nebiusHold: NebiusHold = { reservationId: nebius.id, heldMicroUsd };
 
-  let tavilyReservation: string | null = null;
-  try {
+    const decision = await deps.quota.consume();
+    if (!decision.allowed) {
+      const seconds = Math.max(1, Math.ceil((decision.resetsAt.getTime() - deps.now().getTime()) / 1000));
+      return refused({
+        ok: false,
+        status: 429,
+        code: "rate_limited",
+        message: "You have reached your request limit for now. Please try again later.",
+        headers: { "Retry-After": String(seconds) },
+      });
+    }
+
+    // Global spend caps, after the per-user quota and before any paid call.
+    // The hold is the worst case for the prompt this turn will send.
+    const mode = existing?.mode ?? (request.action === "send" ? (request.mode ?? "personal") : "personal");
+    const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
+    if (request.action === "send" && !answering) pendingHistory.push({ role: "user", content: request.message });
+    const searchWanted = request.webSearch && deps.search !== null;
+    const route = routeRequest({
+      message: pendingHistory.at(-1)?.content ?? "",
+      historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
+      webSearch: request.webSearch,
+      effort: request.effort ?? "auto",
+    });
+    const plan = deps.routing[route.tier];
+    const promptBound = buildPromptMessages({
+      history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
+      webSearch: request.webSearch ? "failed" : "off",
+      results: [],
+      now: deps.now(),
+      mode,
+    });
+    // The first attempt can run on any model of the tier (the breaker can skip
+    // the first one), so hold for the most expensive one.
+    let heldMicroUsd: number;
+    try {
+      heldMicroUsd = Math.max(
+        ...plan.models.map((model) =>
+          nebiusHoldMicroUsd(model, promptBound, plan.maxOutputTokens, searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0),
+        ),
+      );
+    } catch (error) {
+      if (!(error instanceof NebiusHoldTooLargeError)) throw error;
+      deps.log("warn", "spend_hold_too_large", { requestId, route: "chat", tier: route.tier });
+      return refused({
+        ok: false,
+        status: 413,
+        code: "payload_too_large",
+        message: "This request is too large to answer. Start a new conversation or turn off web search.",
+      });
+    }
+    const nebius = await deps.spend.reserve("nebius", heldMicroUsd);
+    if (!nebius.allowed) {
+      deps.log("warn", "spend_limit_reached", { requestId, route: "chat", provider: "nebius", limit: nebius.limit });
+      return refused({ ok: false, ...budgetRefusal(nebius.limit, deps.now()) });
+    }
+    holds.nebius = { reservationId: nebius.id, heldMicroUsd };
+
     let searchBudgetExhausted = false;
     if (searchWanted) {
       const tavily = await deps.spend.reserve("tavily", TAVILY_BASIC_SEARCH_CREDITS);
       if (tavily.allowed) {
-        tavilyReservation = tavily.id;
+        holds.tavily = tavily.id;
       } else {
         searchBudgetExhausted = true;
         deps.log("warn", "spend_limit_reached", { requestId, route: "chat", provider: "tavily", limit: tavily.limit });
@@ -208,19 +294,24 @@ export async function prepareChatTurn(
 
     let conversation: ConversationSummary;
     let userMessage: MessageDTO;
-    if (request.action === "send") {
+    if (!answering && request.action === "send") {
       conversation =
-        existing ?? (await deps.repo.createConversation(userId, titleFromMessage(request.message), mode));
+        existing ??
+        (await deps.repo.createConversation(userId, titleFromMessage(request.message), mode, { clientRequest }));
+      // The claim is known before the insert, so a lost response can still end it.
+      holds.claim = { messageId: crypto.randomUUID(), claimId: crypto.randomUUID() };
       userMessage = await deps.repo.insertMessage(userId, {
+        id: holds.claim.messageId,
         conversationId: conversation.id,
         role: "user",
         content: request.message,
+        clientRequest,
+        replyClaimId: holds.claim.claimId,
       });
       recent = [...recent, userMessage];
     } else {
-      // Retry: both were verified above.
       conversation = existing!;
-      userMessage = recent.at(-1)!;
+      userMessage = answering!;
     }
 
     return {
@@ -234,16 +325,44 @@ export async function prepareChatTurn(
         webSearch: request.webSearch,
         searchBudgetExhausted,
         route,
-        nebiusHold,
+        holds,
       },
     };
   } catch (error) {
-    // No paid call will happen: give the holds back (best effort; a hold that
-    // is not given back stays counted, which is the safe side).
-    await settleQuietly(deps, requestId, "nebius", nebiusHold.reservationId, 0);
-    if (tavilyReservation) await settleQuietly(deps, requestId, "tavily", tavilyReservation, 0);
+    // No paid call will happen: give back what this turn holds (best effort; a
+    // hold that is not given back stays counted, which is the safe side).
+    await releaseHolds(deps, requestId, holds);
     throw error;
   }
+}
+
+/**
+ * Gives back every part of `holds` that no use took: the Nebius hold and the
+ * Tavily credit settle at 0, and the claim ends. Runs once for each part, and
+ * under `waitUntil`, so it completes after the client disconnects.
+ */
+function releaseHolds(deps: AssistantDeps, requestId: string, holds: TurnHolds): Promise<void> {
+  const { nebius, tavily, claim } = holds;
+  if (!nebius && !tavily && !claim) return Promise.resolve();
+  holds.nebius = null;
+  holds.tavily = null;
+  holds.claim = null;
+  const work = Promise.all([
+    nebius ? settleQuietly(deps, requestId, "nebius", nebius.reservationId, 0) : null,
+    tavily ? settleQuietly(deps, requestId, "tavily", tavily, 0) : null,
+    claim
+      ? deps.repo.releaseReplyClaim(claim.messageId, claim.claimId).catch(() => {
+          deps.log("warn", "reply_claim_release_failed", { requestId, route: "chat" });
+        })
+      : null,
+  ]).then(() => undefined);
+  deps.waitUntil(work);
+  return work;
+}
+
+/** Gives back what a prepared turn still holds. The chat route also calls it when the stream is cancelled before it starts. */
+export function releaseTurn(deps: AssistantDeps, turn: PreparedTurn): Promise<void> {
+  return releaseHolds(deps, turn.requestId, turn.holds);
 }
 
 async function settleQuietly(
@@ -276,7 +395,7 @@ export async function* streamChatTurn(
   signal: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {
   const settles: Promise<void>[] = [];
-  const holds = { prepaid: turn.nebiusHold as NebiusHold | null };
+  const holds = turn.holds;
   const settle = (hold: NebiusHold, amount: number) => {
     const settling = settleQuietly(deps, turn.requestId, "nebius", hold.reservationId, amount);
     deps.waitUntil(settling);
@@ -285,8 +404,8 @@ export async function* streamChatTurn(
   try {
     yield* runChatTurn(deps, turn, signal, holds, settle);
   } finally {
-    // No attempt used the first hold (for example Stop during search): no call was made.
-    if (holds.prepaid) settle(holds.prepaid, 0);
+    // Gives back what no use took, for example the first hold after Stop during search.
+    await releaseTurn(deps, turn);
     await Promise.all(settles);
   }
 }
@@ -295,7 +414,7 @@ async function* runChatTurn(
   deps: AssistantDeps,
   turn: PreparedTurn,
   signal: AbortSignal,
-  holds: { prepaid: NebiusHold | null },
+  holds: TurnHolds,
   settle: (hold: NebiusHold, amount: number) => void,
 ): AsyncGenerator<ChatStreamEvent> {
   const startedAt = Date.now();
@@ -326,6 +445,7 @@ async function* runChatTurn(
       };
     } else {
       try {
+        holds.tavily = null;
         results = await deps.search(turn.userMessage.content, signal);
         webSearch = results.length > 0 ? "used" : "no_results";
         yield {
@@ -367,9 +487,9 @@ async function* runChatTurn(
   const budget: AttemptBudget = {
     async reserve(model) {
       // The hold made before streaming pays for the first attempt.
-      if (holds.prepaid) {
-        const hold = holds.prepaid;
-        holds.prepaid = null;
+      if (holds.nebius) {
+        const hold = holds.nebius;
+        holds.nebius = null;
         return { allowed: true, hold };
       }
       const heldMicroUsd = nebiusHoldMicroUsd(model, messages, plan.maxOutputTokens);
@@ -470,17 +590,25 @@ async function* runChatTurn(
   }
 
   // 3. Persist the completed reply with its search outcome, sources and route.
-  let saved: MessageDTO;
+  // The ID is picked here, so a lost response can be checked by reading it.
+  const replyId = crypto.randomUUID();
+  let saved: MessageDTO | null = null;
   try {
     saved = await deps.repo.insertMessage(turn.userId, {
+      id: replyId,
       conversationId: turn.conversation.id,
       role: "assistant",
       content,
       webSearch,
       sources: webSearch === "used" ? toSourceRefs(results) : [],
       route: { model: report.model, tier: plan.tier, reason: turn.route.reason, fallback: report.fallback },
+      replyTo: turn.userMessage.id,
     });
   } catch {
+    saved = await deps.repo.getMessage(turn.userId, replyId).catch(() => null);
+    if (saved) deps.log("warn", "assistant_message_save_recovered", logBase);
+  }
+  if (!saved) {
     deps.log("error", "assistant_message_save_failed", logBase);
     yield {
       type: "error",
@@ -490,6 +618,7 @@ async function* runChatTurn(
     };
     return;
   }
+  holds.claim = null;
 
   if (deps.contextRecords) {
     const validUsage = usage && isValidUsage(usage) ? usage : null;

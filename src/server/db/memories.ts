@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import type { MemoryDTO, MemorySource, MemoryStatus, Mode } from "@/types/api";
 import { toPgVector, EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
-import { RepositoryError } from "./conversations";
+import type { ClientRequest } from "@/server/http/request-key";
+import { RepositoryError, repositoryError } from "./conversations";
 
 /**
  * Memory persistence (decision 0009). As with tasks, every method filters by
@@ -18,6 +19,8 @@ export interface NewMemory {
   status: MemoryStatus;
   source: MemorySource;
   sourceMessageId: string | null;
+  /** Only for a memory the user adds (decision 0012). */
+  clientRequest?: ClientRequest | null;
 }
 
 export interface MemoryRepository {
@@ -27,6 +30,8 @@ export interface MemoryRepository {
   getMemory(userId: string, memoryId: string): Promise<MemoryDTO | null>;
   /** A null embedding stores no vector and no model name. */
   createMemory(userId: string, memory: NewMemory, embedding: number[] | null): Promise<MemoryDTO>;
+  /** The memory saved with this request key, and the fingerprint of that request. */
+  findMemoryByClientRequest(userId: string, key: string): Promise<{ memory: MemoryDTO; hash: string } | null>;
   /**
    * Returns null when no memory with that ID belongs to the user. When
    * `embedding` is passed (even null), the stored vector and model are replaced.
@@ -122,11 +127,26 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
           source: memory.source,
           source_message_id: memory.sourceMessageId,
           ...embeddingColumns(embedding),
+          ...(memory.clientRequest
+            ? { client_request_id: memory.clientRequest.id, client_request_hash: memory.clientRequest.hash }
+            : {}),
         })
         .select(MEMORY_COLUMNS)
         .single();
-      if (error || !data) throw new RepositoryError("createMemory");
+      if (error || !data) throw repositoryError("createMemory", error);
       return toMemory(data);
+    },
+
+    async findMemoryByClientRequest(userId, key) {
+      const { data, error } = await supabase
+        .from("memories")
+        .select(`${MEMORY_COLUMNS}, client_request_hash`)
+        .eq("user_id", userId)
+        .eq("client_request_id", key)
+        .maybeSingle();
+      if (error) throw repositoryError("findMemoryByClientRequest", error);
+      if (!data) return null;
+      return { memory: toMemory(data), hash: z.object({ client_request_hash: z.string() }).parse(data).client_request_hash };
     },
 
     async updateMemory(userId, memoryId, changes, embedding, ifContent) {

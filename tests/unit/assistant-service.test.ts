@@ -73,6 +73,19 @@ describe("prepareChatTurn", () => {
       requestId: "r",
       request: { action: "retry", conversationId, webSearch: false },
     });
+    // The screen reloads the conversation on "answered", so a reply it did not show appears.
+    expect(prepared).toMatchObject({ ok: false, status: 409, code: "answered", conversationId });
+  });
+
+  it("rejects a retry in a conversation with no messages as a conflict", async () => {
+    const repo = new MemoryRepository();
+    const { deps } = fakeDeps({ repo });
+    const conversation = await repo.createConversation(ALICE, "Empty", "personal");
+    const prepared = await prepareChatTurn(deps, {
+      userId: ALICE,
+      requestId: "r",
+      request: { action: "retry", conversationId: conversation.id, webSearch: false },
+    });
     expect(prepared).toMatchObject({ ok: false, status: 409, code: "conflict" });
   });
 });

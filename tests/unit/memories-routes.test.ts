@@ -8,7 +8,8 @@ import { EmbeddingBudgetError } from "@/server/assistant/embed";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
 import { FakeSpend, TEST_SPEND_CAPS, testEmbedder, testRouting } from "../support/fakes";
-import { WriteFaults, describeCase, hasFault, sweepWriteFaults, type SweepCase } from "../support/write-faults";
+import { createBarrier } from "../support/barrier";
+import { ALL_WRITE_FAULTS, WriteFaults, describeCase, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -158,6 +159,10 @@ class FakeQuery implements PromiseLike<FakeResult> {
     });
 
     if (this.op === "insert") {
+      const key = this.payload.client_request_id;
+      if (key !== undefined && rows.some((row) => row.user_id === this.payload.user_id && row.client_request_id === key)) {
+        return { data: null, error: { message: `duplicate key value violates unique constraint ${this.table}_user_client_request_key` } };
+      }
       const row: Row = {
         id: randomUUID(),
         source_message_id: null,
@@ -571,6 +576,7 @@ describe("DELETE /api/memories/:id", () => {
 
 describe("memory writes when one write fails", () => {
   const NEW_TEXT = "Prefers tea in the morning";
+  const KEY = "abababab-abab-4bab-8bab-abababababab";
 
   /** The real budgeted embedder, with a provider that always answers and a spend guard the test can break. */
   function arm(faults: WriteFaults) {
@@ -593,34 +599,116 @@ describe("memory writes when one write fails", () => {
     expect(open.length, `${at}: only a failed spend write leaves its full hold counted`).toBeLessThanOrEqual(spendHit ? 1 : 0);
   }
 
-  async function createScenario(faults: WriteFaults, sweepCase: SweepCase, checkDuplicates?: boolean) {
+  const create = (body: Record<string, unknown> = { mode: "personal", content: NEW_TEXT }, key = KEY) =>
+    listRoute.POST(jsonRequest("POST", body, { "Idempotency-Key": key }));
+
+  async function createScenario(faults: WriteFaults, sweepCase: SweepCase) {
     const at = describeCase(sweepCase);
     const spend = arm(faults);
-    const send = () => listRoute.POST(jsonRequest("POST", { mode: "personal", content: NEW_TEXT }));
-    const first = await send();
+    const first = await create();
     faults.disarm();
+    await faults.flushDelayed();
     if (first.status !== 201) {
       expect(first.status, at).toBe(500);
-      expect((await send()).status, `${at}: resend`).toBe(201);
+      expect((await create()).status, `${at}: resend`).toBe(201);
     }
     checkSpend(spend, faults, at);
     const saved = db.tables.memories!.filter((r) => r.content === NEW_TEXT);
-    expect(saved.length, at).toBeGreaterThan(0);
-    for (const row of saved) expect(row.status, at).toBe("active");
-    // A lost insert is a lost response on a single create, so the resend saves a second copy (it.fails below).
-    if (checkDuplicates ?? !hasFault(sweepCase, "lost", "db.write:memories")) {
-      expect(saved, `${at}: one saved memory`).toHaveLength(1);
-    }
+    expect(saved, `${at}: one saved memory`).toHaveLength(1);
+    expect(saved[0]!.status, at).toBe("active");
   }
 
   it("POST: every write and both faults leave one active memory and no open hold", async () => {
-    const cases = await sweepWriteFaults(createScenario);
+    const cases = await sweepWriteFaults(createScenario, { faults: ALL_WRITE_FAULTS });
     expect([...new Set(cases.map((c) => c.at(-1)!.label))].sort()).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
   });
 
-  // Defect: there is no idempotency key, so a lost response on the insert makes the resend save a second copy.
-  it.fails("POST: response lost on the insert, then a resend: saves the memory once", async () => {
-    await createScenario(new WriteFaults().fail("lost", 3), [{ step: 3, fault: "lost", label: "db.write:memories" }], true);
+  it("POST: response lost on the insert: the memory is read back by its key and saved once", async () => {
+    const faults = new WriteFaults().fail("lost", 3);
+    const spend = arm(faults);
+    expect((await create()).status).toBe(201);
+    expect(faults.fired.map((f) => f.label)).toEqual(["db.write:memories"]);
+    faults.disarm();
+    expect(db.tables.memories!.filter((r) => r.content === NEW_TEXT)).toHaveLength(1);
+    expect((await create()).status).toBe(201);
+    expect(db.tables.memories!.filter((r) => r.content === NEW_TEXT)).toHaveLength(1);
+    expect(spend.reservations).toHaveLength(1);
+  });
+
+  it("POST: a resend of a saved memory makes no embedding call", async () => {
+    signInAs(ALICE);
+    expect((await create()).status).toBe(201);
+    const resend = await create();
+    expect(resend.status).toBe(201);
+    expect((await resend.json()).content).toBe(NEW_TEXT);
+    expect(embed).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST: a key used for another text or mode gets 409 conflict and no embedding", async () => {
+    signInAs(ALICE);
+    expect((await create()).status).toBe(201);
+    for (const body of [{ mode: "personal", content: "Something else" }, { mode: "work", content: NEW_TEXT }]) {
+      const response = await create(body);
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("conflict");
+    }
+    expect(embed).toHaveBeenCalledTimes(1);
+    expect(db.tables.memories).toHaveLength(1);
+  });
+
+  it("POST: a memory edited after a lost response still matches its request, and the resend gets the current text", async () => {
+    signInAs(ALICE);
+    const first = await (await create()).json();
+    expect((await itemRoute.PATCH(jsonRequest("PATCH", { content: "Prefers green tea" }), params(first.id))).status).toBe(200);
+    const resend = await create();
+    expect(resend.status).toBe(201);
+    expect(await resend.json()).toMatchObject({ id: first.id, content: "Prefers green tea" });
+  });
+
+  it("POST: a memory deleted since is saved again with the same key", async () => {
+    signInAs(ALICE);
+    const first = await (await create()).json();
+    expect((await itemRoute.DELETE(plainRequest("DELETE"), params(first.id))).status).toBe(204);
+    const again = await create();
+    expect(again.status).toBe(201);
+    expect((await again.json()).id).not.toBe(first.id);
+  });
+
+  it("POST: two requests with one key that both miss the lookup keep one row; both answer 201", async () => {
+    const spend = new FakeSpend();
+    const barrier = createBarrier(2);
+    const embedder = testEmbedder(spend);
+    vi.mocked(createEmbedderForRequest).mockReturnValue({
+      embed: async (texts: string[], signal?: AbortSignal) => {
+        await barrier.wait();
+        return embedder.embed(texts, signal);
+      },
+    });
+    signInAs(ALICE);
+    const both = Promise.all([create(), create()]);
+    await barrier.reached;
+    barrier.release();
+    const responses = await both;
+    expect(responses.map((r) => r.status)).toEqual([201, 201]);
+    const ids = await Promise.all(responses.map(async (r) => (await r.json()).id));
+    expect(ids[0]).toBe(ids[1]);
+    expect(db.tables.memories).toHaveLength(1);
+    expect(spend.reservations).toHaveLength(2);
+    expect(spend.reservations.every((r) => r.settled !== null)).toBe(true);
+  });
+
+  it("POST: refuses a key that is not a UUID", async () => {
+    signInAs(ALICE);
+    expect((await create(undefined, "not-a-uuid")).status).toBe(400);
+    expect(db.tables.memories).toHaveLength(0);
+  });
+
+  it("POST: Bob's request with Alice's key saves Bob's own memory", async () => {
+    signInAs(ALICE);
+    await create();
+    signInAs(BOB);
+    expect((await create()).status).toBe(201);
+    expect(db.tables.memories!.map((r) => r.user_id)).toEqual([ALICE, BOB]);
   });
 
   it("PATCH: every write and both faults end with the new text, its vector and no open hold", async () => {

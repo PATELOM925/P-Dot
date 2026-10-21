@@ -5,8 +5,14 @@ import type { ChatStreamEvent } from "@/types/api";
  * Encodes events as newline-delimited JSON. Pull-based, so a slow client
  * applies backpressure, and cancelling the response stops the generator
  * (which in turn aborts the upstream provider request).
+ *
+ * `onCancel` runs after the generator stops. A generator that never started
+ * does not run its `finally`, so cleanup that must always happen goes here too.
  */
-export function toNdjsonStream(events: AsyncGenerator<ChatStreamEvent>): ReadableStream<Uint8Array> {
+export function toNdjsonStream(
+  events: AsyncGenerator<ChatStreamEvent>,
+  onCancel?: () => Promise<void>,
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const encode = (event: ChatStreamEvent) => encoder.encode(`${JSON.stringify(event)}\n`);
 
@@ -31,6 +37,7 @@ export function toNdjsonStream(events: AsyncGenerator<ChatStreamEvent>): Readabl
     },
     async cancel() {
       await events.return(undefined);
+      await onCancel?.();
     },
   });
 }
