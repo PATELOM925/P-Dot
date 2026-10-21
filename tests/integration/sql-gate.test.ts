@@ -43,7 +43,16 @@ const OWNED_TABLES = [
 ] as const;
 const SERVER_ONLY_TABLES = ["spend_counters"] as const;
 const ALL_TABLES = [...OWNED_TABLES, ...SERVER_ONLY_TABLES].sort();
-const PROTECTED_COLUMNS = ["id", "user_id", "created_at"];
+const PROTECTED_COLUMNS = [
+  "id",
+  "user_id",
+  "created_at",
+  "client_request_id",
+  "client_request_hash",
+  "reply_to",
+  "reply_claim_id",
+  "reply_claimed_at",
+];
 const PERMISSION_DENIED = "42501";
 
 type OwnedTable = (typeof OWNED_TABLES)[number];
@@ -72,7 +81,7 @@ async function seedOwner(gate: SqlGate, userId: string): Promise<Owned> {
   );
   const documentId = await one(
     `insert into documents (user_id, mode, title, media_type, char_count, status)
-     values ($1, 'personal', 'gate', 'text/plain', 4, 'ready') returning id`,
+     values ($1, 'personal', 'gate', 'text/plain', 4, 'processing') returning id`,
     [userId],
   );
   const chunkId = await one(
@@ -80,6 +89,7 @@ async function seedOwner(gate: SqlGate, userId: string): Promise<Owned> {
      values ($1, $2, 0, 'gate', $3) returning id`,
     [userId, documentId, EMBEDDING],
   );
+  await gate.admin("update documents set status = 'ready' where id = $1", [documentId]);
   const memoryId = await one(
     `insert into memories (user_id, mode, content, source, embedding)
      values ($1, 'personal', 'gate', 'user', $2) returning id`,
@@ -298,7 +308,7 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
   });
 
   describe("protected columns", () => {
-    it.each(ALL_TABLES)("authenticated has no table-wide UPDATE and cannot update id, user_id or created_at on %s", async (table) => {
+    it.each(ALL_TABLES)("authenticated has no table-wide UPDATE and cannot update an ID, the owner, the creation time, a request key or a reply claim on %s", async (table) => {
       const tableWide = await gate.admin<{ granted: boolean }>(
         "select has_table_privilege('authenticated', $1, 'UPDATE') as granted",
         [`public.${table}`],
