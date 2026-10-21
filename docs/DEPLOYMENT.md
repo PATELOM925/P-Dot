@@ -98,7 +98,7 @@ Rollback: after step 3, a Worker version older than step 2 no longer works, beca
 The memory hardening ships this way:
 
 1. PR #18 (branch `om/memory-expand-db`): migration `20261021000000_memory_hardening.sql`. Check 1: `public.decide_action_proposal` exists.
-2. PR #13: the code that calls `decide_action_proposal` and no longer writes the action log. Without step 1, its writes would succeed with no log row.
+2. PR #13: the code that calls `decide_action_proposal` and no longer writes the action log. Without step 1, its writes would succeed with no log row. It also adds migration `20261021000500_marker_unset_setting.sql`, which works with any code. Check: `confirm_executed` from decision 0009 works on a new session. Merge it before step 3, because the Supabase integration skips a migration older than the newest one applied.
 3. PR #17: migration `20261021010000_memory_hardening_contract.sql`, which removes the older log insert and proposal update paths.
 
 Between steps 1 and 3, the older code can still write a second log row for a change, and a user can still move a proposal forward with the older update grant. Only a proposal with `decided_by_function = true` is a record of an action that the database ran; any other outcome is what a caller wrote (decision 0009).
