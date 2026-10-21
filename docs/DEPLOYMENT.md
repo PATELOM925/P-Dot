@@ -137,6 +137,13 @@ The memory hardening ships this way:
 
 Between steps 1 and 3, the older code can still write a second log row for a change, and a user can still move a proposal forward with the older update grant. Only a proposal with `decided_by_function = true` is a record of an action that the database ran; any other outcome is what a caller wrote (decision 0009).
 
+The resend fix ([decision 0012](decisions/0012-resend-idempotency.md)) ships in two steps. There is no contract step.
+
+1. Database PR (branch `om/resend-expand-db`): migration `20261021020000_resend_idempotency.sql`. Check 1: in the Supabase dashboard, the migration is in the history, and these exist: `client_request_id` and `client_request_hash` on `conversations`, `messages`, `memories` and `documents`; `reply_to`, `reply_claim_id` and `reply_claimed_at` on `messages`; the five indexes `conversations_user_client_request_key`, `messages_user_client_request_key`, `memories_user_client_request_key`, `documents_user_client_request_key` and `messages_reply_to_key`; the functions `claim_reply`, `release_reply_claim`, `settle_document` and `check_document_chunk`; and the trigger `document_chunks_check` on `document_chunks`.
+2. Code PR (branch `om/resend-idempotency`): the code that sends and reads the request key, claims each reply and settles documents with `settle_document`. Merge it only after check 1. Before the migration, its sends and retries answer 500 and the logs show `schema_missing`. Do not use its Preview before check 1.
+
+A rollback to a version from before step 2 is safe. That version does not claim replies, so it can again save two replies for one message.
+
 ## One-time setup (owner only)
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
