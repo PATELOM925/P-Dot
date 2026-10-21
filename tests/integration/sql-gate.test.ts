@@ -185,11 +185,6 @@ async function updatableColumns(table: string): Promise<string[]> {
   return result.rows.map((row) => row.column_name);
 }
 
-
-
-/** Starting PGlite and applying every migration can pass the default 10 s hook limit when other test files run in parallel. */
-const SQL_GATE_HOOK_TIMEOUT_MS = 60_000;
-
 describe.each(MODES)("database gate with %s default grants", (defaults) => {
   beforeAll(async () => {
     gate = await startSqlGate({ defaults });
@@ -197,11 +192,11 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
     userB = await gate.createUser();
     rowsA = await seedOwner(gate, userA);
     rowsB = await seedOwner(gate, userB);
-  }, SQL_GATE_HOOK_TIMEOUT_MS);
+  });
 
   afterAll(async () => {
     await gate?.close();
-  }, SQL_GATE_HOOK_TIMEOUT_MS);
+  });
 
   describe("Supabase stand-in", () => {
     it("gives a new public table the default grants of this mode, so the checks below are not vacuous", async () => {
@@ -955,11 +950,11 @@ describe("upgrade of a database that has rows the older schema allowed", () => {
         `,
       },
     });
-  }, SQL_GATE_HOOK_TIMEOUT_MS);
+  });
 
   afterAll(async () => {
     await old?.close();
-  }, SQL_GATE_HOOK_TIMEOUT_MS);
+  });
 
   const decideOld = async (id: string, decision: string) =>
     (await old.as<{ r: Decision }>(user(OWNER), "select public.decide_action_proposal($1, $2, null) as r", [id, decision]))
