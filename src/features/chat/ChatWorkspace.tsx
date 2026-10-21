@@ -353,7 +353,7 @@ export function ChatWorkspace({
         if (!accepted) restoreDraft();
         setError({ message: err instanceof Error ? err.message : "Something went wrong. Please retry." });
         setStatus("");
-        if (!accepted && sendKey.refused(err) === "answered") {
+        if (!accepted && sendKey.refused(err, action) === "answered") {
           void showSavedMessage((err as ApiError).conversationId ?? activeId, action === "send" ? text : "");
         }
       }

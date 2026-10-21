@@ -31,11 +31,14 @@ export class ChatSendKey {
     this.key.clear();
   }
 
-  /** Null for anything but a 409: the outcome is unknown, so the key stays for a resend. */
-  refused(error: unknown): SendRefusal | null {
+  /**
+   * Null for anything but a 409: the outcome is unknown, so the key stays for a
+   * resend. A "Retry reply" sends no key, so its answer never clears the draft's key.
+   */
+  refused(error: unknown, action: "send" | "retry" = "send"): SendRefusal | null {
     if (!(error instanceof ApiError) || error.status !== 409) return null;
     if (error.code === "busy" || error.code === "answered") return error.code;
-    this.key.clear();
+    if (action === "send") this.key.clear();
     return "conflict";
   }
 

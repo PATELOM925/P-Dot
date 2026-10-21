@@ -77,6 +77,16 @@ describe("ChatSendKey", () => {
     expect(header(key, { mode: "personal" }, "Plan my week")).not.toBe(first);
   });
 
+  it("keeps the draft's key when Retry reply gets a conflict", () => {
+    const key = new ChatSendKey(counter());
+    const first = header(key, { conversationId: "c-1" }, "Plan my week");
+    const noUnanswered = new ApiError(409, "conflict", "There is no unanswered message to retry.");
+    expect(key.refused(noUnanswered, "retry")).toBe("conflict");
+    expect(header(key, { conversationId: "c-1" }, "Plan my week")).toBe(first);
+    expect(key.refused(noUnanswered, "send")).toBe("conflict");
+    expect(header(key, { conversationId: "c-1" }, "Plan my week")).not.toBe(first);
+  });
+
   it("reconciles the draft only when a saved user message has its text", () => {
     const key = new ChatSendKey(counter());
     const first = header(key, { mode: "personal" }, "Plan my week");
