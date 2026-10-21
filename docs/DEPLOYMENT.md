@@ -6,7 +6,7 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 
 | Where | Address | How it updates |
 | --- | --- | --- |
-| Production | https://pdot.iampatelom.com | A merge to `main` deploys it (after the owner connects Workers Builds, see [One-time setup](#one-time-setup-owner-only)) |
+| Production | https://pdot.iampatelom.com | A merge to `main` deploys it through Workers Builds (connected on 2026-10-19) |
 | Pull request preview | A `*.workers.dev` link that Cloudflare posts on the pull request | Each push to a pull request branch |
 | Your computer, Node.js | http://localhost:3000 | `npm run dev` |
 | Your computer, Workers runtime | The address that `npm run preview` prints | `npm run preview` |
@@ -30,7 +30,41 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 
    Expected: `{"status":"ok","configured":{"auth":true,...}}`. The health check shows which settings exist. It does not call Nebius or Tavily.
 
-Until the owner connects Workers Builds, a merge to `main` does **not** deploy. Only the owner can deploy, with `npm run deploy` from a computer that is logged in to Cloudflare.
+Workers Builds was connected on 2026-10-19. Each push to `main` starts one production build. Each push to another branch starts one preview build. If Workers Builds is down, only the owner can deploy, with [a manual deploy](#manual-deploy-owner-only-fallback).
+
+### Merging several pull requests
+
+When two or more pull requests, or a stack of pull requests, are ready at about the same time, merge them together and aim for one deploy. Each build costs build minutes and CI time, and a build of an in-between state is replaced minutes later. Workers Builds starts a build for every push to `main` ([branch builds](https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/)), so there are these options:
+
+- **One production build, top down (ordinary stacks):** use this when each pull request is based on the branch below it, and the bottom one is based on `main`. Merge the top pull request into the branch below it, then that pull request into the branch below it, and so on. Do not change any base. Only the last merge, the bottom pull request into `main`, pushes to `main`, so only one production build runs. The merges into lower branches can start preview builds, but they do not change production. Each pull request keeps its own base and its own review. Its diff grows with each merge from above, so check it again before its own merge (step 1).
+- **GitHub native stack (group merge):** use this when the pull requests were made as a GitHub native stack. GitHub lands the selected pull request and all lower unmerged pull requests together, so the top-down steps do not apply. When every pull request in the stack has a SHIP verdict for its current head and a passing `Workers Builds: pdot` check, use GitHub's group merge once. It lands the stack on `main` in one operation. See [merging stacked pull requests on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-stacked-pull-requests).
+- **Several merges (best effort):** merge one after another and cancel the older builds. An older build can still finish and deploy before you cancel it, so an in-between version can go live for a short time.
+
+1. **Before each merge,** check the pull request again:
+   - its base is `main`, or the branch below it in the stack;
+   - its diff contains only the changes you expect: its own, and any merged into it from above;
+   - its review verdict (SHIP) is for its current head commit;
+   - the `Workers Builds: pdot` check passes on that head.
+
+   With several merges, if the next pull request was based on the merged branch, change its base to `main`. If it was based on a squash merge, rebase it first and review the new diff.
+
+   On the top-down path, each upper merge gives the next pull request a new head and a larger diff. Before you merge that pull request:
+   - inspect the new head and the combined diff;
+   - post a review verdict (SHIP) for that new head on that pull request;
+   - wait for the `Workers Builds: pdot` check to pass on that head.
+
+   The review can check the content that was already reviewed and the result of the merge. Do not skip these checks to save build minutes. Use "Create a merge commit" for the top-down path, so each pull request keeps its history.
+2. **Merge in one sitting,** top down for a stack, or one after another for separate pull requests, as described above. Do not wait for production builds of `main` between merges. Do wait for the checks in step 1 on each new head before you merge it.
+3. **Cancel every older build** of `main` that is still queued or running (Workers & Pages → `pdot` → Deployments → View build history → Cancel build). This is best effort: an older build that already finished has already deployed, and the last build replaces it.
+4. **Wait until every build of `main` has finished or is cancelled, and confirm the last build succeeded.** If it failed, fix it and deploy the final `main` once. Do not deploy the in-between commits by hand.
+5. **Confirm production runs the final `main`:** open the build of the last merge commit in the build history and note the version ID it deployed. It must match the active version in `npx wrangler deployments list --name pdot`. Then check the live site once (`/api/health`, sign-in, one chat).
+
+Other rules:
+
+- A set of pull requests with a database expand or contract step does not merge as one deploy, top down or as a native stack. Each step merges to `main` and deploys on its own, in the order and with the checks in [Expand, then contract](#expand-then-contract).
+- Do not push small follow-up fixes to `main` one by one. Put them in one pull request.
+- Each merge into `main` applies its own migration (Supabase GitHub integration) at once. The matching code goes live only when a build finishes, which is later: minutes later with several merges, or later still if a build fails. During that time the new migrations run with the old code. So every migration must be safe for the code that is live now, and new code must work on the old schema ([lesson 6](PROVIDER-RELIABILITY.md#6-new-code-can-run-before-its-migration)). If the last build fails, this time is longer, so fix it first.
+- These steps are for the owner. Agents still must not merge or deploy (see [Rules for coding agents](#rules-for-coding-agents)).
 
 ## What runs in Workers Builds
 
@@ -107,7 +141,8 @@ Between steps 1 and 3, the older code can still write a second log row for a cha
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
 
-1. **Connect Workers Builds.** Dashboard → Workers & Pages → `pdot` → Settings → Build → Connect. Choose GitHub, install the Cloudflare app on `PATELOM925/P-Dot` only, then enter the values from [What runs in Workers Builds](#what-runs-in-workers-builds). The Free plan includes 3,000 build minutes each month.
+1. **Connect Workers Builds.** Done on 2026-10-19. Dashboard → Workers & Pages → `pdot` → Settings → Build → Connect. Choose GitHub, install the Cloudflare app on `PATELOM925/P-Dot` only, then enter the values from [What runs in Workers Builds](#what-runs-in-workers-builds) on **both** tabs, Production and Previews Base. The Free plan includes 3,000 build minutes each month.
+   - **Known failure:** if the command fields stay empty, Cloudflare uses `npm run build` and `npx wrangler deploy`. The plain Next.js build does not make `.open-next/worker.js`, so the deploy fails after about 45 seconds. This happened on the first three builds on 2026-10-19. The fix was to enter the commands and the two build variables on both tabs.
 2. **Set provider secrets** when the Nebius and Tavily accounts exist:
 
    ```bash
@@ -115,7 +150,7 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    npx wrangler secret put TAVILY_API_KEY
    ```
 
-   Set a spending limit on both provider accounts first.
+   Set a spending limit on both provider accounts first. Production secrets were set on 2026-10-19. Provider spending limits are not confirmed yet.
 3. **Models and spend caps.** `wrangler.jsonc` sets the model chain for each tier (`NEBIUS_FAST_MODELS` and the others) and the global spend caps in both `vars` and `previews.vars`. To change one, open a pull request. Every model in a chain must have a price in `src/server/providers/nebius/pricing.ts`. If one does not, chat says "This service is not configured yet." and no provider is called. Add the price in the same pull request. See [decision 0006](decisions/0006-global-spend-guard.md) and [decision 0007](decisions/0007-model-routing.md). If `NEBIUS_MODEL` was set in the dashboard, you can delete it there: the code no longer reads it.
 4. **Preview secrets (optional).** To let Previews call Nebius and Tavily, set them in the Preview base config. Use a separate key with a low spending limit if the provider allows it:
 
@@ -125,8 +160,8 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    ```
 
    Changes to base secrets apply only to Previews created after the change.
-5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Use the email templates from the README "Setup" section.
-6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP.
+5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Done on 2026-10-19. The free plan does not allow email template changes without custom SMTP, so the templates from the README "Setup" section are not applied yet.
+6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP. On 2026-10-19 "Confirm email" was turned off for the hackathon, so sign-up works without an email. Password reset emails still reach only team members.
 
 ## Manual deploy (owner only, fallback)
 
