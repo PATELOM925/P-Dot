@@ -1054,6 +1054,179 @@ textarea::placeholder {
   border-top: 1px solid var(--border);
 }
 
+/* Dynamic agent card: tabs, controls, approval transitions */
+
+.agent-card-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.125rem;
+}
+
+.agent-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.agent-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.3125rem 0.6875rem;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.agent-tab:hover:not(.is-active) {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.agent-tab.is-active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 700;
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgb(79 70 229 / 0.14);
+}
+
+.agent-tab-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.agent-nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.agent-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.agent-nav-btn:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.agent-nav-btn:focus-visible,
+.agent-tab:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.agent-category-tag {
+  font-weight: 500;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.agent-bullet-done {
+  background: var(--sage);
+  color: var(--sage-text);
+}
+
+.agent-bullet-skipped {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
+.agent-step-skipped .agent-step-title {
+  color: var(--text-muted);
+}
+
+.agent-approval-confirmed {
+  background: var(--sage);
+  color: var(--sage-text);
+  border-color: rgba(20, 99, 58, 0.25);
+}
+
+.agent-approval-skipped {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.agent-approval-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 0.875rem;
+}
+
+.agent-reset-btn {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  opacity: 0.85;
+  padding: 0;
+}
+
+.agent-reset-btn:hover {
+  opacity: 1;
+}
+
+.agent-card-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.125rem;
+  animation: agentFadeIn 0.2s ease-out;
+}
+
+@keyframes agentFadeIn {
+  from {
+    opacity: 0.85;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
 /* Workspace header: tabs and mode toggle */
 
 .main-nav {
@@ -1354,6 +1527,16 @@ textarea::placeholder {
   color: #8a3b00;
 }
 
+.chip-search {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.chip-success {
+  background: var(--sage);
+  color: var(--sage-text);
+}
+
 @media (prefers-color-scheme: dark) {
   .chip-gmail { background: #4a2222; color: #ffc9c9; }
   .chip-calendar { background: #1c3355; color: #bcd7ff; }
@@ -1362,6 +1545,7 @@ textarea::placeholder {
   .chip-vercel { background: #2c2f38; color: #eef0f5; }
   .chip-whatsapp { background: #1b3a2b; color: #b4e6c8; }
   .chip-phone { background: #4a2e18; color: #ffd5b0; }
+  .chip-search { background: #2e1d52; color: #d8b4fe; }
 }
 
 .connector-tag {
