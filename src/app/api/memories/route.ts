@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES, MEMORY_LIST_LIMIT } from "@/lib/limits";
 import { createMemorySchema, modeSchema } from "@/lib/schemas";
-import { createActionLogRepository } from "@/server/db/action-log";
 import { createMemoryRepository } from "@/server/db/memories";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
@@ -62,11 +61,6 @@ export async function POST(request: Request): Promise<Response> {
       },
       embedding,
     );
-    await createActionLogRepository(auth.supabase).append(auth.userId, "memory_added", {
-      memoryId: memory.id,
-      mode: memory.mode,
-      source: memory.source,
-    });
     return jsonResponse(memory, requestId, { status: 201 });
   });
 }

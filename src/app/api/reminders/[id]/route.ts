@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES } from "@/lib/limits";
 import { updateReminderSchema } from "@/lib/schemas";
-import { createActionLogRepository } from "@/server/db/action-log";
 import { createReminderRepository } from "@/server/db/reminders";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
@@ -30,11 +29,6 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
 
     const reminder = await createReminderRepository(auth.supabase).updateReminder(auth.userId, id.data, parsed.data);
     if (!reminder) return reminderNotFound(requestId);
-    await createActionLogRepository(auth.supabase).append(auth.userId, "reminder_changed", {
-      reminderId: reminder.id,
-      mode: reminder.mode,
-      status: reminder.status,
-    });
     return jsonResponse(reminder, requestId);
   });
 }
@@ -45,17 +39,9 @@ export async function DELETE(request: Request, context: Context): Promise<Respon
     const id = idSchema.safeParse((await context.params).id);
     if (!id.success) return reminderNotFound(requestId);
 
-    // Read the reminder first so the log can record its mode after the delete.
-    const repository = createReminderRepository(auth.supabase);
-    const existing = await repository.getReminder(auth.userId, id.data);
-    if (!existing) return reminderNotFound(requestId);
-
-    const deleted = await repository.deleteReminder(auth.userId, id.data);
+    // The database writes the action log row for the delete.
+    const deleted = await createReminderRepository(auth.supabase).deleteReminder(auth.userId, id.data);
     if (!deleted) return reminderNotFound(requestId);
-    await createActionLogRepository(auth.supabase).append(auth.userId, "reminder_deleted", {
-      reminderId: existing.id,
-      mode: existing.mode,
-    });
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store", "X-Request-Id": requestId } });
   });
 }

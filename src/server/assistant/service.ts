@@ -39,6 +39,7 @@ import {
   budgetRefusal,
   nebiusHoldMicroUsd,
   nebiusSettleMicroUsd,
+  NebiusHoldTooLargeError,
   SEARCH_BUDGET_MESSAGE,
   SEARCH_RESULTS_MAX_BYTES,
   TAVILY_BASIC_SEARCH_CREDITS,
@@ -168,11 +169,23 @@ export async function prepareChatTurn(
   });
   // The first attempt can run on any model of the tier (the breaker can skip
   // the first one), so hold for the most expensive one.
-  const heldMicroUsd = Math.max(
-    ...plan.models.map((model) =>
-      nebiusHoldMicroUsd(model, promptBound, plan.maxOutputTokens, searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0),
-    ),
-  );
+  let heldMicroUsd: number;
+  try {
+    heldMicroUsd = Math.max(
+      ...plan.models.map((model) =>
+        nebiusHoldMicroUsd(model, promptBound, plan.maxOutputTokens, searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0),
+      ),
+    );
+  } catch (error) {
+    if (!(error instanceof NebiusHoldTooLargeError)) throw error;
+    deps.log("warn", "spend_hold_too_large", { requestId, route: "chat", tier: route.tier });
+    return {
+      ok: false,
+      status: 413,
+      code: "payload_too_large",
+      message: "This request is too large to answer. Start a new conversation or turn off web search.",
+    };
+  }
   const nebius = await deps.spend.reserve("nebius", heldMicroUsd);
   if (!nebius.allowed) {
     deps.log("warn", "spend_limit_reached", { requestId, route: "chat", provider: "nebius", limit: nebius.limit });

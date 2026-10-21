@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   describeLogEntry,
   fromLocalInputValue,
+  isUnconfirmedDone,
   matchesFilter,
+  pastProposalView,
   payloadDetails,
   toLocalInputValue,
   visibleProposals,
@@ -32,6 +34,7 @@ function proposal(overrides: Partial<ActionProposalDTO> & { payload?: ActionPayl
     result: null,
     createdAt: "2026-10-19T10:00:00+00:00",
     decidedAt: null,
+    verified: false,
     ...overrides,
   };
 }
@@ -100,13 +103,66 @@ describe("datetime-local conversion", () => {
   });
 });
 
+describe("decided proposals in chat", () => {
+  it("shows Done with the result link only for a result the database confirmed", () => {
+    expect(pastProposalView(proposal({ status: "executed", verified: true }))).toEqual({
+      label: "Done",
+      pill: "status-executed",
+      note: "Approved and done.",
+      showResult: true,
+    });
+  });
+
+  it("shows Marked done, neutral and without a result link, for a result the database did not confirm", () => {
+    const view = { label: "Marked done", pill: "status-unconfirmed", note: "P-Dot did not confirm this action.", showResult: false };
+    expect(pastProposalView(proposal({ status: "executed", verified: false }))).toEqual(view);
+    const older: Partial<ActionProposalDTO> = proposal({ status: "executed" });
+    delete older.verified;
+    expect(pastProposalView(older as ActionProposalDTO)).toEqual(view);
+    expect(isUnconfirmedDone(older as ActionProposalDTO)).toBe(true);
+  });
+
+  it("does not change the other states", () => {
+    expect(pastProposalView(proposal({ status: "proposed" }))).toBeNull();
+    expect(pastProposalView(proposal({ status: "rejected", verified: false }))?.label).toBe("Cancelled");
+    expect(pastProposalView(proposal({ status: "failed", verified: true }))?.label).toBe("Failed");
+    expect(isUnconfirmedDone(proposal({ status: "failed", verified: false }))).toBe(false);
+  });
+});
+
 describe("action log wording", () => {
-  const entry = (event: ActionLogEntryDTO["event"], detail: ActionLogEntryDTO["detail"]): ActionLogEntryDTO => ({
+  const entry = (
+    event: ActionLogEntryDTO["event"],
+    detail: ActionLogEntryDTO["detail"],
+    verified = true,
+  ): ActionLogEntryDTO => ({
     id: "e1",
     proposalId: null,
     event,
     detail,
     createdAt: "2026-10-19T10:00:00+00:00",
+    verified,
+  });
+
+  it("says an action was completed only when the database confirmed it", () => {
+    const detail = { kind: "create_task", mode: "personal", taskId: "t1" };
+    expect(describeLogEntry(entry("executed", detail, true))).toEqual({
+      title: "Action completed",
+      facts: ["Task", "Personal"],
+      tone: "success",
+    });
+    const unconfirmed = {
+      title: "Marked as completed",
+      facts: ["Task", "Personal", "P-Dot did not confirm this action."],
+      tone: "neutral",
+    };
+    expect(describeLogEntry(entry("executed", detail, false))).toEqual(unconfirmed);
+    // An older row without the field is not confirmed either.
+    const older: Partial<ActionLogEntryDTO> = entry("executed", detail);
+    delete older.verified;
+    expect(describeLogEntry(older as ActionLogEntryDTO)).toEqual(unconfirmed);
+    // A verified key in the detail is not trusted.
+    expect(describeLogEntry(entry("executed", { ...detail, verified: true }, false)).title).toBe("Marked as completed");
   });
 
   it("names the event and the safe facts, leaving out IDs", () => {
@@ -136,9 +192,22 @@ describe("action log wording", () => {
   });
 
   it("says how many searchable parts a document has, without its ID", () => {
-    const view = describeLogEntry(entry("document_added", { documentId: "d1", mode: "work", chunkCount: 3 }));
-    expect(view).toEqual({ title: "Document added", facts: ["Work", "3 searchable parts"], tone: "neutral" });
-    expect(describeLogEntry(entry("document_added", { chunkCount: 1 })).facts).toEqual(["1 searchable part"]);
+    const view = describeLogEntry(entry("document_ready", { documentId: "d1", mode: "work", chunkCount: 3 }));
+    expect(view).toEqual({ title: "Document ready to search", facts: ["Work", "3 searchable parts"], tone: "neutral" });
+    expect(describeLogEntry(entry("document_ready", { chunkCount: 1 })).facts).toEqual(["1 searchable part"]);
+  });
+
+  it("names each document step, and shows a failed one as a problem", () => {
+    expect(describeLogEntry(entry("document_added", { documentId: "d1", mode: "work", status: "processing" }))).toEqual({
+      title: "Document added",
+      facts: ["Work", "Processing"],
+      tone: "neutral",
+    });
+    expect(describeLogEntry(entry("document_failed", { documentId: "d1", mode: "work" }))).toEqual({
+      title: "Document could not be processed",
+      facts: ["Work"],
+      tone: "danger",
+    });
   });
 });
 

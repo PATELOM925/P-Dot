@@ -37,13 +37,13 @@ describe("frozen migrations", () => {
     ).toBe(baseline.get(file));
   });
 
-  it("names every migration <14-digit timestamp>_<name>.sql and puts new ones after the frozen ones", () => {
-    const lastFrozen = [...baseline.keys()].sort().at(-1)!;
+  it("names every migration <14-digit timestamp>_<name>.sql and lists it in the baseline", () => {
     for (const file of files) {
       expect(file).toMatch(/^\d{14}_[a-z0-9_]+\.sql$/);
-      if (!baseline.has(file)) {
-        expect(file > lastFrozen, `${file} must sort after ${lastFrozen}, or it runs out of order.`).toBe(true);
-      }
+      expect(
+        baseline.has(file),
+        `${file} is not in ${BASELINE}. Add it: cd supabase/migrations && shasum -a 256 ${file} >> ../../tests/integration/frozen-migrations.sha256`,
+      ).toBe(true);
     }
   });
 });

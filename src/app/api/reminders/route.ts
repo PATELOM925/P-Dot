@@ -1,6 +1,5 @@
 import { MAX_CHAT_BODY_BYTES, REMINDER_LIST_LIMIT } from "@/lib/limits";
 import { createReminderSchema, modeSchema } from "@/lib/schemas";
-import { createActionLogRepository } from "@/server/db/action-log";
 import { createReminderRepository } from "@/server/db/reminders";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
@@ -32,10 +31,6 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const reminder = await createReminderRepository(auth.supabase).createReminder(auth.userId, parsed.data);
-    await createActionLogRepository(auth.supabase).append(auth.userId, "reminder_added", {
-      reminderId: reminder.id,
-      mode: reminder.mode,
-    });
     return jsonResponse(reminder, requestId, { status: 201 });
   });
 }

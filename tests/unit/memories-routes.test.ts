@@ -7,7 +7,8 @@ import type { Embedder } from "@/server/assistant/embed";
 import { EmbeddingBudgetError } from "@/server/assistant/embed";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
-import { TEST_SPEND_CAPS, testRouting } from "../support/fakes";
+import { FakeSpend, TEST_SPEND_CAPS, testEmbedder, testRouting } from "../support/fakes";
+import { WriteFaults, describeCase, hasFault, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
@@ -44,6 +45,8 @@ interface QueryRecord {
 class FakeDb {
   tables: Record<string, Row[]> = { memories: [], action_log: [] };
   queries: QueryRecord[] = [];
+  /** Runs once, just before the next update (to simulate another request that writes first). */
+  beforeNextUpdate: (() => void) | null = null;
   private seq = 0;
 
   nextTimestamp(): string {
@@ -54,11 +57,16 @@ class FakeDb {
   from(table: string): FakeQuery {
     return new FakeQuery(this, table);
   }
+
+  /** Every insert, update and delete goes through here, so a test can make one fail. */
+  async write(_table: string, run: () => FakeResult): Promise<FakeResult> {
+    return run();
+  }
 }
 
 interface FakeResult {
   data: unknown;
-  error: null;
+  error: { message: string } | null;
   count?: number;
 }
 
@@ -122,7 +130,8 @@ class FakeQuery implements PromiseLike<FakeResult> {
     onFulfilled?: ((value: FakeResult) => T1 | PromiseLike<T1>) | null,
     onRejected?: ((reason: unknown) => T2 | PromiseLike<T2>) | null,
   ): Promise<T1 | T2> {
-    return Promise.resolve(this.execute()).then(onFulfilled, onRejected);
+    const result = this.op === "select" ? Promise.resolve(this.execute()) : this.db.write(this.table, () => this.execute());
+    return result.then(onFulfilled, onRejected);
   }
 
   private project(row: Row): Row {
@@ -131,6 +140,11 @@ class FakeQuery implements PromiseLike<FakeResult> {
   }
 
   private execute(): FakeResult {
+    if (this.op === "update" && this.db.beforeNextUpdate) {
+      const hook = this.db.beforeNextUpdate;
+      this.db.beforeNextUpdate = null;
+      hook();
+    }
     const rows = this.db.tables[this.table] ?? [];
     const matches = rows.filter((row) => this.filters.every((f) => row[f.column] === f.value));
     const scopedToUser =
@@ -332,12 +346,8 @@ describe("POST /api/memories", () => {
     expect(embed).toHaveBeenCalledWith(["Prefers short replies"]);
     expect(storedRow(memory.id)).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL, user_id: ALICE });
 
-    expect(actionLog()).toHaveLength(1);
-    expect(actionLog()[0]).toMatchObject({
-      user_id: ALICE,
-      event: "memory_added",
-      detail: { memoryId: memory.id, mode: "work", source: "user" },
-    });
+    // The database writes memory_added from a trigger. The app writes no log row.
+    expect(actionLog()).toHaveLength(0);
   });
 
   it("still saves with no embedding when the spend guard refuses", async () => {
@@ -348,7 +358,6 @@ describe("POST /api/memories", () => {
     const memory = await response.json();
     expect(storedRow(memory.id)).toMatchObject({ embedding: null, embedding_model: null, content: "Lives in Leeds" });
     expect(consoleLines.some((l) => l.includes('"event":"memory_embedding_failed"') && l.includes('"errorName":"EmbeddingBudgetError"'))).toBe(true);
-    expect(actionLog()[0]).toMatchObject({ event: "memory_added" });
   });
 
   it("still saves with no embedding when the provider fails", async () => {
@@ -407,7 +416,6 @@ describe("PATCH /api/memories/:id", () => {
     expect(await response.json()).toMatchObject({ id: row.id, content: "Likes green tea" });
     expect(embed).toHaveBeenCalledWith(["Likes green tea"]);
     expect(storedRow(row.id as string)).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL });
-    expect(actionLog().at(-1)).toMatchObject({ event: "memory_edited", detail: { memoryId: row.id, mode: "personal", source: "user" } });
   });
 
   it("clears the old vector when the new text cannot be embedded", async () => {
@@ -430,7 +438,38 @@ describe("PATCH /api/memories/:id", () => {
 
     expect(embed).not.toHaveBeenCalled();
     expect(storedRow(row.id as string)).toMatchObject({ embedding: OLD_VECTOR, status: "active", mode: "work" });
-    expect(actionLog().map((e) => e.event)).toEqual(["memory_edited", "memory_edited"]);
+  });
+
+  it("never puts old text next to a newer text's vector when the text is unchanged", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    // Another edit saves new text with its vector after this request read the row.
+    db.beforeNextUpdate = () => Object.assign(row, { content: "Likes coffee", embedding: "[0.9]" });
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes tea", mode: "work" }), params(row.id as string));
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("conflict");
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes coffee", embedding: "[0.9]", mode: "personal" });
+    expect(embed).not.toHaveBeenCalled();
+  });
+
+  it("does not write the text when it is unchanged, and answers with the stored row", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    const before = db.queries.length;
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes tea" }), params(row.id as string));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ content: "Likes tea" });
+    expect(db.queries.slice(before).some((q) => q.op === "update")).toBe(false);
+    expect(storedRow(row.id as string)).toMatchObject({ embedding: OLD_VECTOR });
+  });
+
+  it("answers 409 when the text changed between the read and a new-text update", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    db.beforeNextUpdate = () => Object.assign(row, { content: "Likes coffee", embedding: "[0.9]" });
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes green tea" }), params(row.id as string));
+    expect(response.status).toBe(409);
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes coffee", embedding: "[0.9]" });
   });
 
   it("answers 404 for another user's memory and changes nothing", async () => {
@@ -448,6 +487,56 @@ describe("PATCH /api/memories/:id", () => {
     expect((await itemRoute.PATCH(jsonRequest("PATCH", { status: "active" }), params("not-an-id"))).status).toBe(404);
   });
 
+  it("answers 404 for a missing or foreign ID before any embedder work", async () => {
+    const row = seedMemory(ALICE);
+    signInAs(BOB);
+    const foreign = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes coffee" }), params(row.id as string));
+    expect(foreign.status).toBe(404);
+    const missing = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes coffee" }), params(randomUUID()));
+    expect(missing.status).toBe(404);
+
+    expect(createEmbedderForRequest).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes tea", embedding: OLD_VECTOR });
+  });
+
+  it("answers 404 for a missing ID even when the embedding settings are missing", async () => {
+    signInAs(ALICE);
+    vi.mocked(getAssistantConfig).mockImplementation(() => {
+      throw new ConfigError(["NEBIUS_API_KEY"]);
+    });
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes coffee" }), params(randomUUID()));
+    expect(response.status).toBe(404);
+  });
+
+  it.each([
+    ["the same text", "Likes tea"],
+    ["the same text with spaces", "  Likes tea  "],
+  ])("keeps the stored vector and does not embed for %s", async (_label, content) => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE);
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content }), params(row.id as string));
+    expect(response.status).toBe(200);
+    expect(embed).not.toHaveBeenCalled();
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes tea", embedding: OLD_VECTOR, embedding_model: EMBEDDING_MODEL });
+  });
+
+  it.each([
+    ["the provider fails", () => new ProviderError("nebius", "unavailable")],
+    ["the spend guard refuses", () => new EmbeddingBudgetError("day")],
+  ])("keeps the stored vector for the same text when %s", async (_label, makeError) => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE);
+    embed.mockRejectedValue(makeError());
+    const response = await itemRoute.PATCH(
+      jsonRequest("PATCH", { content: "  Likes tea  ", status: "active" }),
+      params(row.id as string),
+    );
+    expect(response.status).toBe(200);
+    expect(embed).not.toHaveBeenCalled();
+    expect(storedRow(row.id as string)).toMatchObject({ content: "Likes tea", embedding: OLD_VECTOR, embedding_model: EMBEDDING_MODEL });
+  });
+
   it.each([
     ["an empty update", {}],
     ["a status other than active", { status: "proposed" }],
@@ -462,18 +551,13 @@ describe("PATCH /api/memories/:id", () => {
 });
 
 describe("DELETE /api/memories/:id", () => {
-  it("deletes the user's memory with 204 and logs memory_deleted", async () => {
+  it("deletes the user's memory with 204", async () => {
     signInAs(ALICE);
     const row = seedMemory(ALICE, { mode: "work", source: "assistant", status: "proposed" });
     const response = await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string));
     expect(response.status).toBe(204);
     expect(storedRow(row.id as string)).toBeUndefined();
-    expect(actionLog()).toHaveLength(1);
-    expect(actionLog()[0]).toMatchObject({
-      user_id: ALICE,
-      event: "memory_deleted",
-      detail: { memoryId: row.id, mode: "work", source: "assistant" },
-    });
+    expect(actionLog()).toHaveLength(0);
   });
 
   it("answers 404 for another user's memory and deletes nothing", async () => {
@@ -482,6 +566,81 @@ describe("DELETE /api/memories/:id", () => {
     expect((await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string))).status).toBe(404);
     expect(storedRow(row.id as string)).toBeDefined();
     expect(actionLog()).toHaveLength(0);
+  });
+});
+
+describe("memory writes when one write fails", () => {
+  const NEW_TEXT = "Prefers tea in the morning";
+
+  /** The real budgeted embedder, with a provider that always answers and a spend guard the test can break. */
+  function arm(faults: WriteFaults) {
+    db = new FakeDb();
+    const spend = new FakeSpend();
+    faults.wrap(spend, ["reserve", "settle"]);
+    faults.wrap(db, ["write"], {
+      label: "db",
+      detail: (_method, args) => String(args[0]),
+      failWith: (error) => ({ data: null, error: { message: error.message } }),
+    });
+    vi.mocked(createEmbedderForRequest).mockReturnValue(testEmbedder(spend));
+    signInAs(ALICE);
+    return spend;
+  }
+
+  function checkSpend(spend: FakeSpend, faults: WriteFaults, at: string) {
+    const spendHit = faults.fired.some((f) => f.label.startsWith("FakeSpend"));
+    const open = spend.reservations.filter((r) => r.settled === null);
+    expect(open.length, `${at}: only a failed spend write leaves its full hold counted`).toBeLessThanOrEqual(spendHit ? 1 : 0);
+  }
+
+  async function createScenario(faults: WriteFaults, sweepCase: SweepCase, checkDuplicates?: boolean) {
+    const at = describeCase(sweepCase);
+    const spend = arm(faults);
+    const send = () => listRoute.POST(jsonRequest("POST", { mode: "personal", content: NEW_TEXT }));
+    const first = await send();
+    faults.disarm();
+    if (first.status !== 201) {
+      expect(first.status, at).toBe(500);
+      expect((await send()).status, `${at}: resend`).toBe(201);
+    }
+    checkSpend(spend, faults, at);
+    const saved = db.tables.memories!.filter((r) => r.content === NEW_TEXT);
+    expect(saved.length, at).toBeGreaterThan(0);
+    for (const row of saved) expect(row.status, at).toBe("active");
+    // A lost insert is a lost response on a single create, so the resend saves a second copy (it.fails below).
+    if (checkDuplicates ?? !hasFault(sweepCase, "lost", "db.write:memories")) {
+      expect(saved, `${at}: one saved memory`).toHaveLength(1);
+    }
+  }
+
+  it("POST: every write and both faults leave one active memory and no open hold", async () => {
+    const cases = await sweepWriteFaults(createScenario);
+    expect([...new Set(cases.map((c) => c.at(-1)!.label))].sort()).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
+  });
+
+  // Defect: there is no idempotency key, so a lost response on the insert makes the resend save a second copy.
+  it.fails("POST: response lost on the insert, then a resend: saves the memory once", async () => {
+    await createScenario(new WriteFaults().fail("lost", 3), [{ step: 3, fault: "lost", label: "db.write:memories" }], true);
+  });
+
+  it("PATCH: every write and both faults end with the new text, its vector and no open hold", async () => {
+    const cases = await sweepWriteFaults(async (faults, sweepCase) => {
+      const at = describeCase(sweepCase);
+      const spend = arm(faults);
+      const id = seedMemory(ALICE).id as string;
+      const send = () => itemRoute.PATCH(jsonRequest("PATCH", { content: NEW_TEXT }), params(id));
+      const first = await send();
+      faults.disarm();
+      if (first.status !== 200) {
+        expect(first.status, at).toBe(500);
+        expect((await send()).status, `${at}: resend`).toBe(200);
+      }
+      checkSpend(spend, faults, at);
+      expect(db.tables.memories, at).toHaveLength(1);
+      expect(storedRow(id), at).toMatchObject({ content: NEW_TEXT, embedding_model: EMBEDDING_MODEL });
+      expect(storedRow(id)!.embedding, at).not.toBe(OLD_VECTOR);
+    });
+    expect([...new Set(cases.map((c) => c.at(-1)!.label))].sort()).toEqual(["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
   });
 });
 
@@ -513,7 +672,7 @@ describe("privacy and scoping", () => {
     for (const query of memoryReads) expect(query.columns).not.toContain("embedding");
   });
 
-  it("scopes every memory and log query to the signed-in user", async () => {
+  it("scopes every memory query to the signed-in user", async () => {
     signInAs(ALICE);
     const row = seedMemory(ALICE);
     await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal"));
@@ -521,12 +680,12 @@ describe("privacy and scoping", () => {
     await itemRoute.PATCH(jsonRequest("PATCH", { content: "y" }), params(row.id as string));
     await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string));
 
-    const touched = db.queries.filter((q) => q.table === "memories" || q.table === "action_log");
-    expect(touched.length).toBeGreaterThan(4);
+    const touched = db.queries.filter((q) => q.table === "memories");
+    expect(touched.length).toBeGreaterThanOrEqual(4);
     for (const query of touched) expect(query.scopedToUser).toBe(true);
   });
 
-  it("keeps memory text out of the action log and the warning lines", async () => {
+  it("keeps memory text out of the warning lines and writes no log row", async () => {
     const secret = "Secret plan 42 for the bakery";
     signInAs(ALICE);
     embed.mockRejectedValueOnce(new ProviderError("nebius", "timeout"));
@@ -537,7 +696,6 @@ describe("privacy and scoping", () => {
 
     expect(consoleLines.length).toBeGreaterThan(0);
     for (const line of consoleLines) expect(line).not.toContain("Secret plan");
-    for (const entry of actionLog()) expect(JSON.stringify(entry)).not.toContain("Secret plan");
-    expect(actionLog().map((e) => e.event)).toEqual(["memory_added", "memory_edited", "memory_deleted"]);
+    expect(actionLog()).toHaveLength(0);
   });
 });

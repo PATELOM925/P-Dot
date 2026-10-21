@@ -19,11 +19,15 @@ interface Call {
  * A fake Supabase query builder. It records each call and resolves to the
  * given result. Used only to check what the repository asks for.
  */
-function fakeSupabase(result: { data?: unknown; error?: unknown; count?: number | null } = {}) {
+type Result = { data?: unknown; error?: unknown; count?: number | null };
+
+/** Pass one result for every call, or a list with one result per `from()` call in order. */
+function fakeSupabase(results: Result | Result[] = {}) {
   const calls: Call[] = [];
   const supabase = {
     from(table: string) {
       const call: Call = { table, op: "select", filters: [] };
+      const result = Array.isArray(results) ? (results[calls.length] ?? {}) : results;
       calls.push(call);
       const builder = {
         select(columns: string) {
@@ -46,6 +50,14 @@ function fakeSupabase(result: { data?: unknown; error?: unknown; count?: number 
         },
         eq(column: string, value: unknown) {
           call.filters.push([column, value]);
+          return builder;
+        },
+        lt(column: string, value: unknown) {
+          call.filters.push([`${column} <`, value]);
+          return builder;
+        },
+        is(column: string, value: unknown) {
+          call.filters.push([`${column} is`, value]);
           return builder;
         },
         order() {
@@ -187,5 +199,80 @@ describe("document repository", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("Database operation failed: listDocuments");
+  });
+
+  describe("settleStaleDocuments", () => {
+    const BEFORE = new Date("2026-10-20T10:00:00.000Z");
+    const DOC2 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+    it("finds only the user's old processing documents, with a limit", async () => {
+      const { supabase, calls } = fakeSupabase([{ data: [], error: null }]);
+      expect(await createDocumentRepository(supabase).settleStaleDocuments(ALICE, BEFORE, 5)).toBe(0);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ table: "documents", op: "select", columns: "id", limit: 5 });
+      expect(calls[0]!.filters).toEqual([
+        ["user_id", ALICE],
+        ["status", "processing"],
+        ["created_at <", BEFORE.toISOString()],
+      ]);
+    });
+
+    it("marks a document ready when it has chunks and none lacks an embedding", async () => {
+      const { supabase, calls } = fakeSupabase([
+        { data: [{ id: DOC }], error: null },
+        { data: null, error: null, count: 3 },
+        { data: null, error: null, count: 0 },
+        { data: null, error: null, count: 1 },
+      ]);
+      expect(await createDocumentRepository(supabase).settleStaleDocuments(ALICE, BEFORE, 5)).toBe(1);
+
+      expect(calls[1]).toMatchObject({ table: "document_chunks", op: "select" });
+      expect(calls[1]!.filters).toEqual([
+        ["user_id", ALICE],
+        ["document_id", DOC],
+      ]);
+      expect(calls[2]!.filters).toEqual([
+        ["user_id", ALICE],
+        ["document_id", DOC],
+        ["embedding is", null],
+      ]);
+      expect(calls[3]).toMatchObject({ table: "documents", op: "update", payload: { status: "ready" } });
+      expect(calls[3]!.filters).toEqual([
+        ["id", DOC],
+        ["user_id", ALICE],
+        ["status", "processing"],
+      ]);
+    });
+
+    it("marks a document failed when it has no chunks or a chunk without an embedding", async () => {
+      const { supabase, calls } = fakeSupabase([
+        { data: [{ id: DOC }, { id: DOC2 }], error: null },
+        { data: null, error: null, count: 0 },
+        { data: null, error: null, count: 0 },
+        { data: null, error: null, count: 1 },
+        { data: null, error: null, count: 2 },
+        { data: null, error: null, count: 1 },
+        // A parallel request settled this one first: the conditional update changes nothing.
+        { data: null, error: null, count: 0 },
+      ]);
+      expect(await createDocumentRepository(supabase).settleStaleDocuments(ALICE, BEFORE, 5)).toBe(1);
+
+      expect(calls[3]).toMatchObject({ op: "update", payload: { status: "failed" }, filters: [["id", DOC], ["user_id", ALICE], ["status", "processing"]] });
+      expect(calls[6]).toMatchObject({ op: "update", payload: { status: "failed" }, filters: [["id", DOC2], ["user_id", ALICE], ["status", "processing"]] });
+    });
+
+    it("changes nothing when a chunk count is missing or fails", async () => {
+      const { supabase, calls } = fakeSupabase([
+        { data: [{ id: DOC }], error: null },
+        { data: null, error: null, count: null },
+        { data: null, error: null, count: 0 },
+      ]);
+      const error = await createDocumentRepository(supabase)
+        .settleStaleDocuments(ALICE, BEFORE, 5)
+        .catch((e: unknown) => e);
+      expect((error as Error).message).toBe("Database operation failed: countDocumentChunks");
+      expect(calls.some((call) => call.op === "update")).toBe(false);
+    });
   });
 });

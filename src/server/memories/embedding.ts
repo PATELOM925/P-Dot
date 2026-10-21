@@ -4,11 +4,13 @@ import { getAssistantConfig } from "@/server/config";
 import { logEvent } from "@/server/log";
 import { createEmbedderForRequest } from "@/server/assistant/deps";
 import { EmbeddingBudgetError } from "@/server/assistant/embed";
+import { NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import { ProviderError } from "@/server/providers/errors";
 
 /**
  * Embeds one memory's text for search. Returns null when the embedding budget
- * refuses the request or the provider fails. The memory is then saved without
+ * refuses the request, the text is too large for one spend hold (not possible
+ * within the memory length limit) or the provider fails. The memory is then saved without
  * a vector and is not used in search until it is re-embedded. Other errors
  * (for example a missing configuration, ConfigError) still reach the route.
  *
@@ -19,7 +21,7 @@ export async function embedMemoryText(auth: AuthContext, requestId: string, text
     const [vector] = await createEmbedderForRequest(auth, getAssistantConfig()).embed([text]);
     return vector ?? null;
   } catch (error) {
-    if (error instanceof EmbeddingBudgetError || error instanceof ProviderError) {
+    if (error instanceof EmbeddingBudgetError || error instanceof NebiusHoldTooLargeError || error instanceof ProviderError) {
       logEvent("warn", "memory_embedding_failed", { requestId, errorName: error.name });
       return null;
     }

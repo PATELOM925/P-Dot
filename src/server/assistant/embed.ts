@@ -2,8 +2,7 @@ import "server-only";
 import { EMBEDDING_BATCH_SIZE } from "@/lib/limits";
 import type { SpendGuard, SpendLimit } from "@/server/db/spend";
 import { EMBEDDING_MODEL, createEmbeddings, type EmbeddingSettings } from "@/server/providers/nebius/embeddings";
-import { costMicroUsd, priceForModel } from "@/server/providers/nebius/pricing";
-import { MAX_NEBIUS_HOLD_MICRO_USD } from "./spend";
+import { nebiusEmbeddingHoldMicroUsd, nebiusSettleMicroUsd } from "./spend";
 
 /** The Nebius budget refused an embedding request. */
 export class EmbeddingBudgetError extends Error {
@@ -14,16 +13,8 @@ export class EmbeddingBudgetError extends Error {
 }
 
 export interface Embedder {
-  /** One vector for each text, in order. Throws EmbeddingBudgetError or ProviderError. */
+  /** One vector for each text, in order. Throws EmbeddingBudgetError, NebiusHoldTooLargeError or ProviderError. */
   embed(texts: string[], signal?: AbortSignal): Promise<number[][]>;
-}
-
-/** Worst case: every UTF-8 byte is one token, plus a small overhead for each text. */
-function holdMicroUsd(texts: string[]): number {
-  const price = priceForModel(EMBEDDING_MODEL);
-  if (!price) throw new Error("The embedding model has no price.");
-  const bytes = texts.reduce((sum, t) => sum + new TextEncoder().encode(t).length + 16, 0);
-  return Math.max(1, Math.min(costMicroUsd(price, { promptTokens: bytes, completionTokens: 0 }), MAX_NEBIUS_HOLD_MICRO_USD));
 }
 
 /**
@@ -36,21 +27,23 @@ export function createBudgetedEmbedder(deps: {
   spend: SpendGuard;
   fetchImpl?: typeof fetch;
 }): Embedder {
-  const price = priceForModel(EMBEDDING_MODEL);
   return {
     async embed(texts, signal) {
-      const out: number[][] = [];
+      // Every batch's hold is checked before the first reservation, so a refusal spends nothing.
+      const batches: { batch: string[]; hold: number }[] = [];
       for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
         const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-        const hold = holdMicroUsd(batch);
+        batches.push({ batch, hold: nebiusEmbeddingHoldMicroUsd(EMBEDDING_MODEL, batch) });
+      }
+      const out: number[][] = [];
+      for (const { batch, hold } of batches) {
         const reservation = await deps.spend.reserve("nebius", hold);
         if (!reservation.allowed) throw new EmbeddingBudgetError(reservation.limit);
         let charged = hold;
         try {
           const result = await createEmbeddings(deps.settings, batch, { signal, fetchImpl: deps.fetchImpl });
-          if (price && result.promptTokens !== null) {
-            charged = Math.min(hold, costMicroUsd(price, { promptTokens: result.promptTokens, completionTokens: 0 }));
-          }
+          const usage = result.promptTokens === null ? null : { promptTokens: result.promptTokens, completionTokens: 0 };
+          charged = nebiusSettleMicroUsd(EMBEDDING_MODEL, hold, usage);
           out.push(...result.vectors);
         } finally {
           // A failed settle leaves the full hold counted, which is the safe side.
