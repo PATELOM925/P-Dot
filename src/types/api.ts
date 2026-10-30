@@ -9,7 +9,13 @@ export type MessageRole = "user" | "assistant";
 export type Mode = "personal" | "work";
 
 /** Tools the assistant can call (src/server/assistant/tools). */
-export type AssistantToolName = "web_search";
+export type AssistantToolName =
+  | "web_search"
+  | "search_documents"
+  | "search_memories"
+  | "propose_task"
+  | "propose_reminder"
+  | "save_memory";
 
 /** Outcome of web search for an assistant reply. */
 export type WebSearchStatus = "off" | "used" | "no_results" | "failed";

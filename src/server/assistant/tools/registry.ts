@@ -1,10 +1,14 @@
 import "server-only";
 import { z } from "zod";
 import type { AssistantToolName, Mode } from "@/types/api";
+import type { ActionProposalRepository } from "@/server/db/action-proposals";
+import type { MemoryRepository } from "@/server/db/memories";
+import type { RetrievalRepository } from "@/server/db/retrieval";
 import type { SpendGuard } from "@/server/db/spend";
 import type { Logger } from "@/server/log";
 import type { ToolCall, ToolDefinition } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
+import type { Embedder } from "../embed";
 
 // The one place that defines the assistant's tools. A tool is a ToolSpec in
 // TOOLS. The set offered for a request is chosen from request flags only
@@ -15,6 +19,8 @@ import type { WebSearchResult } from "@/server/providers/tavily/client";
 export interface ToolFlags {
   /** The user turned on web search for this message, search is configured, and the search budget allowed it. */
   webSearch: boolean;
+  /** The server can read and write the user's own P-Dot data (memories, documents, proposals). */
+  ownData: boolean;
 }
 
 /**
@@ -23,6 +29,15 @@ export interface ToolFlags {
  */
 export type ToolKind = "read" | "propose";
 
+/** The user's own P-Dot data. Every call runs with the user's session, so RLS applies. */
+export interface OwnDataServices {
+  /** Holds spend for each batch (createBudgetedEmbedder). */
+  embedder: Embedder;
+  retrieval: RetrievalRepository;
+  memories: Pick<MemoryRepository, "createMemory" | "listMemories">;
+  proposals: Pick<ActionProposalRepository, "createProposal" | "listProposals">;
+}
+
 /** Server services a tool may use. AssistantDeps has all of them. */
 export interface ToolServices {
   spend: SpendGuard;
@@ -30,6 +45,8 @@ export interface ToolServices {
   log: Logger;
   /** Keeps cleanup (a spend settle) running after the client disconnects. */
   waitUntil: (work: Promise<unknown>) => void;
+  /** Null or missing when the server has no data services for this request. */
+  ownData?: OwnDataServices | null;
 }
 
 export interface ToolContext {
@@ -49,6 +66,9 @@ export interface ToolOutcome {
   content: string;
   /** New web sources, numbered after `ToolContext.sources`. */
   sources?: WebSearchResult[];
+  /** IDs of memories and document chunks sent to the model, for the context record. */
+  memoryIds?: string[];
+  documentChunkIds?: string[];
 }
 
 export interface ToolSpec<Args = unknown> {
