@@ -220,6 +220,16 @@ describe("normalizeReplyText", () => {
   it("writes the long citation forms as [n]", () => {
     expect(normalizeReplyText("Cafe A 【2†L1-L4】, Cafe B [3†source] and 【1】.")).toBe("Cafe A [2], Cafe B [3] and [1].");
   });
+
+  it("removes a citation with a name in place of a number (live test, 2026-10-30)", () => {
+    expect(normalizeReplyText("| Wed 2026-11-04 | 10:00 【calendar†L1-L2】 |")).toBe("| Wed 2026-11-04 | 10:00 |");
+    expect(normalizeReplyText("Dentist at 10:00 [calendar†L3].")).toBe("Dentist at 10:00.");
+    expect(normalizeReplyText("Lunch 【4:0†source】 and tea【gmail†L1】.")).toBe("Lunch and tea.");
+  });
+
+  it("keeps brackets that are not citations", () => {
+    expect(normalizeReplyText("【注意】 [ ] task, [link](https://example.com) and [2]")).toBe("【注意】 [ ] task, [link](https://example.com) and [2]");
+  });
 });
 
 describe("createReplyNormalizer", () => {
@@ -233,6 +243,16 @@ describe("createReplyNormalizer", () => {
     const { shown, text } = stream(["Union Cafe 【", "2†L1", "-L4】 is open. See [1", "†x] and [3", "]."]);
     expect(shown).not.toMatch(/【|†/);
     expect(text).toBe("Union Cafe [2] is open. See [1] and [3].");
+  });
+
+  it("never shows a named citation split across chunks", () => {
+    const { shown, text } = stream(["| 10:00 【cal", "endar†L1", "-L2】 |\nSee [calen", "dar†L3] now."]);
+    expect(shown).not.toMatch(/【|†|calendar/);
+    expect(text).toBe("| 10:00 |\nSee now.");
+  });
+
+  it("gives back a markdown link that was held for one chunk", () => {
+    expect(stream(["Read [the gu", "ide](https://example.com)."]).text).toBe("Read [the guide](https://example.com).");
   });
 
   it("gives back an open bracket that never closes when the stream ends", () => {
