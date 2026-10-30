@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { readIdentity } from "@/lib/auth-identity";
 import { getSupabaseConfig, isSupabaseConfigured } from "@/lib/supabase-config";
 
 // Used only by src/proxy.ts. Not marked `server-only` because the proxy bundle
@@ -52,9 +53,12 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   // Do not add logic between creating the client and getClaims(): the call is
   // what refreshes an expired session.
   let signedIn = false;
+  let hasAccount = false;
   try {
     const { data } = await supabase.auth.getClaims();
-    signedIn = Boolean(data?.claims?.sub);
+    const identity = readIdentity(data?.claims);
+    signedIn = identity !== null;
+    hasAccount = identity !== null && !identity.isAnonymous;
   } catch {
     // Treat an unreachable Auth server as signed out for routing purposes.
   }
@@ -68,7 +72,8 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
     // A recovery session is required for /reset-password; send users back to request one.
     if (pathname === "/reset-password") redirectTo.pathname = "/forgot-password";
     else redirectTo.searchParams.set("next", `${pathname}${search}`);
-  } else if (signedIn && matches(pathname, SIGNED_OUT_ONLY)) {
+  } else if (hasAccount && matches(pathname, SIGNED_OUT_ONLY)) {
+    // A trial user may open these pages, to sign in or create an account.
     redirectTo = request.nextUrl.clone();
     redirectTo.pathname = "/chat";
     redirectTo.search = "";

@@ -34,6 +34,8 @@ import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
 import { ChatSendKey } from "./send-key";
+import { StarterPrompts } from "./StarterPrompts";
+import type { StarterPrompt } from "./starter-prompts";
 import { readChatStream } from "./stream";
 import { toolStatusLine } from "./tool-status";
 import { appendDictation, useDictation } from "./useDictation";
@@ -397,6 +399,14 @@ export function ChatWorkspace({
     }
   }
 
+  function pickStarter(prompt: StarterPrompt) {
+    setDraft(prompt.text);
+    setWebSearch(prompt.webSearch);
+    effortVersion.current += 1;
+    setEffort(prompt.effort);
+    inputRef.current?.focus();
+  }
+
   function startRename(conversation: ConversationSummary) {
     setConfirmDeleteId(null);
     setRenamingId(conversation.id);
@@ -614,7 +624,8 @@ export function ChatWorkspace({
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
               <p>{EMPTY_HINTS[mode]}</p>
-              <p className="muted small">Turn on web search when you want current sources.</p>
+              <p className="muted small">Turn on web search when you want current sources. Or start with an example:</p>
+              <StarterPrompts mode={mode} onPick={pickStarter} />
             </div>
           )}
           {messages.map((message) => (
