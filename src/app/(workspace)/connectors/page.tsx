@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { BrandName } from "@/components/ui/BrandMark";
+import type { BrandId } from "@/components/ui/brand-marks";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GoogleCard } from "@/features/connectors/GoogleCard";
 import { googleCardState, googleOutcomeMessage } from "@/features/connectors/google";
@@ -23,11 +25,11 @@ import type { Mode } from "@/types/api";
 export const metadata: Metadata = { title: "Connectors · P-Dot" };
 
 // Planned connectors, shown as a preview. None can be connected yet.
-const PLANNED = [
-  { key: "telegram", name: "Telegram", can: "deliver your daily brief and to-do list to your own chat", asks: "before messaging anyone else" },
-  { key: "github", name: "GitHub", can: "read pull requests and issues you can see", asks: "before commenting, merging or changing anything" },
-  { key: "vercel", name: "Vercel", can: "report deploy status and errors", asks: "before deploying or changing settings" },
-  { key: "whatsapp", name: "WhatsApp", can: "send you briefs and reminders", asks: "before every message to another person" },
+const PLANNED: { key: string; name: string; can: string; asks: string; brand?: BrandId }[] = [
+  { key: "telegram", brand: "telegram", name: "Telegram", can: "deliver your daily brief and to-do list to your own chat", asks: "before messaging anyone else" },
+  { key: "github", brand: "github", name: "GitHub", can: "read pull requests and issues you can see", asks: "before commenting, merging or changing anything" },
+  { key: "vercel", brand: "vercel", name: "Vercel", can: "report deploy status and errors", asks: "before deploying or changing settings" },
+  { key: "whatsapp", brand: "whatsapp", name: "WhatsApp", can: "send you briefs and reminders", asks: "before every message to another person" },
   { key: "phone", name: "Phone calls", can: "call to book appointments for you", asks: "before every call, with the number and purpose shown" },
 ];
 
@@ -168,9 +170,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           {PLANNED.map((connector) => (
             <article key={connector.name} className="panel">
               <div className="panel-heading">
-                <h3>
-                  <span className={`chip chip-${connector.key}`}>{connector.name}</span>
-                </h3>
+                <h3>{connector.brand ? <BrandName brand={connector.brand} name={connector.name} /> : connector.name}</h3>
                 <span className="status-pill">Coming soon</span>
               </div>
               <p>

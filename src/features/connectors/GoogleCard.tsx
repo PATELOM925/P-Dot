@@ -1,3 +1,4 @@
+import { BrandName } from "@/components/ui/BrandMark";
 import { FocusedMessage } from "./FocusedMessage";
 import type { GoogleCardState } from "./google";
 
@@ -27,7 +28,10 @@ export function GoogleCard({ state, message }: { state: GoogleCardState; message
     <article className="panel" id="google" aria-labelledby="google-heading">
       <div className="panel-heading">
         <h3 id="google-heading">
-          <span className="chip chip-gmail">Gmail</span> <span className="chip chip-calendar">Calendar</span>
+          <span className="brand-names">
+            <BrandName brand="gmail" name="Gmail" />
+            <BrandName brand="googlecalendar" name="Google Calendar" />
+          </span>
         </h3>
         <span className={pill.className}>{pill.label}</span>
       </div>

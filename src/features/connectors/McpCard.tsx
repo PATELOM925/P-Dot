@@ -1,3 +1,4 @@
+import { BrandName } from "@/components/ui/BrandMark";
 import { MCP_SERVER_NAMES, type McpServerId } from "@/lib/connectors";
 import { FocusedMessage } from "./FocusedMessage";
 import { mcpConnectedDate, type McpCardState } from "./mcp";
@@ -39,7 +40,7 @@ export function McpCard({
     <article className="panel" id={app} aria-labelledby={`${app}-heading`}>
       <div className="panel-heading">
         <h3 id={`${app}-heading`}>
-          <span className="chip">{name}</span>
+          <BrandName brand={app} name={name} />
         </h3>
         <span className={pill.className}>{pill.label}</span>
       </div>

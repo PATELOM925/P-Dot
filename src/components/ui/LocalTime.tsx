@@ -37,6 +37,8 @@ const FORMATS = {
   dateTime: { dateStyle: "medium", timeStyle: "short" },
   date: { dateStyle: "medium" },
   time: { timeStyle: "short" },
+  /** "Wed, Nov 4, 2026, 10:00 AM EST": the weekday and the time zone, for an event on an approval card. */
+  dateTimeZone: { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" },
 } satisfies Record<string, Intl.DateTimeFormatOptions>;
 
 export function formatLocal(iso: string, style: keyof typeof FORMATS = "dateTime"): string {

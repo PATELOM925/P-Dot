@@ -1,17 +1,22 @@
 /**
  * Citation forms that some models write instead of [n]: 【1】, 【2†L1-L4】 and
- * [3†source]. Each becomes [n], which the reply shows as a source chip.
+ * [3†source]. A numbered form becomes [n], which the reply shows as a source
+ * chip. A form with a name in place of the number, such as 【calendar†L1-L2】
+ * or [calendar†L3], points to no source, so it is removed with the space before it.
  */
-const CITATION_FORMS = /【(\d{1,3})(?:†[^】\n]{0,60})?】|\[(\d{1,3})†[^\]\n]{0,60}\]/g;
+const CITATION_FORMS = /([ \t]?)(?:【([^】†\n]{0,40})†[^】\n]{0,60}】|【(\d{1,3})】|\[([^\]†\n]{1,40})†[^\]\n]{0,60}\])/g;
 
 /** The start of a citation that the next chunk can complete. */
-const OPEN_CITATION = /(?:【\d{0,3}(?:†[^】\n]{0,60})?|\[\d{1,3}(?:†[^\]\n]{0,60})?)$/;
+const OPEN_CITATION = /[ \t]?(?:【[^】\n]{0,100}|\[[A-Za-z0-9_.: -]{0,40}(?:†[^\]\n]{0,60})?)$/;
 
-/** Replaces narrow and normal non-breaking spaces, and writes every citation form as [n]. */
+/** Replaces narrow and normal non-breaking spaces, and writes every citation form as [n] or removes it. */
 export function normalizeReplyText(text: string): string {
   return text
-    .replace(/[  ]/g, " ")
-    .replace(CITATION_FORMS, (_match, wide: string | undefined, plain: string | undefined) => `[${wide ?? plain}]`);
+    .replace(/[\u00A0\u202F]/g, " ")
+    .replace(CITATION_FORMS, (_match, space: string, wide?: string, bare?: string, plain?: string) => {
+      const label = (wide ?? bare ?? plain ?? "").trim();
+      return /^\d{1,3}$/.test(label) ? `${space}[${label}]` : "";
+    });
 }
 
 /**
