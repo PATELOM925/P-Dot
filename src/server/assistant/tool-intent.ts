@@ -16,6 +16,7 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
         String.raw`\bschedule\b`,
         String.raw`\bto-?dos?\b`,
         String.raw`\b(?:add|create|make|set|put)\b[^.?!]{0,30}\b(?:task|tasks|to-?do|reminder|alarm)\b`,
+        String.raw`\b(?:add|put)\b[^.?!]{0,40}\bto\s+(?:my|the)\b[^.?!]{0,20}\blist\b`,
         String.raw`\byaad\s+(?:dila|dilana|dilao|dila\s+dena|dila\s+dijiye)\b`,
       ].join("|"),
       "i",
@@ -26,6 +27,7 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
     pattern: new RegExp(
       [
         String.raw`\bremember\s+(?:that|this|my|me|i|i'm|i am)\b`,
+        String.raw`^\s*remember\s*,`,
         String.raw`\b(?:save|note)\s+(?:this|that|it)\b`,
         String.raw`\bnote\s+(?:this|that|it)\s+down\b`,
         String.raw`\bkeep\s+(?:this|that|it\s+)?in\s+mind\b`,
@@ -39,7 +41,8 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
     intent: "own_data",
     pattern: new RegExp(
       [
-        String.raw`\bmy\s+(?:notes?|documents?|docs|files?|uploads?)\b`,
+        String.raw`\bmy\s+(?:notes?|documents?|docs|files?|uploads?|resume|cv|pdfs?)\b`,
+        String.raw`\b(?:the|my|that|this)\s+(?:document|doc|file|pdf|resume|cv|notes?)\s+(?:that\s+|which\s+)?i\s+(?:uploaded|added|saved|shared|sent)\b`,
         String.raw`\b(?:in|from)\s+(?:the|my|that)\s+(?:file|document|doc|notes?)\b`,
         String.raw`\bwhat\s+(?:do|did)\s+you\s+(?:know|remember)\s+about\s+me\b`,
         String.raw`\bdo\s+you\s+remember\b`,

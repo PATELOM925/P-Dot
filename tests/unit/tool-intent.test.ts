@@ -11,6 +11,7 @@ describe("detectToolIntent", () => {
     ["Add buying milk to my to-do list", "task_request"],
     ["add a task: renew passport", "task_request"],
     ["put this on my todo", "task_request"],
+    ["Add milk to my shopping list", "task_request"],
     ["kal subah 9 baje yaad dila dena", "task_request"],
     ["mujhe dawai lene ka reminder set karo", "task_request"],
     ["Remember that I am vegetarian", "memory_request"],
@@ -19,12 +20,16 @@ describe("detectToolIntent", () => {
     ["keep in mind I hate early meetings", "memory_request"],
     ["don't forget that I work from home on Mondays", "memory_request"],
     ["yaad rakhna ki main chai peeta hoon", "memory_request"],
+    ["Remember, I like tea", "memory_request"],
     ["What did I write in my notes about the trip?", "own_data"],
     ["Search my documents for the lease end date", "own_data"],
     ["what's in the file I uploaded?", "own_data"],
     ["What do you know about me?", "own_data"],
     ["do you remember what I like for breakfast", "own_data"],
     ["mere notes me Goa ka plan dekho", "own_data"],
+    ["Summarize the document I uploaded", "own_data"],
+    ["What does my resume say", "own_data"],
+    ["What's in the pdf I added?", "own_data"],
   ] as const)("finds %j as %s", (message, intent) => {
     expect(detectToolIntent(message)).toBe(intent);
   });
@@ -41,6 +46,8 @@ describe("detectToolIntent", () => {
     "Write a short poem about rain",
     "Explain how photosynthesis works",
     "What time is it in Tokyo?",
+    "Do you know a good shopping list app?",
+    "How do I add numbers in a list in Python?",
   ])("finds no intent in %j", (message) => {
     expect(detectToolIntent(message)).toBeNull();
   });
