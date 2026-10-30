@@ -2,7 +2,10 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
+import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createContextRecordRepository } from "@/server/db/context-records";
+import { createMemoryRepository } from "@/server/db/memories";
+import { createRetrievalRepository } from "@/server/db/retrieval";
 import { createConversationRepository } from "@/server/db/conversations";
 import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
@@ -23,10 +26,11 @@ const breaker = createCircuitBreaker(BREAKER_DEFAULTS);
 /** Wires the assistant service to real providers for one authenticated request. */
 export function createAssistantDeps(auth: AuthContext, config: AssistantConfig): AssistantDeps {
   const tavily = config.tavily;
+  const spend = createSpendGuard(auth.supabase, config.spend);
   return {
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
-    spend: createSpendGuard(auth.supabase, config.spend),
+    spend,
     routing: config.routing,
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
     provider: createNebiusProvider(config.nebius),
@@ -35,6 +39,16 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     log: logEvent,
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
+    titles: true,
+    ownData: {
+      embedder: createBudgetedEmbedder({
+        settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
+        spend,
+      }),
+      retrieval: createRetrievalRepository(auth.supabase),
+      memories: createMemoryRepository(auth.supabase),
+      proposals: createActionProposalRepository(auth.supabase),
+    },
   };
 }
 
