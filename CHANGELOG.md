@@ -9,6 +9,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Database step for the Notion, Linear and Todoist connectors** ([decision 0016](docs/decisions/0016-mcp-connectors.md)). ([PR #29](https://github.com/PATELOM925/P-Dot/pull/29))
+  - Problem: P-Dot cannot store a connection to Notion, Linear or Todoist.
+  - Resolution: migration `20261031000000_mcp_connectors.sql` (expand) lets `connected_accounts` hold `notion`, `linear` and `todoist` rows with read scopes only, no address and a sealed bundle of at most 12,288 characters. An anonymous session cannot insert or update such a row. Google rows and the live Google code do not change. The SQL gate checks it in both grant modes.
 - **Replies use kept memories, the assistant can search the user's documents and propose tasks, reminders and memories, and new chats get titles from the model** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #24](https://github.com/PATELOM925/P-Dot/pull/24))
   - Problem: replies did not use memories or documents, the context record always had empty memory and document lists, nothing created proposals for the approval cards, and titles came only from the first message.
   - Resolution:
