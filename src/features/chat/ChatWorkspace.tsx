@@ -34,6 +34,7 @@ import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
 import { ChatSendKey } from "./send-key";
 import { readChatStream } from "./stream";
+import { toolStatusLine } from "./tool-status";
 import { appendDictation, useDictation } from "./useDictation";
 
 interface StreamingReply {
@@ -41,6 +42,8 @@ interface StreamingReply {
   search: { status: Exclude<WebSearchStatus, "off">; sources: SourceRef[]; message?: string } | null;
   /** The tier from the start event, before the first token. */
   tier?: ModelTier;
+  /** The tool that runs now, until the next search result or text arrives. */
+  tool?: string;
 }
 
 const EFFORT_OPTIONS: { value: Effort; label: string; title: string }[] = [
@@ -317,6 +320,17 @@ export function ChatWorkspace({
             }));
             setStatus(event.status === "used" ? "Web search complete. P-Dot is replying…" : (event.message ?? ""));
             break;
+          case "status": {
+            const line = toolStatusLine(event.tool, event.query);
+            setStreaming((current) => ({
+              text: current?.text ?? "",
+              search: current?.search ?? null,
+              tier: current?.tier,
+              tool: line,
+            }));
+            setStatus(line);
+            break;
+          }
           case "delta":
             setStreaming((current) => ({
               text: (current?.text ?? "") + event.text,
@@ -593,6 +607,7 @@ export function ChatWorkspace({
             <article className="message message-assistant" aria-busy="true">
               <p className="message-author">P-Dot</p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
+              {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
               <div className="message-content">
                 {streaming.text || (
                   <span className="muted">

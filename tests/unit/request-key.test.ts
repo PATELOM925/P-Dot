@@ -99,9 +99,10 @@ describe("ChatSendKey", () => {
 });
 
 describe("reply claim lease", () => {
-  it("is longer than the longest chat turn, the heavy deadline plus the search timeout, with a minute to spare", () => {
+  it("is longer than the longest chat turn, with a minute to spare", () => {
     const routing = testRouting();
+    // All tool hops share one tier deadline. Searches run outside it: the first search, and one web_search tool call.
     const longest = Math.max(...Object.values(routing).map((plan) => plan.deadlineMs));
-    expect(REPLY_CLAIM_LEASE_SECONDS * 1000).toBeGreaterThan(longest + TAVILY_TIMEOUT_MS + 60_000);
+    expect(REPLY_CLAIM_LEASE_SECONDS * 1000).toBeGreaterThan(longest + 2 * TAVILY_TIMEOUT_MS + 60_000);
   });
 });
