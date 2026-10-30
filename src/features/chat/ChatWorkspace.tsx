@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalModeMenu, ApprovalModeSetup } from "@/features/actions/ApprovalModePicker";
+import { useModal } from "@/components/ui/useModal";
 import { useApprovalMode } from "@/features/actions/approval-mode";
 import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
@@ -29,7 +30,9 @@ import {
   postChat,
   renameConversation,
 } from "./api";
+import { Markdown } from "./markdown/Markdown";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
+import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -38,6 +41,16 @@ import { StarterPrompts } from "./StarterPrompts";
 import type { StarterPrompt } from "./starter-prompts";
 import { readChatStream } from "./stream";
 import { toolStatusLine } from "./tool-status";
+import {
+  STALL_LINE,
+  STALL_MS,
+  TURN_STATE_LABELS,
+  blocksRetry,
+  canRetryLast,
+  chatErrorView,
+  withNoRetry,
+  type TurnState,
+} from "./turn-state";
 import { appendDictation, useDictation } from "./useDictation";
 
 interface StreamingReply {
@@ -49,22 +62,22 @@ interface StreamingReply {
   tool?: string;
 }
 
-const EFFORT_OPTIONS: { value: Effort; label: string; title: string }[] = [
-  { value: "auto", label: "Auto", title: "P-Dot chooses a model for each message." },
-  {
-    value: "deep",
-    label: "Think harder",
-    title: "Use the strongest model for the next message only. It is slower and uses more of the daily limit.",
-  },
-];
-
 interface ErrorState {
   message: string;
+  retryable?: boolean;
+  limit?: boolean;
+  /** Text that streamed before the failure. It is shown muted and is not saved. */
+  partial?: string;
+  /** The error belongs to a send or a retry, so it shows under that turn. */
+  turn?: boolean;
 }
 
 function syncUrl(conversationId: string | null) {
   window.history.replaceState(null, "", conversationId ? `/chat?c=${encodeURIComponent(conversationId)}` : "/chat");
 }
+
+/** Event handlers only. */
+const now = () => Date.now();
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
@@ -78,12 +91,15 @@ const EMPTY_HINTS: Record<Mode, string> = {
 export function ChatWorkspace({
   initialConversationId,
   mode,
-  connectedApps,
+  trial = false,
+  connectedApps = [],
 }: {
   initialConversationId: string | null;
   mode: Mode;
+  /** A trial user (decision 0015): limit errors say so. */
+  trial?: boolean;
   /** Apps the user connected that chat can read. Read on the server. */
-  connectedApps: McpServerId[];
+  connectedApps?: McpServerId[];
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
@@ -100,11 +116,25 @@ export function ChatWorkspace({
   const [sending, setSending] = useState(false);
   const [streaming, setStreaming] = useState<StreamingReply | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
+  const [stopped, setStopped] = useState<{ partial: string } | null>(null);
+  // User messages whose last error said Retry cannot help, for the whole page session.
+  const [noRetryIds, setNoRetryIds] = useState<ReadonlySet<string>>(() => new Set());
+  // "Working" only while events arrive (spec D1): the time of the last stream event, and whether it is too long ago.
+  const lastEventRef = useRef(0);
+  const streamTextRef = useRef("");
+  const [stalled, setStalled] = useState(false);
+  const stalledRef = useRef(false);
+  const leftStreamRef = useRef<AbortController | null>(null);
+  const drawerToggleRef = useRef<HTMLButtonElement>(null);
+  const drawerCloseRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const drawerBackdropRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
+  // One composer menu at a time.
+  const [openMenu, setOpenMenu] = useState<"tools" | "approval" | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [savingRename, setSavingRename] = useState(false);
@@ -194,8 +224,55 @@ export function ChatWorkspace({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages, streaming]);
 
-  function openConversation(id: string) {
+  useEffect(() => {
+    if (!sending) return;
+    const timer = window.setInterval(() => {
+      if (stalledRef.current || now() - lastEventRef.current < STALL_MS) return;
+      stalledRef.current = true;
+      setStalled(true);
+      setStatus(STALL_LINE);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [sending]);
+
+  function showTurnError(view: Omit<ErrorState, "turn">, userMessageId: string | null) {
+    setError({ ...view, turn: true });
+    // A limit is not final: Retry can work later. Only an error that says Retry cannot help blocks it.
+    if (blocksRetry(view) && userMessageId) setNoRetryIds((ids) => withNoRetry(ids, userMessageId));
+  }
+
+  function closeList() {
+    setShowList(false);
+  }
+
+  // The phone drawer: focus goes to its Close button, and Esc closes it. On close, focus goes back to
+  // the toggle, after the render that takes `inert` off the chat.
+  useModal(showList, drawerRef, drawerBackdropRef);
+  const drawerWasOpen = useRef(false);
+  useEffect(() => {
+    if (!showList) {
+      if (drawerWasOpen.current) drawerToggleRef.current?.focus();
+      drawerWasOpen.current = false;
+      return;
+    }
+    drawerWasOpen.current = true;
+    drawerCloseRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowList(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showList]);
+
+  /** Stops a reply because the user leaves its conversation. That is not a "Stopped" turn to show. */
+  function leaveStream() {
+    if (abortRef.current) leftStreamRef.current = abortRef.current;
     abortRef.current?.abort();
+    setStopped(null);
+  }
+
+  function openConversation(id: string) {
+    leaveStream();
     // Words still being dictated belong to the conversation the user is leaving.
     dictation.cancel();
     setActiveId(id);
@@ -209,7 +286,7 @@ export function ChatWorkspace({
   }
 
   function startNewConversation() {
-    abortRef.current?.abort();
+    leaveStream();
     dictation.cancel();
     loadSeq.current += 1;
     setActiveId(null);
@@ -266,8 +343,10 @@ export function ChatWorkspace({
     const sentInAuto = approvalMode === "auto";
     const controller = new AbortController();
     abortRef.current = controller;
-    const tempId = `pending-${Date.now()}`;
+    const tempId = `pending-${now()}`;
     let accepted = false;
+    // The user message this turn answers: the retried one, or the new one once the server saved it.
+    let turnUserId: string | null = action === "retry" ? (messages.at(-1)?.id ?? null) : null;
     let finished = false;
 
     const restoreDraft = () => {
@@ -277,7 +356,13 @@ export function ChatWorkspace({
     };
 
     setSending(true);
+    setOpenMenu(null);
     setError(null);
+    setStopped(null);
+    setStalled(false);
+    stalledRef.current = false;
+    streamTextRef.current = "";
+    lastEventRef.current = now();
     setStreaming({ text: "", search: null });
     setStatus("Sending…");
     if (action === "send") {
@@ -302,9 +387,16 @@ export function ChatWorkspace({
     try {
       const stream = await postChat(body, controller.signal, keyHeaders);
       for await (const event of readChatStream(stream)) {
+        lastEventRef.current = now();
+        if (stalledRef.current) {
+          stalledRef.current = false;
+          setStalled(false);
+          setStatus("P-Dot is replying…");
+        }
         switch (event.type) {
           case "start":
             accepted = true;
+            turnUserId = event.userMessage.id;
             if (action === "send") sendKey.saved();
             if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
@@ -344,6 +436,7 @@ export function ChatWorkspace({
             break;
           }
           case "delta":
+            streamTextRef.current += event.text;
             setStreaming((current) => ({
               text: (current?.text ?? "") + event.text,
               search: current?.search ?? null,
@@ -352,6 +445,8 @@ export function ChatWorkspace({
             break;
           case "done":
             finished = true;
+            // Web search is for one message, like "Think harder": a forgotten switch would spend credits.
+            setWebSearch(false);
             setMessages((current) => [...current, { ...event.message, truncated: event.truncated }]);
             setStreaming(null);
             setSuggestionsKey((key) => key + 1);
@@ -366,14 +461,17 @@ export function ChatWorkspace({
           case "error":
             finished = true;
             setStreaming(null);
-            setError({ message: event.message });
+            showTurnError(
+              { ...chatErrorView(event.code, event.message, { retryable: event.retryable, trial }), partial: streamTextRef.current },
+              turnUserId,
+            );
             setStatus("");
             break;
         }
       }
       if (!finished) {
         setStreaming(null);
-        setError({ message: "The reply was interrupted. Please retry." });
+        setError({ message: "The reply did not finish. Try again.", retryable: true, partial: streamTextRef.current, turn: true });
       }
     } catch (err) {
       // After done the reply is saved and shown. A later problem (a lost title, Stop, a cut stream) is not an error.
@@ -381,10 +479,19 @@ export function ChatWorkspace({
       setStreaming(null);
       if (isAbort(err)) {
         if (!accepted) restoreDraft();
-        setStatus("Stopped.");
+        // Stop is not an error: the partial text stays, muted, and the user can retry or type again.
+        if (leftStreamRef.current !== controller) {
+          if (accepted) setStopped({ partial: streamTextRef.current });
+          setStatus("Reply stopped.");
+          inputRef.current?.focus();
+        }
       } else if (!redirectIfUnauthorized(err)) {
         if (!accepted) restoreDraft();
-        setError({ message: err instanceof Error ? err.message : "Something went wrong. Please retry." });
+        const view =
+          err instanceof ApiError
+            ? chatErrorView(err.code, err.message, { trial })
+            : { message: "P-Dot could not reply. Try again.", retryable: true, limit: false };
+        showTurnError({ ...view, partial: accepted ? streamTextRef.current : "" }, turnUserId);
         setStatus("");
         if (!accepted && sendKey.refused(err, action) === "answered") {
           void showSavedMessage((err as ApiError).conversationId ?? activeId, action === "send" ? text : "");
@@ -399,9 +506,61 @@ export function ChatWorkspace({
     }
   }
 
+  // The "+" menu: web search, Think harder, then each connected app. A new tool is one more item.
+  const tools: ToolItem[] = [
+    {
+      key: "web",
+      title: "Search the web",
+      description: "Current pages, with sources.",
+      chip: "Web search",
+      chipClass: "chip-web",
+      icon: "web",
+      on: webSearch,
+    },
+    {
+      key: "deep",
+      title: "Think harder",
+      description: "Stronger model. Slower. This message only.",
+      chip: "Think harder",
+      chipClass: "chip-deep",
+      icon: "deep",
+      on: effort === "deep",
+    },
+    ...connectedApps.map(
+      (app): ToolItem => ({
+        key: `app:${app}`,
+        title: `Use ${MCP_SERVER_NAMES[app]}`,
+        description: "Read only, for this message.",
+        chip: MCP_SERVER_NAMES[app],
+        chipClass: "chip-app",
+        icon: "app",
+        on: apps.includes(app),
+      }),
+    ),
+  ];
+
+  // Web search and apps do not go together in one message: turning one on turns the other off.
+  function toggleTool(key: string) {
+    if (key === "web") {
+      const on = !webSearch;
+      setWebSearch(on);
+      if (on) setApps([]);
+    } else if (key === "deep") {
+      effortVersion.current += 1;
+      setEffort((current) => (current === "deep" ? "auto" : "deep"));
+    } else if (key.startsWith("app:")) {
+      const app = connectedApps.find((id) => `app:${id}` === key);
+      if (!app) return;
+      const on = !apps.includes(app);
+      setApps((current) => (on ? [...current.filter((a) => a !== app), app] : current.filter((a) => a !== app)));
+      if (on) setWebSearch(false);
+    }
+  }
+
   function pickStarter(prompt: StarterPrompt) {
     setDraft(prompt.text);
     setWebSearch(prompt.webSearch);
+    if (prompt.webSearch) setApps([]);
     effortVersion.current += 1;
     setEffort(prompt.effort);
     inputRef.current?.focus();
@@ -451,7 +610,8 @@ export function ChatWorkspace({
   }
 
   const last = messages.at(-1);
-  const canRetry = !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending;
+  // A message whose last error said Retry cannot help keeps no Retry, also after Dismiss.
+  const canRetry = canRetryLast({ sending, loadingMessages, activeId, last, noRetryIds });
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
 
   // Oldest first, so a reply's suggestions read in the order P-Dot made them.
@@ -473,6 +633,16 @@ export function ChatWorkspace({
   const autoRunning = new Set(auto.running.map((p) => p.id));
   const placedProposals = placeByTime(messages, conversationProposals);
   const placedSuggestions = placeBySource(messages, memorySuggestions.items);
+  // "Waiting for you" on a reply with a card to decide; "Done" on the last reply otherwise.
+  const turnStates = new Map<string, TurnState>();
+  const lastReply = [...messages].reverse().find((m) => m.role === "assistant");
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const openAction = placedProposals.byMessage.get(message.id)?.some((p) => p.status === "proposed" && !autoRunning.has(p.id));
+    const openMemory = placedSuggestions.get(message.id)?.some((s) => s.outcome === "waiting");
+    if (openAction || openMemory) turnStates.set(message.id, "waiting");
+    else if (message.id === lastReply?.id && !sending) turnStates.set(message.id, "done");
+  }
   const showSuggestions = activeId !== null && !loadingMessages;
   const suggestionsFor = (proposals?: ActionProposalDTO[], suggestions?: MemorySuggestion[]) =>
     showSuggestions && (
@@ -494,7 +664,29 @@ export function ChatWorkspace({
 
   return (
     <div className="chat-layout">
-      <aside className={`chat-sidebar${showList ? " is-open" : ""}`} aria-label="Conversations">
+      {showList && <div ref={drawerBackdropRef} className="drawer-backdrop" aria-hidden="true" onClick={closeList} />}
+      <aside
+        ref={drawerRef}
+        id="chat-drawer"
+        className={`chat-sidebar${showList ? " is-open" : ""}`}
+        aria-label="Conversations"
+        role={showList ? "dialog" : undefined}
+        aria-modal={showList ? true : undefined}
+      >
+        <div className="drawer-head">
+          <p className="drawer-title">Conversations</p>
+          <button
+            ref={drawerCloseRef}
+            type="button"
+            className="icon-button drawer-close"
+            aria-label="Close conversations"
+            onClick={closeList}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        </div>
         <button type="button" className="button button-primary" onClick={startNewConversation}>
           New conversation
         </button>
@@ -609,9 +801,11 @@ export function ChatWorkspace({
       <main className="chat-main">
         <div className="chat-toolbar">
           <button
+            ref={drawerToggleRef}
             type="button"
             className="button button-small mobile-only"
             aria-expanded={showList}
+            aria-controls="chat-drawer"
             onClick={() => setShowList((open) => !open)}
           >
             Conversations
@@ -624,23 +818,29 @@ export function ChatWorkspace({
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
               <p>{EMPTY_HINTS[mode]}</p>
-              <p className="muted small">Turn on web search when you want current sources. Or start with an example:</p>
+              <p className="muted small">Start with an example, or ask anything.</p>
               <StarterPrompts mode={mode} onPick={pickStarter} />
+              <p className="disclaimer">P-Dot can make mistakes. Check important facts.</p>
             </div>
           )}
           {messages.map((message) => (
             <Fragment key={message.id}>
-              <MessageItem message={message} />
+              <MessageItem message={message} state={turnStates.get(message.id)} />
               {suggestionsFor(placedProposals.byMessage.get(message.id), placedSuggestions.get(message.id))}
             </Fragment>
           ))}
           {streaming && (
             <article className="message message-assistant" aria-busy="true">
               <p className="message-author">P-Dot</p>
+              <p className="turn-state" data-state={stalled ? "stalled" : "working"}>
+                {stalled ? STALL_LINE : TURN_STATE_LABELS.working}
+              </p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
               {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
-              <div className="message-content">
-                {streaming.text || (
+              {streaming.text ? (
+                <Markdown text={streaming.text} />
+              ) : (
+                <div className="message-content">
                   <span className="muted">
                     {webSearch && !streaming.search
                       ? "Searching the web…"
@@ -648,28 +848,51 @@ export function ChatWorkspace({
                         ? "Thinking harder…"
                         : "Thinking…"}
                   </span>
-                )}
-              </div>
+                </div>
+              )}
               {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
+          )}
+          {(stopped || error?.partial) && (
+            <article className="message message-assistant message-partial">
+              <p className="turn-state" data-state={stopped ? "stopped" : "failed"}>
+                {stopped ? "You stopped this reply. It is not saved." : "This reply stopped. It is not saved."}
+              </p>
+              {(stopped?.partial || error?.partial) && <Markdown text={(stopped?.partial || error?.partial)!} />}
+            </article>
+          )}
+          {error ? (
+            <div className="turn-error" role="alert">
+              <p>{error.message}</p>
+              <div className="actions">
+                {trial && error.limit && (
+                  <Link className="button button-small button-primary" href="/signup">
+                    Create an account
+                  </Link>
+                )}
+                {error.turn && error.retryable && canRetry && (
+                  <button type="button" className="button button-small" onClick={() => void submit("retry")}>
+                    Retry
+                  </button>
+                )}
+                <button type="button" className="button button-small" onClick={() => setError(null)}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ) : (
+            canRetry && (
+              <div className="turn-retry">
+                <p className="small muted">{stopped ? "You can send a new message, or retry." : "This message has no reply yet."}</p>
+                <button type="button" className="button button-small" onClick={() => void submit("retry")}>
+                  Retry
+                </button>
+              </div>
+            )
           )}
           {suggestionsFor(placedProposals.rest)}
           <div ref={endRef} />
         </div>
-
-        {error && (
-          <div className="alert alert-error chat-error" role="alert">
-            <span>{error.message}</span>
-          </div>
-        )}
-        {canRetry && (
-          <div className="retry-bar">
-            <span className="small muted">This message has no reply yet.</span>
-            <button type="button" className="button button-small" onClick={() => void submit("retry")}>
-              Retry reply
-            </button>
-          </div>
-        )}
 
         {/* Once per device: choose Ask first or Auto. Outside the form, so Enter on an option cannot send. */}
         <ApprovalModeSetup />
@@ -682,6 +905,7 @@ export function ChatWorkspace({
           }}
         >
           <div className="composer-box">
+            <ToolChips items={tools} onToggle={toggleTool} disabled={sending} inputRef={inputRef} />
             <label htmlFor="composer-input" className="visually-hidden">
               Message
             </label>
@@ -693,14 +917,14 @@ export function ChatWorkspace({
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
-                  void submit("send");
+                  if (!sending) void submit("send");
                 } else if (event.key === "Escape" && dictation.listening) {
                   dictation.toggle();
                 }
               }}
               rows={2}
               maxLength={MAX_MESSAGE_CHARS}
-              placeholder="Ask P-Dot anything…"
+              placeholder={sending ? "Press Stop to send a new message" : "Ask P-Dot anything"}
               aria-describedby="composer-hint"
             />
             {dictation.listening && (
@@ -711,107 +935,26 @@ export function ChatWorkspace({
               </p>
             )}
             <div className="composer-bar">
-              <div className="tools-anchor">
-                {toolsOpen && (
-                  <div
-                    id="composer-tools"
-                    className="tools-menu"
-                    onKeyDown={(event) => event.key === "Escape" && setToolsOpen(false)}
-                  >
-                    <label className="tool-option">
-                      <input
-                        type="checkbox"
-                        checked={webSearch}
-                        disabled={apps.length > 0}
-                        onChange={(event) => {
-                          setWebSearch(event.target.checked);
-                          if (event.target.checked) setApps([]);
-                        }}
-                      />
-                      <span>
-                        <strong>Search the web</strong>
-                        <span className="hint">Powered by Tavily</span>
-                      </span>
-                    </label>
-                    {connectedApps.map((app) => (
-                      <label key={app} className="tool-option">
-                        <input
-                          type="checkbox"
-                          checked={apps.includes(app)}
-                          onChange={(event) => {
-                            const on = event.target.checked;
-                            setApps((current) => (on ? [...current.filter((a) => a !== app), app] : current.filter((a) => a !== app)));
-                            if (on) setWebSearch(false);
-                          }}
-                        />
-                        <span>
-                          <strong>Use {MCP_SERVER_NAMES[app]}</strong>
-                          <span className="hint">Read only, for this message</span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="round-button"
-                  aria-label="Add tools"
-                  aria-expanded={toolsOpen}
-                  aria-controls="composer-tools"
-                  onClick={() => setToolsOpen((open) => !open)}
-                >
-                  +
-                </button>
-              </div>
-              <div role="group" aria-label="Effort" className="mode-toggle effort-toggle">
-                {EFFORT_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className="mode-option"
-                    aria-pressed={effort === option.value}
-                    title={option.title}
-                    onClick={() => {
-                      effortVersion.current += 1;
-                      setEffort(option.value);
-                    }}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              {webSearch && (
-                <button
-                  type="button"
-                  className="chip chip-button"
-                  onClick={() => setWebSearch(false)}
-                  aria-label="Web search with Tavily is on. Turn off."
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9" />
-                    <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
-                  </svg>
-                  Web search · Tavily ×
-                </button>
-              )}
-              {apps.map((app) => (
-                <button
-                  key={app}
-                  type="button"
-                  className="chip chip-button"
-                  onClick={() => setApps((current) => current.filter((a) => a !== app))}
-                  aria-label={`${MCP_SERVER_NAMES[app]} is on for this message. Turn off.`}
-                >
-                  {MCP_SERVER_NAMES[app]} ×
-                </button>
-              ))}
-              <span id="composer-hint" className="hint composer-hint">
-                {draft.length > MAX_MESSAGE_CHARS * 0.9
-                  ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`
-                  : "Enter to send · Shift+Enter for a new line"}
+              <ToolsMenu
+                open={openMenu === "tools"}
+                onOpenChange={(open) => setOpenMenu(open ? "tools" : null)}
+                items={tools}
+                onToggle={toggleTool}
+                disabled={sending}
+              />
+              <ApprovalModeMenu
+                open={openMenu === "approval"}
+                onOpenChange={(open) => setOpenMenu(open ? "approval" : null)}
+                disabled={sending}
+              />
+              <span id="composer-hint" className="visually-hidden">
+                Enter to send. Shift and Enter for a new line.
               </span>
-              {/* Kept apart from the effort switch, whose "Auto" is about models, not approvals. */}
-              <ApprovalModeMenu />
+              {draft.length > MAX_MESSAGE_CHARS * 0.9 && (
+                <span className="hint composer-count">
+                  {draft.length} / {MAX_MESSAGE_CHARS}
+                </span>
+              )}
               <button
                 type="button"
                 className={`round-button${dictation.listening ? " is-listening" : ""}`}
@@ -830,19 +973,31 @@ export function ChatWorkspace({
                   <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
                 </svg>
               </button>
-              {sending ? (
-                <button type="button" className="round-button round-button-solid" aria-label="Stop" onClick={() => abortRef.current?.abort()}>
+              {/* One element for Send and Stop, so focus stays on it when the label changes. */}
+              <button
+                type={sending ? "button" : "submit"}
+                className={`round-button ${sending ? "round-button-stop" : "round-button-solid"}`}
+                aria-label={sending ? "Stop reply" : "Send message"}
+                title={sending ? "Stop reply" : "Send (Enter)"}
+                aria-disabled={!sending && !draft.trim() ? true : undefined}
+                onClick={(event) => {
+                  if (sending) {
+                    abortRef.current?.abort();
+                  } else if (!draft.trim()) {
+                    event.preventDefault();
+                  }
+                }}
+              >
+                {sending ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
-                </button>
-              ) : (
-                <button type="submit" className="round-button round-button-solid" aria-label="Send message" disabled={!draft.trim()}>
+                ) : (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M12 19V5M5 12l7-7 7 7" />
                   </svg>
-                </button>
-              )}
+                )}
+              </button>
             </div>
           </div>
           {dictation.error && (
@@ -850,13 +1005,6 @@ export function ChatWorkspace({
               {dictation.error}
             </p>
           )}
-          {approvalMode === "auto" && (
-            <p className="approval-mode-hint small">
-              <strong>Auto is on:</strong> tasks and reminders are added on their own, with Undo. Deleting, memories,
-              outside accounts and private data still ask. <Link href="/settings#approvals">What always asks</Link>
-            </p>
-          )}
-          <p className="disclaimer">P-Dot is an AI and can make mistakes, so please double-check anything important.</p>
         </form>
 
         <p className="visually-hidden" role="status" aria-live="polite">

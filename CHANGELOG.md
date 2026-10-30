@@ -9,6 +9,13 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Chat UX fixes: the composer, safe Markdown, reply states and phone navigation.** ([PR #27](https://github.com/PATELOM925/P-Dot/pull/27))
+  - Problem: the "+" menu opened on top of the text box and stayed open, and the toolbar wrapped to 2 rows on a phone. Replies showed raw Markdown. A failed reply lost its text, and the error and Retry were in two places. On a phone, most pages were off screen and the conversation list had no close control.
+  - Resolution:
+    - Both composer menus open above the box and share one set of close rules (`usePopover`). The toolbar has "+", approval mode, mic and one Send/Stop button. "Think harder" is in the "+" menu, and tools that are on show as chips above the text. A `--border-field` token gives field edges 3:1 contrast.
+    - Replies render as safe Markdown with no new dependency: React elements only, links through `toSafeHttpUrl`, images as alt text, raw HTML as text. Parsing is linear. Sources keep their numbers when a link is removed.
+    - Each reply turn shows one state: Working, no update for 15 seconds, Waiting for you, Stopped, Did not finish or Done. One error block under the turn shows Retry only when it can help, and the partial text stays, marked as not saved.
+    - Phones get bottom tabs (Today, Chat, Memory, More), a More sheet with the other pages, Devices and sign-out, and a conversation drawer with Close, Esc, a backdrop and focus return.
 - **Read-only Notion, Linear and Todoist connectors in chat** ([decision 0016](docs/decisions/0016-mcp-connectors.md)). ([PR #31](https://github.com/PATELOM925/P-Dot/pull/31))
   - Problem: P-Dot cannot read the user's notes and tasks in Notion, Linear or Todoist. Their MCP servers can change their tool definitions, and text in a result can try to give the model instructions.
   - Resolution:

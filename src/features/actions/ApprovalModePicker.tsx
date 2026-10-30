@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
+import { usePopover } from "@/components/ui/usePopover";
 import { APPROVAL_MODES, APPROVAL_MODE_LABELS, MAX_AUTO_ACTIONS_PER_REPLY, type ApprovalMode } from "@/lib/approval-policy";
 import { setApprovalMode, useApprovalMode, useApprovalModeChosen } from "./approval-mode";
 
@@ -63,21 +64,31 @@ export function ApprovalModeOptions({ onPicked, autoFocusChecked = false }: { on
  * Next to the message box: one button that always shows the current mode and
  * opens a small menu to change it. Works the same with touch, mouse and keyboard.
  */
-export function ApprovalModeMenu() {
+export function ApprovalModeMenu({
+  open: openProp,
+  onOpenChange,
+  disabled = false,
+}: {
+  /** Controlled by the composer, so only one of its menus is open at a time. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  disabled?: boolean;
+}) {
   const mode = useApprovalMode();
-  const [open, setOpen] = useState(false);
+  const [openState, setOpenState] = useState(false);
+  const open = openProp ?? openState;
+  const setOpen = useCallback(
+    (next: boolean) => {
+      if (onOpenChange) onOpenChange(next);
+      else setOpenState(next);
+    },
+    [onOpenChange],
+  );
   const menuId = useId();
-  const anchorRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: PointerEvent) => {
-      if (!anchorRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointer);
-    return () => document.removeEventListener("pointerdown", onPointer);
-  }, [open]);
+  const dismiss = useCallback(() => setOpen(false), [setOpen]);
+  usePopover({ open, menuRef, triggerRef: buttonRef, onClose: dismiss });
 
   const close = () => {
     setOpen(false);
@@ -85,20 +96,9 @@ export function ApprovalModeMenu() {
   };
 
   return (
-    <div className="tools-anchor approval-anchor" ref={anchorRef}>
+    <div className="tools-anchor approval-anchor">
       {open && (
-        <div
-          id={menuId}
-          role="dialog"
-          aria-label="When P-Dot acts"
-          className="tools-menu approval-menu"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              close();
-            }
-          }}
-        >
+        <div id={menuId} ref={menuRef} role="dialog" aria-label="When P-Dot acts" className="tools-menu approval-menu">
           <p className="approval-menu-title">When P-Dot acts</p>
           <ApprovalModeOptions onPicked={close} autoFocusChecked />
           <Link href="/settings#approvals" className="small" onClick={() => setOpen(false)}>
@@ -116,7 +116,8 @@ export function ApprovalModeMenu() {
         aria-controls={open ? menuId : undefined}
         aria-label={`Approvals: ${APPROVAL_MODE_LABELS[mode]}. Change`}
         title="Choose whether P-Dot asks before every action"
-        onClick={() => setOpen((value) => !value)}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
       >
         <ModeIcon mode={mode} />
         <span>{APPROVAL_MODE_LABELS[mode]}</span>
