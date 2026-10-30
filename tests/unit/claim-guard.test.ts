@@ -142,6 +142,31 @@ describe("forcedToolChoice", () => {
     );
   });
 
+  describe("with several private sources on (decision 0021)", () => {
+    const google = [{ name: "gmail_search" }, { name: "gmail_read" }, { name: "calendar_list_events" }, { name: "propose_email" }];
+    const notion = [{ name: "notion_search" }, { name: "notion_fetch" }];
+    const linear = [{ name: "linear_search_issues" }, { name: "linear_get_issue" }];
+
+    it("names the app's first read when it is the only private source, also with the first web search", () => {
+      expect(forcedToolChoice(null, notion, "What is in my Notion?")).toEqual({ name: "notion_search" });
+    });
+
+    it.each([
+      ["two apps", [...notion, ...linear], "Compare my Notion notes with Linear"],
+      ["Google and an app", [...google, ...notion], "Check my email and my Notion page"],
+      ["Google and an app, with no mail word", [...google, ...notion], "What is new?"],
+      ["Google, a send request and an app", [...google, ...linear], "Email sam@example.com my open Linear issues"],
+    ])("asks for any tool with %s", (_name, offered, message) => {
+      expect(forcedToolChoice(detectToolIntent(message), offered, message)).toBe("required");
+    });
+
+    it("lets a memory or task intent win over the sources", () => {
+      const all = [...tools, ...google, ...notion];
+      expect(forcedToolChoice("memory_request", all, "Remember that my Notion is for work")).toEqual({ name: "save_memory" });
+      expect(forcedToolChoice("task_request", all, "Add a task to read my Notion page")).toBe("required");
+    });
+  });
+
   it("sends a named choice in the OpenAI function shape", () => {
     const tool = { name: "save_memory", description: "d", parameters: {} };
     expect(toolFields([tool], { name: "save_memory" }).tool_choice).toEqual({ type: "function", function: { name: "save_memory" } });

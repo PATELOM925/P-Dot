@@ -55,18 +55,27 @@ export interface GoogleWords {
   scheduleMeeting: boolean;
   /** The message asks to send, reply to or forward an email. */
   send: boolean;
+  /**
+   * The message names email or the calendar with a word that has no other
+   * common meaning ("email", "inbox", "calendar", "my schedule"), not only a
+   * weak word with an owner ("my meeting notes").
+   */
+  strong: boolean;
 }
 
 export function googleWords(message: string): GoogleWords {
   const own = OWN.test(message);
-  const mail = MAIL.test(message) || (own && WEAK_MAIL.test(message));
+  const strongMail = MAIL.test(message);
   const scheduleMeeting = SCHEDULE_MEETING.test(message);
-  const calendar = scheduleMeeting || CALENDAR.test(message) || (own && WEAK_CALENDAR.test(message));
+  const strongCalendar = scheduleMeeting || CALENDAR.test(message);
+  const mail = strongMail || (own && WEAK_MAIL.test(message));
+  const calendar = strongCalendar || (own && WEAK_CALENDAR.test(message));
   return {
     mail,
     calendar,
     read: (mail || calendar) && !WRITE.test(message),
     scheduleMeeting,
     send: mail && SEND.test(message),
+    strong: strongMail || strongCalendar,
   };
 }

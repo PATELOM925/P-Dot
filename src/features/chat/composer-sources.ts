@@ -6,36 +6,40 @@ import type { ToolItem } from "./ComposerTools";
 /** What the "Use Google" item can do here (decision 0014). Null hides it: Google is not set up. */
 export type GoogleChatState = "connected" | "not_connected" | "trial" | null;
 
-/** The outside sources of the next message. At most one kind is on: web search, Google or apps. */
+/** The outside sources of the next message. Web search, Google and apps can be on together (decision 0021). */
 export interface MessageSources {
   webSearch: boolean;
   useGoogle: boolean;
   apps: McpServerId[];
-  /** Deep research (decision 0018): a kind of web search, so `webSearch` is on with it. */
+  /** Deep research (decision 0018): a kind of web search, so `webSearch` is on with it, and Google and the apps are off. */
   research?: true;
 }
 
 /**
  * Turns one source on or off (`web`, `research`, `google` or `app:<id>`).
- * Turning one kind on turns the other kinds off; several apps together stay
- * on. Web search and deep research replace each other. The request schema
- * refuses two kinds in one message (decisions 0014, 0016 and 0018).
+ * Web search, Google and any apps stay on together. Deep research is web
+ * only: turning it on turns Google and the apps off, and turning Google or an
+ * app on turns it off. Web search and deep research replace each other. The
+ * request schema refuses deep research with Google or an app (decision 0021).
  */
 export function toggleSource(sources: MessageSources, key: string, connectedApps: readonly McpServerId[]): MessageSources {
-  const plain = { webSearch: sources.webSearch, useGoogle: sources.useGoogle, apps: sources.apps };
+  // Without deep research: a private source turned on keeps plain web search, but not deep research.
+  const plain = sources.research
+    ? { webSearch: false, useGoogle: sources.useGoogle, apps: sources.apps }
+    : { webSearch: sources.webSearch, useGoogle: sources.useGoogle, apps: sources.apps };
   if (key === "web") {
-    return sources.webSearch && !sources.research ? { ...plain, webSearch: false } : { webSearch: true, useGoogle: false, apps: [] };
+    return sources.webSearch && !sources.research ? { ...plain, webSearch: false } : { ...plain, webSearch: true };
   }
   if (key === "research") {
-    return sources.research ? { ...plain, webSearch: false } : { webSearch: true, useGoogle: false, apps: [], research: true };
+    return sources.research ? plain : { webSearch: true, useGoogle: false, apps: [], research: true };
   }
   if (key === "google") {
-    return sources.useGoogle ? { ...plain, useGoogle: false } : { webSearch: false, useGoogle: true, apps: [] };
+    return { ...plain, useGoogle: !sources.useGoogle };
   }
   const app = connectedApps.find((id) => `app:${id}` === key);
   if (!app) return sources;
-  if (sources.apps.includes(app)) return { ...sources, apps: sources.apps.filter((a) => a !== app) };
-  return { webSearch: false, useGoogle: false, apps: [...sources.apps, app] };
+  if (sources.apps.includes(app)) return { ...plain, apps: sources.apps.filter((a) => a !== app) };
+  return { ...plain, apps: [...sources.apps, app] };
 }
 
 /** The "Use Google" row of the "+" menu, or null when Google is not set up. */
@@ -67,12 +71,14 @@ const APP_NAMES: Record<McpServerId, RegExp> = {
 const noneOn = (sources: MessageSources) => !sources.webSearch && !sources.useGoogle && sources.apps.length === 0;
 
 /**
- * The sources a message uses when the user picked none (decisions 0014 and
- * 0016). A connected app that the message names turns on; several apps can.
- * Otherwise Google turns on for a message about email or the calendar. A
- * request for a task, a reminder or a memory does not turn Google on ("Remind
- * me to mail the package"), except a request to schedule a meeting or a call.
- * A manual pick always wins, and the composer shows the result as chips.
+ * The sources a message uses when the user picked none (decisions 0014, 0016
+ * and 0021). Each connected app that the message names turns on. Google turns
+ * on for a message about email or the calendar; with an app named, only for a
+ * strong word ("email", "calendar"), so "my meeting notes in Notion" stays on
+ * Notion. A request for a task, a reminder or a memory does not turn Google on
+ * ("Remind me to mail the package"), except a request to schedule a meeting or
+ * a call. Web search never turns on by itself. A manual pick always wins, and
+ * the composer shows the result as chips.
  */
 export function autoSources(
   message: string,
@@ -82,11 +88,15 @@ export function autoSources(
 ): MessageSources {
   if (!noneOn(picked) || !message.trim()) return picked;
   const apps = connectedApps.filter((app) => APP_NAMES[app].test(message));
-  if (apps.length > 0) return { webSearch: false, useGoogle: false, apps };
-  if (google !== "connected") return picked;
+  const useGoogle = google === "connected" && googleNamed(message, apps.length > 0);
+  if (apps.length === 0 && !useGoogle) return picked;
+  return { webSearch: false, useGoogle, apps };
+}
+
+function googleNamed(message: string, appNamed: boolean): boolean {
   const words = googleWords(message);
-  if (!words.mail && !words.calendar) return picked;
+  if (!words.mail && !words.calendar) return false;
+  if (appNamed && !words.strong) return false;
   const intent = detectToolIntent(message);
-  if ((intent === "task_request" || intent === "memory_request") && !words.scheduleMeeting) return picked;
-  return { webSearch: false, useGoogle: true, apps: [] };
+  return !((intent === "task_request" || intent === "memory_request") && !words.scheduleMeeting);
 }

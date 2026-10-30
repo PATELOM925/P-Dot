@@ -32,3 +32,21 @@ describe("googleWords", () => {
     expect(googleWords(message)).toMatchObject({ mail: false, calendar: false, read: false });
   });
 });
+
+describe("strong Google words (decision 0021)", () => {
+  it.each([
+    ["Check my email", true],
+    ["What is in my inbox?", true],
+    ["What is on my calendar?", true],
+    ["What's my schedule today?", true],
+    ["Am I free on Friday?", true],
+    ["Schedule a meeting with Sam", true],
+    ["Find my meeting notes", false],
+    ["When is my dentist appointment?", false],
+    ["Show my agenda for Monday", false],
+    ["Any mail for me?", true],
+    ["Did I get mail?", false],
+  ])("%j is strong: %s", (message, strong) => {
+    expect(googleWords(message).strong).toBe(strong);
+  });
+});

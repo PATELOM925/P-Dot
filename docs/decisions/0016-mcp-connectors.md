@@ -95,6 +95,8 @@ So text from memories, documents, earlier replies and app results cannot reach a
 
 ### One outside source for each message
 
+Changed on 2026-10-31 by [decision 0021](0021-multi-source-turns.md): web search, Google and apps can be on together, with no model-written `web_search` in such a turn. The rules below are the earlier design.
+
 Google tools (decision 0014, section 3, PR #30) and these connectors are exclusive for each message: at most one of "Search the web", "Use Google" or "Use <app>" (one or more apps) is on.
 
 - The request schema refuses a message with two of them (400). The chat UI turns the others off.

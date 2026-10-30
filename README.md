@@ -33,7 +33,8 @@ Open https://pdot.iampatelom.com. Sign in with the demo account `demo@pdot.iampa
 **Personal context**
 - Memories that you keep, edit, move between modes and delete.
 - Documents: text, CSV, JSON, code, PDF, Word and images (PNG, JPEG, WebP, GIF). Video and audio files are refused. When your documents in a mode are small (12,000 characters or less in total), their full text goes into every turn. Larger sets are searched, and the best matches go in.
-- When a message names a connected app (Notion, Linear, Todoist), P-Dot turns that app on for the message. When it asks about email or the calendar, P-Dot turns Google on. You can turn it off before you send.
+- When a message names a connected app (Notion, Linear, Todoist), P-Dot turns that app on for the message. When it asks about email or the calendar, P-Dot turns Google on. A message can turn on both, for example "Check my email and my Notion page". You can turn each one off before you send.
+- In the "+" menu, tick any set of sources for one message: web search, Google and each connected app. Web search uses only your own words, before P-Dot reads Google or an app. Deep research turns Google and the apps off. The "+" menu also has Personal and Work, the same as the header switch.
 
 **Actions**
 - Approval cards for tasks, reminders, memories, emails and calendar events. Approve, edit then approve, or cancel. Each approved action runs once.
