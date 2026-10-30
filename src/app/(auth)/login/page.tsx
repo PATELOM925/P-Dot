@@ -3,6 +3,7 @@ import Link from "next/link";
 import { signInAction } from "@/features/auth/actions";
 import { AuthForm } from "@/features/auth/AuthForm";
 import { TryWithoutAccount } from "@/features/auth/TryWithoutAccount";
+import { GoogleSignInButton } from "@/features/auth/GoogleSignInButton";
 import { safeNextPath } from "@/lib/safe-url";
 
 export const metadata: Metadata = { title: "Sign in · P-Dot" };
@@ -15,6 +16,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = await searchParams;
   const next = safeNextPath(typeof params.next === "string" ? params.next : undefined);
   const linkInvalid = params.error === "link_invalid";
+  const googleFailed = params.error === "oauth";
 
   return (
     <>
@@ -24,6 +26,13 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           That link is invalid or has expired. Sign in, or request a new link.
         </p>
       )}
+      {googleFailed && (
+        <p className="alert alert-error" role="alert">
+          Google sign-in did not finish. Try again.
+        </p>
+      )}
+      <GoogleSignInButton next={next} />
+      <p className="muted">Or sign in with your email and password.</p>
       <AuthForm
         action={signInAction}
         submitLabel="Sign in"

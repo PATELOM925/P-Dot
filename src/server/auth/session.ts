@@ -7,7 +7,7 @@ import { createSupabaseServerClient } from "@/server/db/supabase";
 export interface AuthContext {
   userId: string;
   email: string | null;
-  /** True for a trial user (Supabase anonymous sign-in). Set by `getAuthContext`. */
+  /** True for a trial (anonymous) session: the verified JWT claim `is_anonymous`. Set by `getAuthContext`. */
   isAnonymous?: boolean;
   /** Client bound to this user's session; queries run under RLS as this user. */
   supabase: SupabaseClient;
