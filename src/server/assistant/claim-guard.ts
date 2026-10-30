@@ -1,6 +1,7 @@
 import "server-only";
 import type { ToolChoice } from "@/server/providers/model";
-import type { ToolIntent } from "./tool-intent";
+import { googleWords } from "@/lib/google-words";
+import type { ToolIntent } from "@/lib/tool-intent";
 
 // A reply must never say that P-Dot proposed, added, saved or set something
 // when no tool did it in this turn. Earlier replies in the history show only
@@ -59,23 +60,25 @@ export function removeFalseClaims(text: string, actionAsked: boolean): { text: s
   return { text: tidy ? `${tidy}\n\n${NO_CARD_LINE}` : NO_CARD_LINE, removed };
 }
 
-const MAIL_WORDS = /\b(?:e-?mails?|gmail|inbox|mails?)\b/i;
-const CALENDAR_WORDS = /\b(?:calendar|meetings?|events?|schedule|appointments?|agenda)\b/i;
-
 /**
  * The first hop must call a tool when the message asks to remember, or to add
- * a task or a reminder: the model cannot answer "Got it" without a card. With
- * Google on, a question about email or the calendar must read first. Null when
- * the matching tool is not offered.
+ * a task or a reminder: the model cannot answer "Got it" without a card. The
+ * intent wins, so "Remind me to mail the package" gets a task card, not a
+ * Gmail search. With Google on, a question about email or the calendar must
+ * read first; a request to send or to write is not forced. Null when the
+ * matching tool is not offered.
  */
 export function forcedToolChoice(intent: ToolIntent | null, offered: readonly { name: string }[], message = ""): ToolChoice | null {
   const names = new Set(offered.map((tool) => tool.name));
-  const mail = names.has("gmail_search") && MAIL_WORDS.test(message);
-  const calendar = names.has("calendar_list_events") && CALENDAR_WORDS.test(message);
+  if (intent === "memory_request" && names.has("save_memory")) return { name: "save_memory" };
+  if (intent === "task_request" && names.has("propose_task") && names.has("propose_reminder")) return "required";
+  if (intent === "memory_request" || intent === "task_request") return null;
+  const words = googleWords(message);
+  if (!words.read) return null;
+  const mail = names.has("gmail_search") && words.mail;
+  const calendar = names.has("calendar_list_events") && words.calendar;
   if (mail && calendar) return "required";
   if (mail) return { name: "gmail_search" };
   if (calendar) return { name: "calendar_list_events" };
-  if (intent === "memory_request" && names.has("save_memory")) return { name: "save_memory" };
-  if (intent === "task_request" && names.has("propose_task") && names.has("propose_reminder")) return "required";
   return null;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { routeRequest } from "@/server/assistant/router";
-import { detectToolIntent } from "@/server/assistant/tool-intent";
+import { detectToolIntent } from "@/lib/tool-intent";
 import { routeSummary } from "@/lib/routing";
 
 describe("detectToolIntent", () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { detectToolIntent } from "@/lib/tool-intent";
 import { forcedToolChoice, NO_CARD_LINE, removeFalseClaims } from "@/server/assistant/claim-guard";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import { ProviderError } from "@/server/providers/errors";
@@ -103,6 +104,33 @@ describe("forcedToolChoice", () => {
     expect(forcedToolChoice("own_data", tools)).toBeNull();
     expect(forcedToolChoice(null, tools)).toBeNull();
     expect(forcedToolChoice("memory_request", [{ name: "web_search" }])).toBeNull();
+  });
+
+  describe("with Google on", () => {
+    const google = [...tools, { name: "gmail_search" }, { name: "gmail_read" }, { name: "calendar_list_events" }, { name: "propose_email" }];
+    const choice = (message: string) => forcedToolChoice(detectToolIntent(message), google, message);
+
+    it.each([
+      ["Check my latest emails", { name: "gmail_search" }],
+      ["Any unread mail from Sam?", { name: "gmail_search" }],
+      ["What meetings do I have this week?", { name: "calendar_list_events" }],
+      ["Am I free on Friday afternoon?", { name: "calendar_list_events" }],
+      ["Do my emails mention the meeting on Monday?", "required"],
+    ])("forces a read for the question %j", (message, expected) => {
+      expect(choice(message)).toEqual(expected);
+    });
+
+    it("lets the intent win: a reminder about mail gets a task card, not a Gmail search", () => {
+      expect(choice("Remind me to mail the package")).toBe("required");
+      expect(choice("Remember that my work email is sam@example.com")).toEqual({ name: "save_memory" });
+    });
+
+    it.each(["Send an email to Bob about the launch", "Draft a reply to the email from Sam", "Write an email to my team"])(
+      "does not force a read for the request %j",
+      (message) => {
+        expect(choice(message)).toBeNull();
+      },
+    );
   });
 
   it("sends a named choice in the OpenAI function shape", () => {

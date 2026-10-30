@@ -40,7 +40,7 @@ import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
 import { createReplyNormalizer } from "@/lib/reply-text";
 import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
-import { detectToolIntent, type ToolIntent } from "./tool-intent";
+import { detectToolIntent, type ToolIntent } from "@/lib/tool-intent";
 import { forcedToolChoice, removeFalseClaims } from "./claim-guard";
 import {
   budgetRefusal,

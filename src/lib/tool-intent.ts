@@ -1,5 +1,3 @@
-import "server-only";
-
 // Rule-based check for when a message needs the own-data tools (decision 0013).
 // Pure and cheap, like the router: no model call. A plain everyday message
 // gets no tools, so it stays on the fast tier.
