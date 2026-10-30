@@ -96,6 +96,9 @@ class FakeProposals implements ActionProposalRepository {
   async listProposals() {
     return [...this.rows.values()].map((row) => row.dto);
   }
+  async hasProposalBetween() {
+    return false;
+  }
   async getProposal(_userId: string, id: string) {
     const row = this.rows.get(id);
     return row ? { ...row.dto } : null;
