@@ -30,6 +30,7 @@ const MODES: DefaultGrants[] = ["legacy", "none"];
 const OWNED_TABLES = [
   "action_log",
   "action_proposals",
+  "connected_accounts",
   "context_records",
   "conversations",
   "document_chunks",
@@ -52,8 +53,13 @@ const PROTECTED_COLUMNS = [
   "reply_to",
   "reply_claim_id",
   "reply_claimed_at",
+  "provider",
+  "execution_claim_id",
+  "execution_started_at",
 ];
 const PERMISSION_DENIED = "42501";
+const GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+const CIPHERTEXT = `v1.${"A".repeat(16)}.${"B".repeat(40)}`;
 
 type OwnedTable = (typeof OWNED_TABLES)[number];
 
@@ -114,6 +120,11 @@ async function seedOwner(gate: SqlGate, userId: string): Promise<Owned> {
     [messageId, userId],
   );
   await gate.admin("insert into tasks (user_id, mode, title) values ($1, 'personal', 'gate')", [userId]);
+  await gate.admin(
+    `insert into connected_accounts (user_id, provider, account_email, scopes, token_ciphertext)
+     values ($1, 'google', 'gate@example.com', $2, $3)`,
+    [userId, [GMAIL_READ_SCOPE], CIPHERTEXT],
+  );
   await gate.admin("insert into usage_windows (user_id, window_start, request_count) values ($1, now(), 1)", [userId]);
   await gate.admin(
     `insert into spend_reservations (user_id, provider, usage_day, period_kind, period_start, held, charged)
@@ -165,6 +176,12 @@ function insertFor(table: OwnedTable, owner: string, refs: Owned): [string, unkn
       return ["insert into action_log (user_id, event) values ($1, 'proposed')", [owner]];
     case "reminders":
       return ["insert into reminders (user_id, mode, title, due_at) values ($1, 'personal', 'x', now())", [owner]];
+    case "connected_accounts":
+      return [
+        `insert into connected_accounts (user_id, provider, account_email, scopes, token_ciphertext)
+         values ($1, 'google', 'x@example.com', $2, $3)`,
+        [owner, [GMAIL_READ_SCOPE], CIPHERTEXT],
+      ];
     case "context_records":
       return [
         `insert into context_records (message_id, user_id, model, history_message_count, history_chars, prompt_version)
