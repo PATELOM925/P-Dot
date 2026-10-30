@@ -14,19 +14,20 @@ export function normalizePhrase(text: string): string {
   return text.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
 }
 
-const WORD_CHAR = /[\p{L}\p{N}]/u;
+const WORD_CHAR = /^[\p{L}\p{N}\p{M}]$/u;
 
-/** True when `phrase` is one contiguous part of `message` that starts and ends at a word edge. */
+/** True when `phrase` is one contiguous part of `message` that starts and ends at a word edge. Compares code points. */
 export function isUserPhrase(phrase: string, message: string): boolean {
   const wanted = normalizePhrase(phrase);
-  if (wanted.length === 0 || Array.from(wanted).length > MAX_PHRASE_CHARS) return false;
+  const wantedChars = Array.from(wanted);
+  if (wantedChars.length === 0 || wantedChars.length > MAX_PHRASE_CHARS) return false;
   const text = normalizePhrase(message);
+  const first = WORD_CHAR.test(wantedChars[0]!);
+  const last = WORD_CHAR.test(wantedChars.at(-1)!);
   for (let at = text.indexOf(wanted); at !== -1; at = text.indexOf(wanted, at + 1)) {
-    const before = at === 0 ? "" : text[at - 1]!;
-    const after = text[at + wanted.length] ?? "";
-    const startsAtEdge = !(WORD_CHAR.test(before) && WORD_CHAR.test(wanted[0]!));
-    const endsAtEdge = !(WORD_CHAR.test(after) && WORD_CHAR.test(wanted.at(-1)!));
-    if (startsAtEdge && endsAtEdge) return true;
+    const before = Array.from(text.slice(0, at)).at(-1) ?? "";
+    const after = Array.from(text.slice(at + wanted.length))[0] ?? "";
+    if (!(first && WORD_CHAR.test(before)) && !(last && WORD_CHAR.test(after))) return true;
   }
   return false;
 }

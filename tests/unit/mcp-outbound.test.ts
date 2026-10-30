@@ -38,6 +38,17 @@ describe("user_phrase", () => {
     expect(isUserPhrase("日本 旅行", "日本 旅行 の 予定")).toBe(true);
   });
 
+  it("compares whole code points at the word edges: astral letters, combining marks and emoji", () => {
+    expect(isUserPhrase("plan", "𐐀plan𐐀")).toBe(false);
+    expect(isUserPhrase("plan", "𐐀plan")).toBe(false);
+    expect(isUserPhrase("𐐀plan𐐀", "see 𐐀plan𐐀 now")).toBe(true);
+    expect(isUserPhrase("plan", "plan\u0301s")).toBe(false);
+    expect(isUserPhrase("a\u0308b", "x a\u0308b y")).toBe(true);
+    expect(isUserPhrase("b", "a\u0308b")).toBe(false);
+    expect(isUserPhrase("plan", "🙂plan🙂")).toBe(true);
+    expect(isUserPhrase("🙂 plan", "my 🙂 plan today")).toBe(true);
+  });
+
   it("refuses private text that is not in the message, also when it shares its words", () => {
     expect(isUserPhrase("my salary is 90000", "what is my plan")).toBe(false);
   });
