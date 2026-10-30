@@ -10,6 +10,15 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 
 ### Added
 - **The README explains the hackathon entry.** Problem: the hackathon rules ask the README to show how the project uses NVIDIA models and Nebius Token Factory, and two README lines were old. Resolution: a "Hackathon: Nebius x NVIDIA" section with the Nemotron tier table, the Token Factory and Tavily use, and fixed status and setup lines. ([PR #21](https://github.com/PATELOM925/P-Dot/pull/21))
+- **Tool calls, a tool hop loop with web search, and the eval port** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22))
+  - Problem: the assistant had no tools. Tirth's tool loop on an old branch had no spend hold, parsed arguments by hand, offered web search without the user's toggle and showed model plan text. The PRD still excluded memory, documents and actions.
+  - Resolution:
+    - The Nebius adapter sends tools and joins streamed tool calls. The executor commits on whole tool calls.
+    - `runChatTurn` runs at most 2 tool hops and a final pass with tools off. Each attempt of each hop holds and settles spend, a refused hold stops with `budget_exhausted`, and all hops share one deadline.
+    - One tool registry with zod arguments, chosen from request flags. `web_search` is offered only with the search toggle on, runs once, and holds a Tavily credit.
+    - A `status` event names the tool and the search query only. Chat shows it.
+    - Prompt wording fixes, the wider neutralize list, and the 50-case eval suite. The mock run writes no file, and the live run spends money and never runs in CI.
+    - Decision 0013, the PRD scope change and ARCHITECTURE.
 - **A resend or a retry no longer repeats saved or running work** ([decision 0012](docs/decisions/0012-resend-idempotency.md)). ([PR #20](https://github.com/PATELOM925/P-Dot/pull/20))
   - Problem: after a 500, the screen gives the draft back and the user sends it again. The resend saved an empty or second conversation, a second user message, a second memory or a second ready document, and a reply whose response was lost never got its "what was sent" record (eight `it.fails` tests). Two requests could also each write a reply to one message, and a stream cancelled before its first read kept its Nebius hold open.
   - Resolution:

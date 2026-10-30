@@ -23,7 +23,8 @@
     "deploy": "opennextjs-cloudflare build && node scripts/check-worker-env.mjs && opennextjs-cloudflare deploy",
     "upload": "opennextjs-cloudflare build && node scripts/check-worker-env.mjs && opennextjs-cloudflare upload",
     "check:worker-env": "node scripts/check-worker-env.mjs",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "eval:live": "vitest run --config tests/evals/vitest.live.config.ts"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "1.20.11",

@@ -27,7 +27,7 @@ The executor ([`src/server/assistant/executor.ts`](src/server/assistant/executor
 
 Embeddings for memories and documents use `Qwen/Qwen3-Embedding-8B` on the same Token Factory key (1,024 dimensions), stored in Supabase with pgvector.
 
-In review ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22)): a tool-calling loop on the same tiers, with `web_search` as the first tool. Planned: `search_documents`, `search_memories`, and the `propose_task`, `propose_reminder` and `save_memory` tools, which become approval cards, and chat titles written by Nemotron.
+Tool calls ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22), [decision 0013](docs/decisions/0013-ai-tools-and-scope.md)): a tool-calling loop runs on the standard tier or above, with `web_search` as the first tool. It runs at most 2 tool steps and a final answer step, and holds spend for each step. Planned: `search_documents`, `search_memories`, and the `propose_task`, `propose_reminder` and `save_memory` tools, which become approval cards, and chat titles written by Nemotron.
 
 ### Where Token Factory sped up the work
 
@@ -39,7 +39,7 @@ In review ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22)): a tool-callin
 
 ### Tavily
 
-When the user turns on web search (the "+" menu in chat), the server calls the Tavily Search API ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts)) with basic depth and up to 5 results. Excerpts are cut to 1,200 characters and unsafe URLs are dropped. Results go to Nemotron inside a delimited `<web_search_results>` block marked as untrusted, and the reply lists the sources with links. A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. Tavily credits have their own caps in the spend guard ([decision 0006](docs/decisions/0006-global-spend-guard.md)). In review ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22)): with the toggle on, Nemotron calls `web_search` as a tool and picks the query itself.
+When the user turns on web search (the "+" menu in chat), the server calls the Tavily Search API ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts)) with basic depth and up to 5 results. Excerpts are cut to 1,200 characters and unsafe URLs are dropped. Results go to Nemotron inside a delimited `<web_search_results>` block marked as untrusted, and the reply lists the sources with links. A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. Tavily credits have their own caps in the spend guard ([decision 0006](docs/decisions/0006-global-spend-guard.md)). Since [PR #22](https://github.com/PATELOM925/P-Dot/pull/22), with the toggle on, Nemotron calls `web_search` as a tool and picks the query itself.
 
 ### Other Nebius tools
 
