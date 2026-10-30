@@ -99,6 +99,8 @@ export interface AssistantDeps {
   ownData?: OwnDataServices | null;
   /** Make a title with the model for a new conversation, after the reply. Off when missing. */
   titles?: boolean;
+  /** The verified `is_anonymous` claim of the session. A demo session never reads a connected app. */
+  anonymous?: boolean;
   /** Reads of the user's connected apps (decision 0016). Null when connectors are not set up. */
   connectors?: ConnectorServices | null;
 }
@@ -194,7 +196,7 @@ export async function prepareChatTurn(
   const { userId, requestId, request } = input;
   const requestedApps = request.connectors ?? [];
   // A demo session never reads a connected app: refused before the quota, any hold or any token (decision 0016).
-  if (requestedApps.length > 0 && deps.connectors?.anonymous) {
+  if (requestedApps.length > 0 && (deps.anonymous === true || deps.connectors?.anonymous === true)) {
     return { ok: false, status: 403, code: "account_required", message: "Create an account to use connected apps with P-Dot." };
   }
 

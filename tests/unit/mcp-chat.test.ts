@@ -211,6 +211,20 @@ describe("connector reads in chat", () => {
     expect(s.notion.calls).toEqual([]);
   });
 
+  it("refuses an anonymous session with an app on also when connectors are not set up", async () => {
+    const quota = new FakeQuota();
+    const { provider, requests } = scripted([{ text: "Hi." }]);
+    const { deps } = fakeDeps({ quota, provider });
+    deps.anonymous = true;
+    deps.connectors = null;
+    const { prepared } = await runTurn(deps, send("hello", { connectors: ["notion"] }));
+    expect(prepared).toMatchObject({ ok: false, status: 403, code: "account_required" });
+    expect(quota.calls).toBe(0);
+    expect(requests).toEqual([]);
+    deps.anonymous = false;
+    expect((await runTurn(deps, send("hello", { connectors: ["notion"] }))).prepared.ok).toBe(true);
+  });
+
   it("never offers web_search again in a conversation after a turn with an app on, also when its read failed", async () => {
     const s = await setup([{ calls: [call("notion_search", { query: "plan" })] }, { text: "No luck." }]);
     s.notion.failMcp(503);

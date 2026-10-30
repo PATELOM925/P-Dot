@@ -43,6 +43,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
     titles: true,
+    anonymous: auth.isAnonymous === true,
     connectors: connectorServicesFor(auth),
     ownData: {
       embedder: createBudgetedEmbedder({
