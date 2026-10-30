@@ -44,6 +44,7 @@ src/
       tasks/               to-do items per mode
       memories/, documents/, actions/, action-log/, reminders/,
       messages/[id]/context/   decision 0009
+      documents/image-text/    POST: the text in one image, one vision call (decision 0019)
       health/              GET liveness + configured integrations
       connectors/google/   connect, callback, disconnect (decision 0014)
   components/layout/       workspace header, navigation, mode switch

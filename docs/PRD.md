@@ -82,7 +82,7 @@ Accepted on 2026-10-30 ([decision 0013](decisions/0013-ai-tools-and-scope.md)).
 - Tools act only with the user's approval first. A tool that changes anything writes a proposal; the action runs only after the user approves it. Read tools (web search, the user's own memories and documents) change nothing.
 - The assistant may call web search only when the user turned search on for the message.
 - Memory is visible to the user. The user can add, edit, move and delete each memory. A memory that the assistant suggests waits until the user keeps it, and only kept memories are used in replies.
-- Documents are plain text or Markdown that the user adds. The assistant can search them in the current mode.
+- Documents are the text of files that the user adds: text, Markdown, CSV, JSON, HTML, XML, code, PDF, Word (.docx) and images. For an image, P-Dot keeps its text and a short description, not the image. Video and audio files are not supported ([decision 0019](decisions/0019-document-types.md)). The assistant can search documents in the current mode.
 - Retrieved memories, documents and web results are untrusted data. They go in the user turn, never in the system instructions, and cannot authorize an action.
 - The screen shows which tool runs. "What was sent" shows which memories and document parts a reply used.
 - A connected Google account (Gmail, Calendar) is being added in decision 0014 by another pull request. Every outside action stays behind approval.
