@@ -9,6 +9,14 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Replies use kept memories, the assistant can search the user's documents and propose tasks, reminders and memories, and new chats get titles from the model** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #24](https://github.com/PATELOM925/P-Dot/pull/24))
+  - Problem: replies did not use memories or documents, the context record always had empty memory and document lists, nothing created proposals for the approval cards, and titles came only from the first message.
+  - Resolution:
+    - The top 4 active memories of the mode go in the final user turn as an untrusted block. The embedding holds spend, and the first hold prices the block.
+    - `search_documents` and `search_memories` search the current mode, at most 5 matches, shown by title. Their IDs go in the context record.
+    - `propose_task`, `propose_reminder` and `save_memory` write proposals or a proposed memory before `done`, and do not write a second copy on "Retry reply".
+    - A short fast-tier call with a spend hold makes the title of a new conversation and sends a `title` event.
+    - 10 hallucination guardrail tests on main's fakes, and updated screen copy.
 - **Tool calls, a tool hop loop with web search, and the eval port** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22))
   - Problem: the assistant had no tools. Tirth's tool loop on an old branch had no spend hold, parsed arguments by hand, offered web search without the user's toggle and showed model plan text. The PRD still excluded memory, documents and actions.
   - Resolution:
