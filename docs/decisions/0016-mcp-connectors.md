@@ -102,6 +102,16 @@ Google tools (decision 0014, section 3, PR #30) and these connectors are exclusi
 - The conversation stop for the model-written `web_search` checks **both** route reasons, `google_request` and `connector_read`, through `hasPrivateSourceReply`. A failed check counts as a match.
 - A `gmail_search` query goes only to the user's own Google account, under the Google rules of decision 0014.
 
+### Auto pick from the message (2026-10-30)
+
+Live test: with Google and Notion connected, "Can u check my notion ?" got "I don't have access to your Notion", because no source was on. Users did not find the "+" menu.
+
+- When the user picked no source for a message, the composer turns on each connected app that the message names (`autoSources` in `src/features/chat/composer-sources.ts`). "notion" and "linear" are also plain words, so "the notion of" and "linear algebra" do not match. If no app is named, Google turns on for a message about email or the calendar (`src/lib/google-words.ts`), except a request for a task, a reminder or a memory ("Remind me to mail the package"). A request to schedule a meeting or a call still turns Google on.
+- A named app wins over Google, so the one-source rule above holds.
+- The pick shows as the same chip as a manual pick, before the user sends. The user can turn it off. A manual pick, or turning a chip off, stops the auto pick for that draft.
+- The server does not change what it allows: the request is the same as a manual pick.
+- When an app is on, the first hop must call its search or list tool (`forcedToolChoice`), with the same "auto" retry when the model refuses. The prompt says that earlier "no access" replies in the conversation are no longer true. When neither Google nor an app is on, the prompt tells the model to say which source to turn on, not that it has no access.
+
 ### Approval effects
 
 The reads are `read_sensitive` (decision 0011). The toggle for one message is the approval for the reads of that message, as decision 0014 section 3 decided for Google. Auto mode never turns a toggle on. There are no writes.

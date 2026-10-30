@@ -25,6 +25,19 @@ describe("citation chips", () => {
     expect(parseInline("[1](https://a.com)")[0]).toMatchObject({ type: "link" });
   });
 
+  it("parses the forms a reply saved before the server fix can hold as citations", () => {
+    expect(parseInline("A 【2†L1-L4】 B 【1】 C [2†source].")).toEqual([
+      { type: "text", text: "A " },
+      { type: "cite", n: 2 },
+      { type: "text", text: " B " },
+      { type: "cite", n: 1 },
+      { type: "text", text: " C " },
+      { type: "cite", n: 2 },
+      { type: "text", text: "." },
+    ]);
+    expect(render("Union Cafe 【2†L1-L4】.")).toContain('href="#src-m1-2"');
+  });
+
   it("renders [1] as a chip linked to the source line, with the host in the tooltip", () => {
     const out = render("Hidden rooms [1].");
     expect(out).toContain('href="#src-m1-1"');
