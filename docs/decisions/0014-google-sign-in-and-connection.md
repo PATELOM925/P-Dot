@@ -50,6 +50,7 @@ The redirect URI is `${SITE_URL}/api/connectors/google/callback`. So Connect wor
 
 - Google answers 200: revoked. Google answers 400: an error, for example a token that is already invalid. In both cases the route deletes the row and answers "Disconnected."
 - A timeout or a 5xx from Google: the route still deletes the row, because the user asked to stop. Without the ciphertext and the client secret together, nobody can use the token. The answer says: "Disconnected from P-Dot. Google did not confirm. You can also remove P-Dot at myaccount.google.com/permissions."
+- The delete names the ciphertext that was read and revoked. If another tab connected Google meanwhile, the delete finds no row, the new connection stays, and the answer says the connection changed.
 - The delete fails after a revoke: the row stays with a dead token. The next use gets `invalid_grant` and the card shows "Connect again". A second Disconnect revokes again (Google answers 400) and deletes. So a retry is safe.
 
 ### Token store
@@ -171,6 +172,10 @@ The lease is 120 seconds (`EXTERNAL_ACTION_LEASE_SECONDS`), much more than the l
 
 For the internal kinds, `decided_by_function = true` means the database ran the action. For an external kind it means the claim and the finish went through the functions with a matching claim. The Gmail or Calendar ID in the result is what the Worker reported with the user's session. A user who calls `finish_external_action` directly with the own claim could store a false ID for the own action. Without a server secret this cannot be prevented ([0009](0009-memory-documents-actions.md), "Context records stay user-written"). It affects only that user's own record.
 
+### Anonymous demo sessions
+
+Connect (start and callback), Disconnect, and the approval and recovery of `send_email` and `create_calendar_event` answer 403 `account_required` for an anonymous session. The flag is the `is_anonymous` claim from `getClaims()` (a verified JWT), never a value from the client. The Connectors card says "Create an account to connect Google". `accountRequired()` in `src/server/http/account.ts` does the check, so a later shared route option can replace it.
+
 ## 5. Google API modules (server only)
 
 `src/server/google/`: plain `fetch` with an `AbortSignal` timeout, zod for every answer, no `googleapis` package (too large for a Worker). Each function takes a token source and a `fetch`, so the tests use fakes.
@@ -180,7 +185,7 @@ For the internal kinds, `decided_by_function = true` means the database ran the 
 | `gmailSearch(query, max)` | `messages.list`, then `messages.get` with `format=metadata` for each | At most 10 results. From, To, Subject, Date and the snippet, each cut to a limit. |
 | `gmailRead(id)` | `messages.get` with `format=full` | Plain text only: the `text/plain` part, or the `text/html` part with tags removed. At most 8,000 characters, with a flag when cut. |
 | `calendarListEvents(from, to, max)` | `events.list` on `primary`, `singleEvents=true`, `orderBy=startTime` | At most 25 events and 31 days. Title, start, end, location, attendee count. |
-| `gmailSend(payload)` | `messages.send` with a base64url RFC 2822 message | Headers built only from the checked payload. A non-ASCII subject uses RFC 2047. |
+| `gmailSend(payload)` | `messages.send` with a base64url RFC 2822 message | Headers built only from the checked payload. The `To` header folds after each comma, so each line stays below 998 characters. A non-ASCII subject uses RFC 2047. The payload allows 10 recipients and 2,000 characters for all of them together. |
 | `calendarCreateEvent(payload, eventId)` | `events.insert` on `primary` with the event ID; `sendUpdates` is always sent: `all` when there are attendees, else `none` | 409 means "already created". |
 
 Timeouts: 10 seconds for token calls and reads, 15 seconds for a send or an insert. Errors map to classes: `unauthorized` (401, or a dead token), `forbidden` (403, for example a missing scope), `rejected` (other 4xx), `unavailable` (429, 5xx), `timeout`, `bad_response` (the answer does not match the schema). Retries: none in this change. The tool loop can retry a read; a write is never retried except through the calendar reclaim.
