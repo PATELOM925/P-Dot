@@ -18,9 +18,10 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - `propose_task`, `propose_reminder` and `save_memory` write proposals or a proposed memory before `done`, and do not write a second copy on "Retry reply".
     - A short fast-tier call with a spend hold makes the title of a new conversation and sends a `title` event.
     - The chat route's write-fault sweep now also covers the proposal, memory and title writes: a resend or Retry reply never repeats a proposal or a memory.
-    - After `done`, chat shows no error for a title event, Stop or a cut stream, and the composer is free at once.
+    - After `done`, chat shows no error for a title event, Stop or a cut stream, and the composer is free at once. A late end of an earlier stream cannot free a newer send.
+    - A generated title never overwrites a rename by the user: the rename applies only while the title is still the first one.
     - 10 hallucination guardrail tests on main's fakes, and updated screen copy.
-    - One-time effect: a chat tab opened before this deploy does not know the `title` event and shows an error after the reply, though the reply is saved. A reload fixes it.
+    - One-time effect: a chat tab opened before this deploy skips the new `title` event, but its message box stays busy after the reply until the title step ends (at most 15 seconds). A reload fixes it.
 - **The README explains the hackathon entry.** Problem: the hackathon rules ask the README to show how the project uses NVIDIA models and Nebius Token Factory, and two README lines were old. Resolution: a "Hackathon: Nebius x NVIDIA" section with the Nemotron tier table, the Token Factory and Tavily use, and fixed status and setup lines. ([PR #21](https://github.com/PATELOM925/P-Dot/pull/21))
 - **Tool calls, a tool hop loop with web search, and the eval port** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22))
   - Problem: the assistant had no tools. Tirth's tool loop on an old branch had no spend hold, parsed arguments by hand, offered web search without the user's toggle and showed model plan text. The PRD still excluded memory, documents and actions.

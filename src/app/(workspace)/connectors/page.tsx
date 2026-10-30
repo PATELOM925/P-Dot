@@ -54,7 +54,7 @@ export default async function ConnectorsPage() {
       href: "/memory#documents",
       link: "Open your documents",
       status: status.documents,
-      can: "keep text and Markdown files you add. P-Dot can search them when it replies.",
+      can: "keep text and Markdown files you add. P-Dot searches them when you ask about your notes, documents or files.",
     },
   ];
 
