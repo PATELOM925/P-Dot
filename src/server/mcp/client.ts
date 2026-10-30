@@ -176,7 +176,7 @@ export function openMcpSession(options: McpSessionOptions): McpSession {
           method: "POST",
           headers,
           body: JSON.stringify(body),
-          redirect: "error",
+          redirect: "manual",
           signal: AbortSignal.any([options.signal, controller.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
         });
       } catch (error) {

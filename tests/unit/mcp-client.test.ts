@@ -136,7 +136,7 @@ describe("MCP client", () => {
       },
     });
     await s.callTool("notion-search", { query: "x" });
-    expect(seen.every((init) => init.redirect === "error")).toBe(true);
+    expect(seen.every((init) => init.redirect === "manual")).toBe(true);
     controller.abort();
     await expect(s.callTool("notion-search", { query: "x" })).rejects.toThrow();
   });

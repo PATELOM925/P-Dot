@@ -110,7 +110,7 @@ export async function googleRequest<T>(
   let response: Response;
   const timeout = AbortSignal.timeout(timeoutMs);
   try {
-    response = await fetchImpl(url, { ...init, signal: signal ? AbortSignal.any([timeout, signal]) : timeout, redirect: "error" });
+    response = await fetchImpl(url, { ...init, signal: signal ? AbortSignal.any([timeout, signal]) : timeout, redirect: "manual" });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
     throw new GoogleApiError(name === "TimeoutError" || name === "AbortError" ? "timeout" : "network", null);

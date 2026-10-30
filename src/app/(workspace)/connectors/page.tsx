@@ -145,8 +145,8 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           <h2 id="accounts-heading">Your accounts</h2>
           <p className="muted">
             Accounts you connect. P-Dot reads them only for a message where you allow it, and it asks before it sends or
-            adds anything. In chat, turn on Notion, Linear or Todoist in the + menu to let P-Dot read it for one message.
-            Replies do not use Google yet; that step is still being built.
+            adds anything. In chat, turn on Use Google, Notion, Linear or Todoist in the + menu to let P-Dot read it for one
+            message.
           </p>
         </div>
         <div className="card-grid">
