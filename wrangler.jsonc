@@ -34,9 +34,9 @@
     "NEBIUS_HEAVY_THINKING_BUDGET": "1024",
     "NEBIUS_HEDGE_AFTER_MS": "1500",
     // Global spend caps for all users together. See docs/decisions/0006-global-spend-guard.md.
-    "NEBIUS_DAILY_CAP_USD": "1.00",
-    "NEBIUS_TOTAL_CAP_USD": "20.00",
-    "NEBIUS_USER_DAILY_CAP_USD": "0.25",
+    "NEBIUS_DAILY_CAP_USD": "10.00",
+    "NEBIUS_TOTAL_CAP_USD": "25.00",
+    "NEBIUS_USER_DAILY_CAP_USD": "0.50",
     "TAVILY_DAILY_CREDITS": "40",
     "TAVILY_MONTHLY_CREDITS": "800",
     "TAVILY_USER_DAILY_CREDITS": "10"
@@ -61,9 +61,9 @@
     "NEBIUS_HEAVY_THINKING_BUDGET": "1024",
     "NEBIUS_HEDGE_AFTER_MS": "1500",
     // Global spend caps for all users together. See docs/decisions/0006-global-spend-guard.md.
-    "NEBIUS_DAILY_CAP_USD": "1.00",
-    "NEBIUS_TOTAL_CAP_USD": "20.00",
-    "NEBIUS_USER_DAILY_CAP_USD": "0.25",
+    "NEBIUS_DAILY_CAP_USD": "10.00",
+    "NEBIUS_TOTAL_CAP_USD": "25.00",
+    "NEBIUS_USER_DAILY_CAP_USD": "0.50",
     "TAVILY_DAILY_CREDITS": "40",
     "TAVILY_MONTHLY_CREDITS": "800",
     "TAVILY_USER_DAILY_CREDITS": "10"

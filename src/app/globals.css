@@ -1004,7 +1004,9 @@ textarea::placeholder {
   color: var(--accent-text);
 }
 
+/* Stronger than `.round-button:hover`, which would paint Send light grey under its white icon. */
 .round-button-solid:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--accent-gradient);
   filter: brightness(1.08);
 }
 

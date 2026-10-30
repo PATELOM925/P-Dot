@@ -27,16 +27,58 @@ export type Block =
   | { type: "table"; head: Inline[][]; rows: Inline[][][]; align: ("left" | "center" | "right" | null)[] }
   | { type: "rule" };
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`]*)$/;
-const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
-const RULE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// Line rules are plain scans or regexes with one unambiguous quantifier, so a long line costs
+// linear time. No nested or adjacent overlapping quantifiers (tests/unit/markdown.test.ts).
+const HEADING_START = /^ {0,3}(#{1,6})(?=[ \t]|$)/;
 const QUOTE = /^ {0,3}>\s?(.*)$/;
+
+function isFenceLine(line: string): boolean {
+  const fence = FENCE.exec(line);
+  return fence !== null && !(fence[1]![0] === "`" && fence[2]!.includes("`"));
+}
 const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
-const TABLE_SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const SEPARATOR_CELL = /^:?-+:?$/;
+
+/** "## Title ##" as level 2 and "Title", or null. */
+function readHeading(line: string): { level: number; text: string } | null {
+  const start = HEADING_START.exec(line);
+  if (!start) return null;
+  let text = line.slice(start[0].length).trim();
+  // A closing run of "#" counts only after a space, as in CommonMark.
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "#") end -= 1;
+  if (end < text.length && (end === 0 || text[end - 1] === " " || text[end - 1] === "\t")) text = text.slice(0, end).trim();
+  return { level: start[1]!.length, text };
+}
+
+/** "---", "* * *" or "___": 3 or more of one mark, with spaces only between them. */
+function isRule(line: string): boolean {
+  if (/^ {4}/.test(line)) return false;
+  let mark = "";
+  let count = 0;
+  for (const char of line) {
+    if (char === " " || char === "\t") continue;
+    if (char !== "-" && char !== "*" && char !== "_") return false;
+    if (mark && char !== mark) return false;
+    mark = char;
+    count += 1;
+  }
+  return count >= 3;
+}
+
+/** The row under a table head: cells like "---", ":--", "--:" or ":-:", split by "|". */
+function isTableSeparator(line: string): boolean {
+  let row = line.trim();
+  if (row.startsWith("|")) row = row.slice(1);
+  if (row.endsWith("|")) row = row.slice(0, -1);
+  if (!row.includes("-")) return false;
+  return row.split("|").every((cell) => SEPARATOR_CELL.test(cell.trim()));
+}
 const MAX_DEPTH = 8;
 
 function isBlockStart(line: string): boolean {
-  return FENCE.test(line) || HEADING.test(line) || RULE.test(line) || QUOTE.test(line) || LIST_ITEM.test(line);
+  return isFenceLine(line) || readHeading(line) !== null || isRule(line) || QUOTE.test(line) || LIST_ITEM.test(line);
 }
 
 function splitRow(line: string): string[] {
@@ -82,7 +124,7 @@ export function parseMarkdown(source: string, depth = 0): Block[] {
       continue;
     }
 
-    const fence = FENCE.exec(line);
+    const fence = isFenceLine(line) ? FENCE.exec(line) : null;
     if (fence) {
       const marker = fence[1]!;
       const body: string[] = [];
@@ -102,14 +144,14 @@ export function parseMarkdown(source: string, depth = 0): Block[] {
       continue;
     }
 
-    const heading = HEADING.exec(line);
+    const heading = readHeading(line);
     if (heading) {
-      blocks.push({ type: "heading", level: heading[1]!.length, content: parseInline(heading[2]!) });
+      blocks.push({ type: "heading", level: heading.level, content: parseInline(heading.text) });
       i += 1;
       continue;
     }
 
-    if (RULE.test(line)) {
+    if (isRule(line)) {
       blocks.push({ type: "rule" });
       i += 1;
       continue;
@@ -156,7 +198,7 @@ export function parseMarkdown(source: string, depth = 0): Block[] {
       continue;
     }
 
-    if (line.includes("|") && i + 1 < lines.length && TABLE_SEPARATOR.test(lines[i + 1]!) && lines[i + 1]!.includes("-")) {
+    if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1]!)) {
       const head = splitRow(line);
       const align = splitRow(lines[i + 1]!).map((cell) => {
         const left = cell.startsWith(":");
@@ -219,6 +261,7 @@ function parseList(lines: string[], depth: number): Block {
 }
 
 const BARE_URL = /https?:\/\/[^\s<>()]+/y;
+const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "'", '"']);
 const CITE = /\[(\d{1,2})\]/y;
 
 /** Longest link destination read, so a "(" with no ")" costs at most this much. */
@@ -363,7 +406,9 @@ export function parseInline(text: string, depth = 0): Inline[] {
       BARE_URL.lastIndex = i;
       const url = BARE_URL.exec(text);
       if (url) {
-        const trimmed = url[0].replace(/[.,;:!?'"]+$/, "");
+        let urlEnd = url[0].length;
+        while (urlEnd > 0 && TRAILING_PUNCTUATION.has(url[0][urlEnd - 1]!)) urlEnd -= 1;
+        const trimmed = url[0].slice(0, urlEnd);
         flush();
         out.push({ type: "link", href: trimmed, children: [{ type: "text", text: trimmed }] });
         i += trimmed.length;
