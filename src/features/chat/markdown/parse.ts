@@ -8,7 +8,9 @@ export type Inline =
   | { type: "code"; text: string }
   | { type: "link"; href: string; children: Inline[] }
   | { type: "image"; href: string; alt: string }
-  | { type: "break" };
+  | { type: "break" }
+  /** A citation mark "[n]": source n of the reply (1-based). */
+  | { type: "cite"; n: number };
 
 export interface ListItem {
   task: "open" | "done" | null;
@@ -25,7 +27,7 @@ export type Block =
   | { type: "table"; head: Inline[][]; rows: Inline[][][]; align: ("left" | "center" | "right" | null)[] }
   | { type: "rule" };
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`]*)$/;
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
 const QUOTE = /^ {0,3}>\s?(.*)$/;
@@ -96,7 +98,7 @@ export function parseMarkdown(source: string, depth = 0): Block[] {
         body.push(current);
         i += 1;
       }
-      blocks.push({ type: "code", lang: fence[2] ?? "", text: body.join("\n"), open });
+      blocks.push({ type: "code", lang: (fence[2] ?? "").trim(), text: body.join("\n"), open });
       continue;
     }
 
@@ -217,6 +219,7 @@ function parseList(lines: string[], depth: number): Block {
 }
 
 const BARE_URL = /https?:\/\/[^\s<>()]+/y;
+const CITE = /\[(\d{1,2})\]/y;
 
 /** Longest link destination read, so a "(" with no ")" costs at most this much. */
 const MAX_DESTINATION_CHARS = 2100;
@@ -289,6 +292,16 @@ export function parseInline(text: string, depth = 0): Inline[] {
         flush();
         out.push({ type: "code", text: text.slice(i + ticks.length, end).trim() || text.slice(i + ticks.length, end) });
         i = end + ticks.length;
+        continue;
+      }
+    }
+    if (char === "[") {
+      CITE.lastIndex = i;
+      const cite = CITE.exec(text);
+      if (cite && text[i + cite[0].length] !== "(") {
+        flush();
+        out.push({ type: "cite", n: Number(cite[1]) });
+        i += cite[0].length;
         continue;
       }
     }

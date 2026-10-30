@@ -1,7 +1,10 @@
 "use client";
 
-import { Fragment, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useContext, useMemo, useState, type ReactNode } from "react";
+import { MAX_RICH_BLOCKS_PER_REPLY, parseRichBlock, richBlockKind, type RichBlockKind } from "@/lib/rich-blocks";
 import { toSafeHttpUrl } from "@/lib/safe-url";
+import { RichBlockView } from "../rich/RichBlocks";
+import { CiteChip, CiteContext } from "./cite";
 import { parseMarkdown, type Block, type Inline } from "./parse";
 
 // Every node becomes a React element or text. No HTML string is ever inserted.
@@ -10,7 +13,7 @@ function SafeLink({ href, children }: { href: string; children: ReactNode }) {
   const url = toSafeHttpUrl(href);
   if (!url) return <>{children}</>;
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer nofollow">
+    <a href={url} target="_blank" rel="noopener noreferrer nofollow" referrerPolicy="no-referrer" title={url}>
       {children}
       <span className="visually-hidden"> (opens in a new tab)</span>
     </a>
@@ -39,12 +42,14 @@ function renderInline(nodes: Inline[]): ReactNode[] {
           </SafeLink>
         );
       case "image":
-        // Images from model output never load. The alt text stands in, as a link when the URL is safe.
+        // Images from model output never load: a remote image would tell its server that the user read the reply.
         return (
-          <SafeLink key={index} href={node.href}>
-            {node.alt || "Image"}
-          </SafeLink>
+          <span key={index} className="md-image-off">
+            Image not shown: {node.alt.slice(0, 80) || "no description"}
+          </span>
         );
+      case "cite":
+        return <CiteChip key={index} n={node.n} />;
     }
   });
 }
@@ -75,7 +80,46 @@ function CodeBlock({ lang, text }: { lang: string; text: string }) {
   );
 }
 
-function renderBlocks(blocks: Block[]): ReactNode[] {
+interface RenderState {
+  sourceCount: number;
+  /** Rich blocks shown so far in this reply. */
+  rich: number;
+  /** The text is still arriving, so an open block fence is not finished yet. */
+  streaming: boolean;
+}
+
+const RICH_LABELS: Record<RichBlockKind, string> = {
+  places: "places",
+  table: "table",
+  checklist: "checklist",
+  steps: "steps",
+};
+
+function renderCode(block: Extract<Block, { type: "code" }>, key: number, state: RenderState): ReactNode {
+  const kind = richBlockKind(block.lang);
+  if (!kind) return <CodeBlock key={key} lang={block.lang} text={block.text} />;
+  // The JSON of a block never shows while it streams, only a placeholder of the card.
+  if (block.open && state.streaming) {
+    return (
+      <div key={key} className="rich-card rich-pending" aria-hidden="true">
+        Preparing {RICH_LABELS[kind]}…
+      </div>
+    );
+  }
+  const rich = state.rich < MAX_RICH_BLOCKS_PER_REPLY ? parseRichBlock(kind, block.text, state.sourceCount) : null;
+  if (!rich) {
+    return (
+      <div key={key}>
+        <p className="hint rich-failed">P-Dot could not show this as a card.</p>
+        <CodeBlock lang={block.lang} text={block.text} />
+      </div>
+    );
+  }
+  state.rich += 1;
+  return <RichBlockView key={key} block={rich} />;
+}
+
+function renderBlocks(blocks: Block[], state: RenderState): ReactNode[] {
   return blocks.map((block, index) => {
     switch (block.type) {
       case "paragraph":
@@ -88,9 +132,9 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
           </p>
         );
       case "code":
-        return <CodeBlock key={index} lang={block.lang} text={block.text} />;
+        return renderCode(block, index, state);
       case "quote":
-        return <blockquote key={index}>{renderBlocks(block.children)}</blockquote>;
+        return <blockquote key={index}>{renderBlocks(block.children, state)}</blockquote>;
       case "rule":
         return <hr key={index} />;
       case "list": {
@@ -99,7 +143,7 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
             {item.task && <span aria-hidden="true">{item.task === "done" ? "☑ " : "☐ "}</span>}
             {item.task && <span className="visually-hidden">{item.task === "done" ? "Done: " : "Not done: "}</span>}
             {renderInline(item.content)}
-            {item.children.length > 0 && renderBlocks(item.children)}
+            {item.children.length > 0 && renderBlocks(item.children, state)}
           </li>
         ));
         return block.ordered ? (
@@ -142,7 +186,8 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
 }
 
 /** An assistant reply as safe Markdown. Used for saved replies and for the text that streams in. */
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, streaming = false }: { text: string; streaming?: boolean }) {
+  const sourceCount = useContext(CiteContext)?.sources.length ?? 0;
   const blocks = useMemo(() => parseMarkdown(text), [text]);
-  return <div className="message-content md">{renderBlocks(blocks)}</div>;
+  return <div className="message-content md">{renderBlocks(blocks, { sourceCount, rich: 0, streaming })}</div>;
 }
