@@ -11,6 +11,7 @@ import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
+import { clearCarriedDraft, peekCarriedDraft, useModeSwitch } from "@/features/mode/useModeSwitch";
 import { MCP_SERVER_NAMES, type McpServerId } from "@/lib/connectors";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type {
@@ -34,7 +35,7 @@ import {
 import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
-import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
+import { ToolChips, ToolsMenu, type ToolGroup, type ToolItem } from "./ComposerTools";
 import { autoSources, googleToolItem, toggleSource, type GoogleChatState, type MessageSources } from "./composer-sources";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
@@ -124,7 +125,10 @@ export function ChatWorkspace({
   const [activeId, setActiveId] = useState<string | null>(initialConversationId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
-  const [draft, setDraft] = useState(initialDraft);
+  // A switch of Personal or Work in the "+" menu mounts a new chat, which takes the draft it carried.
+  const [draft, setDraft] = useState(() => initialDraft || (peekCarriedDraft() ?? ""));
+  useEffect(() => clearCarriedDraft(), []);
+  const modeSwitch = useModeSwitch(mode);
   const [webSearch, setWebSearch] = useState(false);
   // Deep research for the next message only (decision 0018). Web search is on with it.
   const [research, setResearch] = useState(false);
@@ -132,7 +136,7 @@ export function ChatWorkspace({
   const starterToolsRef = useRef(false);
   // The sources of the last sent message, so Retry uses them and not the composer's next pick.
   const lastSentRef = useRef<{ conversationId: string | null; sources: MessageSources } | null>(null);
-  // One message only; it turns off at Send. `toggleSource` keeps one kind of source on at a time.
+  // One message only; it turns off at Send. Web search, Google and apps can be on together (decision 0021).
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
   const [apps, setApps] = useState<McpServerId[]>([]);
@@ -593,8 +597,9 @@ export function ChatWorkspace({
   }
 
   const googleItem = googleToolItem(google, sources.useGoogle);
-  // The "+" menu: web search, Think harder, Google, then each connected app. A new tool is one more item.
-  const tools: ToolItem[] = [
+  // The "+" menu (decision 0021): the sources as checkboxes (web search, Google, each connected app),
+  // then Deep research and Think harder, then Personal and Work. A new tool is one more item.
+  const sourceItems: ToolItem[] = [
     {
       key: "web",
       title: "Search the web",
@@ -605,11 +610,28 @@ export function ChatWorkspace({
       chipClass: "chip-web",
       icon: "web",
       on: webSearch && !research,
+      checkbox: true,
     },
+    ...(googleItem ? [{ ...googleItem, checkbox: true as const }] : []),
+    ...connectedApps.map(
+      (app): ToolItem => ({
+        key: `app:${app}`,
+        title: `Use ${MCP_SERVER_NAMES[app]}`,
+        description: "Read only, for this message.",
+        chip: MCP_SERVER_NAMES[app],
+        chipClass: "chip-app",
+        icon: "app",
+        brand: app,
+        on: sources.apps.includes(app),
+        checkbox: true,
+      }),
+    ),
+  ];
+  const answerItems: ToolItem[] = [
     {
       key: "research",
       title: "Deep research",
-      description: "Reads the top pages and writes a cited brief. Slower. This message only.",
+      description: "Reads the top pages and writes a cited brief. Slower. Turns off Google and apps.",
       chip: "Deep research",
       chipClass: "chip-web",
       icon: "web",
@@ -624,20 +646,12 @@ export function ChatWorkspace({
       icon: "deep",
       on: effort === "deep",
     },
-    ...(googleItem ? [googleItem] : []),
-    ...connectedApps.map(
-      (app): ToolItem => ({
-        key: `app:${app}`,
-        title: `Use ${MCP_SERVER_NAMES[app]}`,
-        description: "Read only, for this message.",
-        chip: MCP_SERVER_NAMES[app],
-        chipClass: "chip-app",
-        icon: "app",
-        brand: app,
-        on: sources.apps.includes(app),
-      }),
-    ),
   ];
+  const toolGroups: ToolGroup[] = [
+    { label: "Sources", items: sourceItems },
+    { label: "How to answer", items: answerItems },
+  ];
+  const tools: ToolItem[] = [...sourceItems, ...answerItems];
 
   function toggleTool(key: string) {
     starterToolsRef.current = false;
@@ -1106,9 +1120,15 @@ export function ChatWorkspace({
               <ToolsMenu
                 open={openMenu === "tools"}
                 onOpenChange={(open) => setOpenMenu(open ? "tools" : null)}
-                items={tools}
+                groups={toolGroups}
                 onToggle={toggleTool}
                 disabled={sending}
+                mode={{
+                  current: mode,
+                  inConversation: activeId !== null,
+                  pending: modeSwitch.pending,
+                  onSelect: (next) => modeSwitch.select(next, draft),
+                }}
               />
               <ApprovalModeMenu
                 open={openMenu === "approval"}
