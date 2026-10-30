@@ -181,7 +181,8 @@ export async function extractPages(
     for (const item of body.results) {
       const url = toSafeHttpUrl(item.url);
       if (!url || !asked.includes(url) || pages.some((page) => page.url === url)) continue;
-      const text = clean(item.raw_content ?? "", RESEARCH_PAGE_CHARS);
+      // Cut before clean(): its regex over a whole long page costs too much CPU on Workers.
+      const text = clean((item.raw_content ?? "").slice(0, RESEARCH_PAGE_CHARS * 4), RESEARCH_PAGE_CHARS);
       if (text) pages.push({ url, text });
       if (pages.length >= RESEARCH_PAGES) break;
     }

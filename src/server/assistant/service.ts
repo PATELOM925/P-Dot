@@ -346,7 +346,8 @@ export async function prepareChatTurn(
     // when the message asks for them (detectToolIntent), so a plain message stays on the fast tier.
     const ownData = Boolean(deps.ownData);
     const latest = pendingHistory.at(-1)?.content ?? "";
-    const toolIntent = ownData ? detectToolIntent(latest) : null;
+    // A brief message holds the topics, which can be memory text such as "Remind me to ...": not a request.
+    const toolIntent = ownData && !brief ? detectToolIntent(latest) : null;
     const connectorTools =
       requestedApps.length > 0 && deps.connectors ? await deps.connectors.available(requestedApps) : new Map();
     const toolsBound = selectTools(TOOLS, {
