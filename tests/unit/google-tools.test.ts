@@ -465,11 +465,69 @@ describe("failures (decisions 12 and 13)", () => {
     ["a refresh outage", { [TOKEN_URL]: () => json({}, 503) }, "Google did not answer. Answer without it, and say so."],
     ["a 429 from Gmail", { [`${GMAIL}/messages?`]: () => json({}, 429) }, "Google did not answer. Answer without it, and say so."],
     ["a 403 from Gmail", { [`${GMAIL}/messages?`]: () => json({}, 403) }, "The user did not allow this Google access. Tell the user."],
+    [
+      "a 403 for a missing scope",
+      { [`${GMAIL}/messages?`]: () => json({ error: { errors: [{ reason: "insufficientPermissions" }], status: "PERMISSION_DENIED" } }, 403) },
+      "The user did not allow this Google access. Tell the user.",
+    ],
+    [
+      "a 403 because the Gmail API is off in the project",
+      { [`${GMAIL}/messages?`]: () => json({ error: { errors: [{ reason: "accessNotConfigured" }], status: "PERMISSION_DENIED" } }, 403) },
+      "Google did not answer. Answer without it, and say so.",
+    ],
+    [
+      "a 403 for a rate limit",
+      { [`${GMAIL}/messages?`]: () => json({ error: { errors: [{ reason: "userRateLimitExceeded" }] } }, 403) },
+      "Google did not answer. Answer without it, and say so.",
+    ],
   ])("%s leaves the row connected", async (_name, handlers, expected) => {
     const s = await setup([{ calls: [call("gmail_search", { query: "a" })] }, { text: "Ok." }], { google: handlers });
     await runTurn(s.deps, send("Search my mail."));
     expect(toolResults(s.requests)).toEqual([expected]);
     expect(s.accounts.row!.status).toBe("connected");
+  });
+});
+
+describe("Google on for a question about email or the calendar (live test, 2026-10-30)", () => {
+  it("forces gmail_search on the first hop, and tells the model to read before it says it has no access", async () => {
+    const s = await setup([{ calls: [call("gmail_search", { query: "invoice" })] }, { text: "One email from Sam." }]);
+
+    await runTurn(s.deps, send("Search my Gmail for the invoice from Sam"));
+
+    expect(s.requests[0]!.toolChoice).toEqual({ name: "gmail_search" });
+    const system = String(s.requests[0]!.messages[0]!.content);
+    expect(system).toContain("Google is on for this message. Use gmail_search, gmail_read, calendar_list_events");
+    expect(system).toContain("Never say that you have no access or no permission unless a tool result says so.");
+    expect(s.google.calls.some((c) => c.url.startsWith(`${GMAIL}/messages?`))).toBe(true);
+    expect(s.logs).toContainEqual(expect.objectContaining({ event: "tool_ran", fields: expect.objectContaining({ tool: "gmail_search", ok: true }) }));
+  });
+
+  it("forces calendar_list_events for a meetings question in Personal mode", async () => {
+    const s = await setup([
+      { calls: [call("calendar_list_events", { from: "2026-10-12T00:00:00Z", to: "2026-10-19T00:00:00Z" })] },
+      { text: "One meeting." },
+    ]);
+
+    await runTurn(s.deps, send("What meetings do I have this week?", { mode: "personal" }));
+
+    expect(s.requests[0]!.toolChoice).toEqual({ name: "calendar_list_events" });
+    expect(String(s.requests[0]!.messages[0]!.content)).toContain("allowed in Work and Personal mode");
+  });
+
+  it("logs the tool, status and label of a failed Google read, and no Google text", async () => {
+    const s = await setup([{ calls: [call("gmail_search", { query: "a" })] }, { text: "Ok." }], {
+      google: { [`${GMAIL}/messages?`]: () => json({ error: { errors: [{ reason: "accessNotConfigured" }] } }, 403) },
+    });
+
+    await runTurn(s.deps, send("Search my mail."));
+
+    expect(s.logs).toContainEqual(
+      expect.objectContaining({
+        level: "error",
+        event: "google_tool_failed",
+        fields: expect.objectContaining({ tool: "gmail_search", status: 403, label: "accessNotConfigured" }),
+      }),
+    );
   });
 });
 

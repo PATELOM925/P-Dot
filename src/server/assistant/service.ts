@@ -677,7 +677,7 @@ async function* runChatTurn(
   // token) holds for the whole turn, not only for one hop.
   let textModel: string | null = null;
   // A message that asks to remember, or to add a task or a reminder, must get a tool call in the first hop.
-  let forced = forcedToolChoice(turn.toolIntent, tools);
+  let forced = forcedToolChoice(turn.toolIntent, tools, turn.userMessage.content);
   let proposalsRun = 0;
 
   for (let hop = 0; hop <= MAX_TOOL_HOPS; hop += 1) {
@@ -855,6 +855,7 @@ async function* runChatTurn(
             connectors,
           });
           result = outcome.content;
+          deps.log("info", "tool_ran", { ...logBase, tool: spec.name, hop, ok: true });
           if (spec.kind === "propose") proposalsRun += 1;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);
           for (const id of outcome.documentChunkIds ?? []) documentChunkIds.add(id);
@@ -868,6 +869,7 @@ async function* runChatTurn(
             return;
           }
           deps.log("warn", "tool_failed", { ...logBase, tool: spec.name, hop });
+          deps.log("info", "tool_ran", { ...logBase, tool: spec.name, hop, ok: false });
           result = "The tool failed. Nothing was done. Answer without it, and say so.";
         }
       }
