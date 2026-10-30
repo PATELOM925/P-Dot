@@ -273,6 +273,45 @@ export function isMcpServerReady(server: McpServerId, env: NodeJS.ProcessEnv = p
   return !MCP_CONFIG_GATED.includes(server) || getMcpClientCredentials(server, env) !== null;
 }
 
+/** Telegram (decision 0020). Read per call; never at import time. */
+export interface TelegramConfig {
+  botToken: string;
+  /** Without the "@". */
+  botUsername: string;
+  /** The `secret_token` of setWebhook. Telegram sends it in X-Telegram-Bot-Api-Secret-Token. */
+  webhookSecret: string;
+  /** CONNECTOR_TOKEN_ENCRYPTION_KEY: seals the link proof and the stored chat. */
+  sealKey: Uint8Array;
+}
+
+export type TelegramConfigState =
+  | { status: "ready"; config: TelegramConfig }
+  /** `invalid` names the variables that have a bad value. Empty when the three Telegram values are missing. */
+  | { status: "not_set_up"; invalid: string[] };
+
+export const TELEGRAM_ENV_NAMES = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME", "TELEGRAM_WEBHOOK_SECRET"] as const;
+
+const BOT_TOKEN = /^\d{5,16}:[A-Za-z0-9_-]{30,64}$/;
+const BOT_USERNAME = /^[A-Za-z][A-Za-z0-9_]{3,31}$/;
+const WEBHOOK_SECRET = /^[A-Za-z0-9_-]{32,256}$/;
+
+/** Missing or bad values give "not_set_up", so the Telegram card stays under "Coming soon". */
+export function getTelegramConfig(env: NodeJS.ProcessEnv = process.env): TelegramConfigState {
+  const botToken = blankToUndefined(env.TELEGRAM_BOT_TOKEN)?.trim();
+  const botUsername = blankToUndefined(env.TELEGRAM_BOT_USERNAME)?.trim().replace(/^@/, "");
+  const webhookSecret = blankToUndefined(env.TELEGRAM_WEBHOOK_SECRET)?.trim();
+  if (!botToken && !botUsername && !webhookSecret) return { status: "not_set_up", invalid: [] };
+  const mcp = getMcpConfig(env);
+  const invalid = [
+    !botToken || !BOT_TOKEN.test(botToken) ? "TELEGRAM_BOT_TOKEN" : null,
+    !botUsername || !BOT_USERNAME.test(botUsername) || !/bot$/i.test(botUsername) ? "TELEGRAM_BOT_USERNAME" : null,
+    !webhookSecret || !WEBHOOK_SECRET.test(webhookSecret) ? "TELEGRAM_WEBHOOK_SECRET" : null,
+    mcp.status !== "ready" ? "CONNECTOR_TOKEN_ENCRYPTION_KEY" : null,
+  ].filter((name): name is string => name !== null);
+  if (invalid.length > 0 || !botToken || !botUsername || !webhookSecret || mcp.status !== "ready") return { status: "not_set_up", invalid };
+  return { status: "ready", config: { botToken, botUsername, webhookSecret, sealKey: mcp.encryptionKey } };
+}
+
 /** Public base URL used in auth emails (verification and password recovery). */
 export function getSiteUrl(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = blankToUndefined(env.SITE_URL);

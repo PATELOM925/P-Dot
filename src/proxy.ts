@@ -12,9 +12,10 @@ export async function proxy(request: NextRequest) {
 // offline page, need no session. The static public pages (/, /privacy, /terms)
 // read no session either, so the proxy skips them: on the free Workers plan a
 // request has 10 ms of CPU. /login and /signup keep the proxy, which sends a
-// signed-in user on to /chat.
+// signed-in user on to /chat. The Telegram webhook has no session and checks
+// its own secret header (decision 0020).
 export const config = {
   matcher: [
-    "/((?!$|privacy$|terms$|_next/static|_next/image|favicon.ico|sw\\.js$|manifest\\.webmanifest$|offline\\.html$|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    "/((?!$|privacy$|terms$|api/telegram/webhook$|_next/static|_next/image|favicon.ico|sw\\.js$|manifest\\.webmanifest$|offline\\.html$|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
