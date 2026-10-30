@@ -59,7 +59,7 @@ export const STALE_DOCUMENT_SETTLE_LIMIT = 5;
 /**
  * How long a claim to write a reply lasts (decision 0012). It must be longer
  * than the longest chat turn: the heavy tier deadline, which all tool hops
- * share, plus the first search and one web_search tool call.
+ * and tool runs share, plus the first search and the memory embedding.
  */
 export const REPLY_CLAIM_LEASE_SECONDS = 300;
 export const MAX_REMINDER_TITLE_CHARS = 200;
@@ -67,6 +67,8 @@ export const REMINDER_LIST_LIMIT = 200;
 export const MAX_ACTION_SUMMARY_CHARS = 300;
 export const ACTION_LIST_LIMIT = 100;
 export const ACTION_LOG_LIMIT = 200;
+/** Active memories put in each chat turn (decision 0013). */
+export const MEMORY_CONTEXT_COUNT = 4;
 /** Matches returned by similarity search (the database caps it at 20). */
 export const RETRIEVAL_MATCH_COUNT = 5;
 /** Embedding size. Must match vector(1024) in the database. */

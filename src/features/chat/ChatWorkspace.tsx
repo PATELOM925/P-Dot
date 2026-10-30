@@ -347,6 +347,11 @@ export function ChatWorkspace({
             setSuggestionsKey((key) => key + 1);
             notifyActionsChanged();
             setStatus("Reply complete.");
+            // The reply is saved. The stream can still bring a title; the next message need not wait for it.
+            setSending(false);
+            break;
+          case "title":
+            setConversations((list) => list.map((c) => (c.id === event.conversationId ? { ...c, title: event.title } : c)));
             break;
           case "error":
             finished = true;
@@ -361,6 +366,8 @@ export function ChatWorkspace({
         setError({ message: "The reply was interrupted. Please retry." });
       }
     } catch (err) {
+      // After done the reply is saved and shown. A later problem (a lost title, Stop, a cut stream) is not an error.
+      if (finished) return;
       setStreaming(null);
       if (isAbort(err)) {
         if (!accepted) restoreDraft();
@@ -374,8 +381,11 @@ export function ChatWorkspace({
         }
       }
     } finally {
-      setSending(false);
-      if (abortRef.current === controller) abortRef.current = null;
+      // An earlier send whose stream ends late (a title after done) must not free a newer send.
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setSending(false);
+      }
     }
   }
 

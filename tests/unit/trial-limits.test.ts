@@ -65,6 +65,16 @@ describe("trial limits reach the database calls", () => {
     expect(calls.find((c) => c.fn === "reserve_provider_spend")?.args.p_user_day_cap).toBe(TRIAL_LIMITS.nebiusUserDayMicroUsd);
   });
 
+  it("sends the trial cap for the retrieval embeddings of a chat turn", async () => {
+    const { calls, supabase } = recordingClient();
+    const deps = createAssistantDeps({ userId: "u", email: null, isAnonymous: true, supabase }, config);
+    expect(deps.ownData).toBeTruthy();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+    await deps.ownData!.embedder.embed(["hi"], new AbortController().signal).catch(() => undefined);
+    vi.unstubAllGlobals();
+    expect(calls.find((c) => c.fn === "reserve_provider_spend")?.args.p_user_day_cap).toBe(TRIAL_LIMITS.nebiusUserDayMicroUsd);
+  });
+
   it("sends the account caps for an account", async () => {
     const { calls, supabase } = recordingClient();
     const deps = createAssistantDeps({ userId: "u", email: "a@example.com", isAnonymous: false, supabase }, config);
