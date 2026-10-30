@@ -2501,6 +2501,14 @@ h3 {
   background: var(--surface-muted);
 }
 
+.document-preview {
+  max-height: 12rem;
+  margin: 0.5rem 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* A file input shown as a button: the input stays focusable, its label is what people see. */
 .file-input:focus-visible + .button {
   outline: 3px solid var(--focus);

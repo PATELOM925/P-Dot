@@ -260,7 +260,8 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `GET /api/conversations/:id` | One conversation with its messages (404 for missing or someone else's) |
 | `DELETE /api/conversations/:id` | Permanently delete a conversation and its messages |
 | `GET /api/memories?mode=&status=`, `POST /api/memories`, `PATCH`/`DELETE /api/memories/:id` | Memories the user can see, edit and delete ([decision 0009](docs/decisions/0009-memory-documents-actions.md)) |
-| `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | Plain text and Markdown documents, split and embedded on upload |
+| `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | The text of documents (text, CSV, code, PDF, Word, images), split and embedded on upload ([decision 0019](docs/decisions/0019-document-types.md)) |
+| `POST /api/documents/image-text` | Reads the text in one image and describes it with one vision call, under the chat quota and spend caps. Saves nothing |
 | `GET /api/actions?status=`, `POST /api/actions/:id/decision` | Action proposals; `{ decision: "approve" \| "reject", payload? }` runs an approved action once |
 | `GET /api/action-log` | The action log, written only by the database (IDs, kinds, modes, counts and flags only) |
 | `GET /api/reminders?mode=`, `POST /api/reminders`, `PATCH`/`DELETE /api/reminders/:id` | Reminders (no delivery yet) |

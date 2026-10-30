@@ -55,6 +55,12 @@ export const MAX_DOCUMENT_TITLE_CHARS = 200;
 export const MAX_DOCUMENT_CHARS = 100_000;
 /** Request body limit for a document upload (JSON with the text). */
 export const MAX_DOCUMENT_BODY_BYTES = 512 * 1024;
+/** Largest PDF, Word or image file the browser reads (decision 0019). Its text must still fit MAX_DOCUMENT_CHARS. */
+export const MAX_DOCUMENT_FILE_BYTES = 10 * 1024 * 1024;
+/** The browser makes the long side of an image at most this many pixels before it sends the image. */
+export const IMAGE_MAX_SIDE_PX = 1_280;
+/** Request body limit for the image text route: the resized image as a base64 data URL, in JSON. */
+export const MAX_IMAGE_TEXT_BODY_BYTES = 1536 * 1024;
 export const DOCUMENT_LIST_LIMIT = 100;
 export const DOCUMENT_CHUNK_CHARS = 2_000;
 export const DOCUMENT_CHUNK_OVERLAP_CHARS = 200;
