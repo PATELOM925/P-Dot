@@ -1,4 +1,6 @@
+import { CardRail } from "@/components/ui/CardRail";
 import { RemindersPanel } from "@/features/reminders/RemindersPanel";
+import { SectionBody, SectionControls } from "@/features/today/TodaySection";
 import { REMINDER_LIST_LIMIT } from "@/lib/limits";
 import type { AuthContext } from "@/server/auth/session";
 import { createReminderRepository } from "@/server/db/reminders";
@@ -34,16 +36,21 @@ export async function WorkflowsSection({ auth, mode }: { auth: AuthContext; mode
 
   return (
     <section id="workflows" className="stack" aria-labelledby="workflows-heading">
-      <h2 id="workflows-heading">Workflows</h2>
-      <RemindersPanel key={mode} mode={mode} initialReminders={reminders} />
-      <details className="more-details stack">
-        <summary>Planned routines ({PLANNED.length})</summary>
-        <p className="muted small">Not available yet. Nothing here runs.</p>
-        <div className="card-grid">
+      <div className="panel-heading">
+        <h2 id="workflows-heading">Workflows</h2>
+        <SectionControls />
+      </div>
+      <SectionBody>
+        <RemindersPanel key={mode} mode={mode} initialReminders={reminders} />
+        <CardRail
+          title="Planned routines"
+          level={3}
+          intro={<p className="muted small">Not available yet. Nothing here runs.</p>}
+        >
           {PLANNED.map((workflow) => (
             <article key={workflow.name} className="panel">
               <div className="panel-heading">
-                <h3>{workflow.name}</h3>
+                <h4>{workflow.name}</h4>
                 <span className="status-pill">Coming soon</span>
               </div>
               <p className="muted">{workflow.when}</p>
@@ -54,8 +61,8 @@ export async function WorkflowsSection({ auth, mode }: { auth: AuthContext; mode
               </ol>
             </article>
           ))}
-        </div>
-      </details>
+        </CardRail>
+      </SectionBody>
     </section>
   );
 }

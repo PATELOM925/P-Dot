@@ -10,6 +10,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { useApprovalMode } from "./approval-mode";
 import { visibleProposals } from "./format";
 import { useProposals } from "./useProposals";
+import { SectionBody, SectionControls } from "@/features/today/TodaySection";
 
 /**
  * The Today panel: proposals for one mode that are waiting for approval, plus
@@ -40,42 +41,45 @@ export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionPr
       <div className="panel-heading">
         <h2 id="approval-heading">Waiting for your approval</h2>
         {waiting > 0 && <span className="status-pill status-proposed">{waiting} waiting</span>}
+        <SectionControls />
       </div>
-      {state === "loading" && <p className="muted">Loading…</p>}
-      {state === "error" && (
-        <p className="alert alert-error small" role="alert">
-          Could not load actions waiting for approval.{" "}
-          <button type="button" className="link-button" onClick={reload}>
-            Retry
-          </button>
+      <SectionBody>
+        {state === "loading" && <p className="muted">Loading…</p>}
+        {state === "error" && (
+          <p className="alert alert-error small" role="alert">
+            Could not load actions waiting for approval.{" "}
+            <button type="button" className="link-button" onClick={reload}>
+              Retry
+            </button>
+          </p>
+        )}
+        {state === "ready" && visible.length === 0 && (
+          <p className="muted">
+            Nothing is waiting for your approval.
+          </p>
+        )}
+        {visible.length > 0 && (
+          <div className="approval-list">
+            {visible.map((proposal) => (
+              <ApprovalCard
+                key={proposal.id}
+                proposal={proposal}
+                onDecided={onDecided}
+                onStale={() => stale(proposal.id)}
+                onUnauthorized={toLogin}
+              />
+            ))}
+          </div>
+        )}
+        {waitingInOtherMode > 0 && (
+          <p className="hint">
+            {waitingInOtherMode} more waiting in {MODE_LABELS[otherMode]} mode.
+          </p>
+        )}
+        <p className="hint approval-mode-line">
+          Approvals: <strong>{APPROVAL_MODE_LABELS[approvalMode]}</strong> · <Link href="/settings#approvals">Change</Link>
         </p>
-      )}
-      {state === "ready" && visible.length === 0 && (
-        <p className="muted">
-          Nothing is waiting for your approval.
-        </p>
-      )}
-      {visible.length > 0 && (
-        <div className="approval-list">
-          {visible.map((proposal) => (
-            <ApprovalCard
-              key={proposal.id}
-              proposal={proposal}
-              onDecided={onDecided}
-              onStale={() => stale(proposal.id)}
-              onUnauthorized={toLogin}
-            />
-          ))}
-        </div>
-      )}
-      {waitingInOtherMode > 0 && (
-        <p className="hint">
-          {waitingInOtherMode} more waiting in {MODE_LABELS[otherMode]} mode.
-        </p>
-      )}
-      <p className="hint approval-mode-line">
-        Approvals: <strong>{APPROVAL_MODE_LABELS[approvalMode]}</strong> · <Link href="/settings#approvals">Change</Link>
-      </p>
+      </SectionBody>
     </section>
   );
 }

@@ -4169,3 +4169,105 @@ label.button[aria-disabled="true"] {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+/* Today: sections the user can collapse and arrange. */
+
+.page-actions,
+.layout-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.layout-controls .button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+.today-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (min-width: 1000px) {
+  .today-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.today-slot {
+  min-width: 0;
+}
+
+.today-slot .panel-heading {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.today-slot .panel-heading > :first-child {
+  margin-right: auto;
+}
+
+.section-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.section-control {
+  width: 2.75rem;
+  height: 2.75rem;
+  color: var(--text);
+}
+
+.section-control:hover {
+  color: var(--text);
+}
+
+.section-control[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.section-control[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.today-board.is-arranging .today-slot > * {
+  outline: 2px dashed var(--border-strong);
+  outline-offset: 4px;
+}
+
+.section-toggle svg {
+  transition: transform 0.15s ease;
+}
+
+.section-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-toggle svg {
+    transition: none;
+  }
+}
+
+.section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.section-body[hidden] {
+  display: none;
+}
+
+h4 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.3;
+}

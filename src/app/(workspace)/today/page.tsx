@@ -4,7 +4,10 @@ import { ApprovalList } from "@/features/actions/ApprovalList";
 import { nameFromEmail } from "@/lib/greeting";
 import { BriefCard } from "@/features/today/BriefCard";
 import { Overview } from "@/features/today/Overview";
+import { LayoutControls } from "@/features/today/LayoutControls";
 import { TaskList } from "@/features/today/TaskList";
+import { TodayBoard } from "@/features/today/TodayBoard";
+import { RecentChats, UpNext } from "@/features/today/TodayLists";
 import { MODE_LABELS } from "@/lib/mode";
 import { ACTION_LIST_LIMIT, BRIEF_MAX_TOPICS, MEMORY_LIST_LIMIT, REMINDER_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
 import { requireAuth } from "@/server/auth/session";
@@ -49,9 +52,12 @@ export default async function TodayPage() {
             </p>
           </InfoNote>
         </div>
-        <Link className="button button-primary" href="/chat">
-          Ask P-Dot
-        </Link>
+        <div className="page-actions">
+          <LayoutControls userId={auth.userId} />
+          <Link className="button button-primary" href="/chat">
+            Ask P-Dot
+          </Link>
+        </div>
       </div>
 
       <Overview
@@ -61,26 +67,33 @@ export default async function TodayPage() {
         reminders={reminders}
         memories={memories}
         proposals={proposals}
-        conversations={conversations}
       />
 
-      <div className="two-column">
-        <div className="stack">
-          <BriefCard
-            key={`brief-${mode}`}
-            mode={mode}
-            memoryTopics={memories.slice(0, BRIEF_MAX_TOPICS).map((memory) => memory.content)}
-          />
-
-          <TaskList key={mode} mode={mode} initialTasks={tasks} />
-        </div>
-
-        <aside className="stack">
-          <ApprovalList key={mode} mode={mode} initial={proposals} />
-        </aside>
-      </div>
-
-      <WorkflowsSection auth={auth} mode={mode} />
+      <TodayBoard
+        userId={auth.userId}
+        sections={[
+          { id: "up-next", title: "Up next", node: <UpNext reminders={reminders} /> },
+          { id: "recent-chats", title: "Recent chats", node: <RecentChats conversations={conversations} /> },
+          {
+            id: "brief",
+            title: "Morning brief",
+            node: (
+              <BriefCard
+                key={`brief-${mode}`}
+                mode={mode}
+                memoryTopics={memories.slice(0, BRIEF_MAX_TOPICS).map((memory) => memory.content)}
+              />
+            ),
+          },
+          { id: "approvals", title: "Waiting for your approval", node: <ApprovalList key={mode} mode={mode} initial={proposals} /> },
+          {
+            id: "tasks",
+            title: mode === "work" ? "Work to-do list" : "To-do list",
+            node: <TaskList key={mode} mode={mode} initialTasks={tasks} />,
+          },
+          { id: "workflows", title: "Workflows", node: <WorkflowsSection auth={auth} mode={mode} /> },
+        ]}
+      />
     </main>
   );
 }

@@ -1,9 +1,8 @@
 import Link from "next/link";
 import { Greeting } from "@/components/ui/Greeting";
-import { LocalTime } from "@/components/ui/LocalTime";
 import { Mascot } from "@/components/ui/Mascot";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
-import type { ActionProposalDTO, ConversationSummary, MemoryDTO, Mode, ReminderDTO, TaskDTO } from "@/types/api";
+import type { ActionProposalDTO, MemoryDTO, Mode, ReminderDTO, TaskDTO } from "@/types/api";
 
 interface OverviewProps {
   mode: Mode;
@@ -13,7 +12,6 @@ interface OverviewProps {
   reminders: ReminderDTO[];
   memories: MemoryDTO[];
   proposals: ActionProposalDTO[];
-  conversations: ConversationSummary[];
 }
 
 const PLACEHOLDER: Record<Mode, string> = {
@@ -27,15 +25,13 @@ const IDEAS: Record<Mode, string[]> = {
 };
 
 /**
- * The top of the Today page: what is open, what is next, and a box that opens
- * chat with the question already typed. Everything comes from the user's own
- * rows (tasks, reminders, memories, approvals, conversations) for this mode.
+ * The top of the Today page: a box that opens chat with the question already
+ * typed, and counts of what is open. The counts come from the user's own rows
+ * (tasks, reminders, memories, approvals) for this mode.
  */
-export function Overview({ mode, name = null, tasks, reminders, memories, proposals, conversations }: OverviewProps) {
+export function Overview({ mode, name = null, tasks, reminders, memories, proposals }: OverviewProps) {
   const openTasks = tasks.filter((task) => !task.done).length;
-  const upcoming = reminders
-    .filter((reminder) => reminder.status === "scheduled")
-    .sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+  const upcoming = reminders.filter((reminder) => reminder.status === "scheduled");
   const waiting = proposals.filter((proposal) => proposal.status === "proposed").length;
   const remembered = memories.filter((memory) => memory.status === "active").length;
 
@@ -96,52 +92,6 @@ export function Overview({ mode, name = null, tasks, reminders, memories, propos
           </li>
         ))}
       </ul>
-
-      <div className="overview-lists">
-        <div className="panel">
-          <div className="panel-heading">
-            <h3>Up next</h3>
-            <Link href="#workflows">All reminders</Link>
-          </div>
-          {upcoming.length === 0 ? (
-            <p className="muted">No reminders scheduled. Ask P-Dot to remind you of something and approve it.</p>
-          ) : (
-            <ul className="mini-list">
-              {upcoming.slice(0, 3).map((reminder) => (
-                <li key={reminder.id}>
-                  <span className="mini-title">{reminder.title}</span>
-                  <span className="muted small">
-                    <LocalTime iso={reminder.dueAt} />
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="panel">
-          <div className="panel-heading">
-            <h3>Recent chats</h3>
-            <Link href="/chat">Open chat</Link>
-          </div>
-          {conversations.length === 0 ? (
-            <p className="muted">No conversations in this mode yet.</p>
-          ) : (
-            <ul className="mini-list">
-              {conversations.slice(0, 4).map((conversation) => (
-                <li key={conversation.id}>
-                  <Link className="mini-title" href={`/chat?c=${encodeURIComponent(conversation.id)}`}>
-                    {conversation.title}
-                  </Link>
-                  <span className="muted small">
-                    <LocalTime iso={conversation.updatedAt} style="date" />
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
     </section>
   );
 }

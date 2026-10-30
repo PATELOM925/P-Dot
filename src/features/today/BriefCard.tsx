@@ -9,6 +9,7 @@ import { toolStatusLine } from "@/features/chat/tool-status";
 import { BRIEF_MAX_TOPICS } from "@/lib/limits";
 import type { Mode, SourceRef } from "@/types/api";
 import { briefRequest, briefTopicsKey, localBriefDate, parseTopics, topicsFromMemories } from "./brief";
+import { SectionBody, SectionControls } from "./TodaySection";
 
 type BriefState =
   | { phase: "idle" }
@@ -104,71 +105,74 @@ export function BriefCard({ mode, memoryTopics }: { mode: Mode; memoryTopics: st
   }
 
   return (
-    <section className="panel brief-card" aria-labelledby="brief-heading" aria-busy={running}>
+    <section className="panel brief-card" id="brief" aria-labelledby="brief-heading" aria-busy={running}>
       <div className="panel-heading">
         <h2 id="brief-heading">Morning brief</h2>
         <span className="muted small">Today&apos;s news on your topics</span>
+        <SectionControls />
       </div>
+      <SectionBody>
 
-      <form
-        className="task-form brief-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void makeBrief();
-        }}
-      >
-        <label htmlFor="brief-topics" className="visually-hidden">
-          Topics
-        </label>
-        <input
-          id="brief-topics"
-          type="text"
-          value={topicsText}
-          maxLength={200}
-          placeholder="Topics, for example: cricket, local news, AI"
-          disabled={running}
-          onChange={(event) => saveTopics(event.target.value)}
-        />
-        <button type="submit" className="button button-primary" disabled={running || topics.length === 0}>
-          {running ? "Making…" : "Make today's brief"}
-        </button>
-      </form>
-      <p className="hint">
-        Up to {BRIEF_MAX_TOPICS} topics, with commas between them. P-Dot sends each topic to its web search provider, then
-        saves the brief as a conversation.
-      </p>
-
-      {state.phase === "running" && (
-        <>
-          <p className="hint tool-status" role="status">
-            {state.status}
-          </p>
-          {state.text && (
-            <AssistantReply text={state.text} sources={state.sources} messageId="brief-live" showSources={state.sources.length > 0} streaming />
-          )}
-        </>
-      )}
-
-      {state.phase === "done" && (
-        <>
-          <AssistantReply text={state.text} sources={state.sources} messageId={state.messageId} showSources={state.sources.length > 0} />
-          <Link className="button" href={`/chat?c=${encodeURIComponent(state.conversationId)}`}>
-            Open in chat
-          </Link>
-        </>
-      )}
-
-      {state.phase === "error" && (
-        <p className="alert alert-error small" role="alert">
-          {state.message}
-          {state.conversationId && (
-            <>
-              {" "}
-              <Link href={`/chat?c=${encodeURIComponent(state.conversationId)}`}>Open the conversation</Link>
-            </>
-          )}
+        <form
+          className="task-form brief-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void makeBrief();
+          }}
+        >
+          <label htmlFor="brief-topics" className="visually-hidden">
+            Topics
+          </label>
+          <input
+            id="brief-topics"
+            type="text"
+            value={topicsText}
+            maxLength={200}
+            placeholder="Topics, for example: cricket, local news, AI"
+            disabled={running}
+            onChange={(event) => saveTopics(event.target.value)}
+          />
+          <button type="submit" className="button button-primary" disabled={running || topics.length === 0}>
+            {running ? "Making…" : "Make today's brief"}
+          </button>
+        </form>
+        <p className="hint">
+          Up to {BRIEF_MAX_TOPICS} topics, with commas between them. P-Dot sends each topic to its web search provider, then
+          saves the brief as a conversation.
         </p>
-      )}
+
+        {state.phase === "running" && (
+          <>
+            <p className="hint tool-status" role="status">
+              {state.status}
+            </p>
+            {state.text && (
+              <AssistantReply text={state.text} sources={state.sources} messageId="brief-live" showSources={state.sources.length > 0} streaming />
+            )}
+          </>
+        )}
+
+        {state.phase === "done" && (
+          <>
+            <AssistantReply text={state.text} sources={state.sources} messageId={state.messageId} showSources={state.sources.length > 0} />
+            <Link className="button" href={`/chat?c=${encodeURIComponent(state.conversationId)}`}>
+              Open in chat
+            </Link>
+          </>
+        )}
+
+        {state.phase === "error" && (
+          <p className="alert alert-error small" role="alert">
+            {state.message}
+            {state.conversationId && (
+              <>
+                {" "}
+                <Link href={`/chat?c=${encodeURIComponent(state.conversationId)}`}>Open the conversation</Link>
+              </>
+            )}
+          </p>
+        )}
+      </SectionBody>
     </section>
   );
 }
