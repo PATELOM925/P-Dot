@@ -543,6 +543,10 @@ async function* runChatTurn(
   const usages: (TokenUsage | null)[] = [];
   let report = newRouteReport(plan.tier);
   let fallback = false;
+  // The model whose text the user already sees. Later hops use only it: the
+  // commit rule of the executor (no model switch after the first visible
+  // token) holds for the whole turn, not only for one hop.
+  let textModel: string | null = null;
 
   for (let hop = 0; hop <= MAX_TOOL_HOPS; hop += 1) {
     // Tools are off on the last pass, so the turn always ends with a reply.
@@ -587,7 +591,7 @@ async function* runChatTurn(
     let hopText = "";
     try {
       for await (const chunk of executeRouted({
-        plan: { ...plan, deadlineMs: remainingMs },
+        plan: { ...plan, deadlineMs: remainingMs, ...(textModel ? { models: [textModel] } : {}) },
         messages: hopMessages,
         tools: offered,
         provider: deps.provider,
@@ -663,6 +667,7 @@ async function* runChatTurn(
     }
     logRoute(deps, logBase, turn.route, report, hop);
     fallback ||= report.fallback;
+    if (hopText && !textModel) textModel = report.model;
 
     if (signal.aborted) {
       deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
