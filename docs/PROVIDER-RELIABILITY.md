@@ -137,6 +137,8 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 
 ## Not verified yet
 
+- Tool calls on Super, Ultra and Lightning, and a final pass with no `tools` field after earlier tool messages (decision 0013). The adapter tests use the OpenAI-compatible wire shape, not a recorded Nebius stream.
+- The token allowance for the chat template's tool text (512, plus 64 for each tool). If real usage is above a hold, the settle counts only the hold.
 - Real Nebius error shapes for quota, rate limit and model-not-found inside a stream.
 - A real disconnect in the deployed Worker and the `waitUntil` settle.
 - Many requests at the same time against the live database.
