@@ -34,7 +34,7 @@ import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
-import { autoSources, googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
+import { autoSources, googleToolItem, toggleSource, type GoogleChatState, type MessageSources } from "./composer-sources";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -123,6 +123,8 @@ export function ChatWorkspace({
   const [research, setResearch] = useState(false);
   // True while the tools on come from a starter prompt, so clearing its text turns them off.
   const starterToolsRef = useRef(false);
+  // The sources of the last sent message, so Retry uses them and not the composer's next pick.
+  const lastSentRef = useRef<{ conversationId: string | null; sources: MessageSources } | null>(null);
   // One message only; it turns off at Send. `toggleSource` keeps one kind of source on at a time.
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
@@ -354,7 +356,10 @@ export function ChatWorkspace({
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
-    const sentApps = sources.apps;
+    const lastSent = lastSentRef.current;
+    const turnSources = action === "retry" && lastSent && lastSent.conversationId === activeId ? lastSent.sources : sources;
+    if (action === "send") lastSentRef.current = { conversationId: activeId, sources };
+    const sentApps = turnSources.apps;
     const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
     const timeZone = browserTimeZone();
     const zone = timeZone ? { timeZone } : {};
@@ -374,11 +379,11 @@ export function ChatWorkspace({
         : {
             action,
             conversationId: activeId!,
-            webSearch,
-            ...(research && webSearch ? { research: true as const } : {}),
+            webSearch: turnSources.webSearch,
+            ...(turnSources.research && turnSources.webSearch ? { research: true as const } : {}),
             effort,
             ...connectors,
-            ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...(turnSources.useGoogle ? { useGoogle: true as const } : {}),
             ...zone,
           };
 
@@ -473,6 +478,7 @@ export function ChatWorkspace({
             // One message only. An app the user turned on after Send stays on for the next message.
             if (sentApps.length > 0) setApps((current) => current.filter((app) => !sentApps.includes(app)));
             setActiveId(event.conversation.id);
+            if (lastSentRef.current && lastSentRef.current.conversationId === null) lastSentRef.current.conversationId = event.conversation.id;
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
             if (action === "send") {
