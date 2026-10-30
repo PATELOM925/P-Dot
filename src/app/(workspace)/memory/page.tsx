@@ -30,7 +30,7 @@ export default async function MemoryPage() {
       </div>
 
       <p className="muted" role="status">
-        P-Dot uses your kept memories in this mode when it replies. It searches your documents when you ask about
+        P-Dot uses your kept memories in this mode when it replies. It can search your documents when you ask about
         your notes, documents or files. A memory it suggests is not used until you keep it. The &ldquo;What was sent&rdquo; link under each reply lists the ones it used.
       </p>
 
