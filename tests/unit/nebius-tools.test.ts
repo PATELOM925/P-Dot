@@ -182,6 +182,28 @@ describe("Nebius adapter: tool calls", () => {
   });
 });
 
+describe("tool call IDs", () => {
+  it("gives every call a unique ID when a supplied ID matches a made one, or two IDs repeat", async () => {
+    const fetchImpl = respond([
+      toolDelta({ index: 0, id: "call_1", function: { name: "web_search", arguments: "{}" } }),
+      toolDelta({ index: 1, function: { name: "web_search", arguments: "{}" } }),
+      toolDelta({ index: 2, id: "dup", function: { name: "web_search", arguments: "{}" } }),
+      toolDelta({ index: 3, id: "dup", function: { name: "web_search", arguments: "{}" } }),
+      finishWith("tool_calls"),
+      "[DONE]",
+    ]);
+
+    const chunks = await collect(streamChatCompletion(settings, [{ role: "user", content: "x" }], { fetchImpl, tools: [searchTool] }));
+
+    const calls = chunks.flatMap((chunk) => (chunk.type === "tool_calls" ? chunk.calls : []));
+    const ids = calls.map((call) => call.id);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
+    expect(ids[0]).toBe("call_1");
+    expect(ids[2]).toBe("dup");
+  });
+});
+
 describe("inputTokenBound with tools", () => {
   const base: ChatMessage[] = [{ role: "user", content: "hi" }];
 
@@ -198,5 +220,12 @@ describe("inputTokenBound with tools", () => {
     const call = { id: "c1", name: "web_search", arguments: "é".repeat(500) };
     const messages: ChatMessage[] = [...base, { role: "assistant", content: "", toolCalls: [call] }, { role: "tool", toolCallId: "c1", content: "r" }];
     expect(inputTokenBound(messages) - inputTokenBound(base)).toBeGreaterThan(1_000 + "c1".length * 2 + "web_search".length);
+  });
+
+  it("keeps the template allowance on a final pass that has tool messages but no tools field", () => {
+    const call = { id: "c1", name: "web_search", arguments: "{}" };
+    const withHistory: ChatMessage[] = [...base, { role: "assistant", content: "", toolCalls: [call] }, { role: "tool", toolCallId: "c1", content: "r" }];
+    const plainBytes = inputTokenBound([...base, { role: "assistant", content: "" }, { role: "user", content: "r" }]);
+    expect(inputTokenBound(withHistory) - plainBytes).toBeGreaterThanOrEqual(1_024);
   });
 });

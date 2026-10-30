@@ -4,6 +4,8 @@ import { nebiusHoldMicroUsd } from "@/server/assistant/spend";
 import { TOOLS, toToolDefinition } from "@/server/assistant/tools";
 import type { CompletionChunk, ModelCallRequest, ModelProvider, ToolCall } from "@/server/providers/model";
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
+import { buildRoutingConfig } from "@/server/assistant/tiers";
+import { FakeProvider } from "../support/fake-provider";
 import { FakeSpend, MemoryRepository, fakeDeps } from "../support/fakes";
 import { collect } from "../support/streams";
 
@@ -200,5 +202,76 @@ describe("tool loop", () => {
     const logged = JSON.stringify(logs);
     expect(logged).not.toContain("secret");
     expect(logs.some((l) => l.event === "tool_call_refused" && l.fields.tool === "unknown")).toBe(true);
+  });
+
+  it("never switches model in a later hop after text is visible: it stops on the same model's error", async () => {
+    const LIGHTNING = "nvidia/Nemotron-3_5-Lightning";
+    const provider = new FakeProvider({
+      [SUPER]: [{ chunks: [{ text: "Let me check." }], toolCalls: [search("x")] }, { status: 404 }],
+      [LIGHTNING]: [{ chunks: [{ text: "Other model." }] }],
+    });
+    const chains = { fast: [SUPER, LIGHTNING], standard: [SUPER, LIGHTNING], heavy: [SUPER, LIGHTNING], vision: [SUPER] };
+    const routing = buildRoutingConfig({
+      chains,
+      maxOutputTokens: 1024,
+      standardMaxOutputTokens: 1024,
+      heavyMaxOutputTokens: 1024,
+      heavyThinkingBudgetTokens: 0,
+      hedgeAfterMs: 0,
+    });
+    const repo = new MemoryRepository();
+    const { deps } = fakeDeps({ repo, provider, routing, search: async () => [page(1)] });
+
+    const { events } = await runTurn(deps, { action: "send", message: "q", webSearch: true });
+
+    expect(provider.callsTo(SUPER)).toHaveLength(2);
+    expect(provider.callsTo(LIGHTNING)).toHaveLength(0);
+    expect(events.at(-1)).toMatchObject({ type: "error" });
+    expect(ofType(events, "delta").map((e) => e.text).join("")).toBe("Let me check.");
+    expect(repo.messages.filter((m) => m.role === "assistant")).toHaveLength(0);
+  });
+
+  it("may still use the next model in a later hop when no text was visible", async () => {
+    const LIGHTNING = "nvidia/Nemotron-3_5-Lightning";
+    const provider = new FakeProvider({
+      [SUPER]: [{ chunks: [], toolCalls: [search("x")] }, { status: 404 }],
+      [LIGHTNING]: [{ chunks: [{ text: "Answer." }] }],
+    });
+    const routing = buildRoutingConfig({
+      chains: { fast: [SUPER, LIGHTNING], standard: [SUPER, LIGHTNING], heavy: [SUPER, LIGHTNING], vision: [SUPER] },
+      maxOutputTokens: 1024,
+      standardMaxOutputTokens: 1024,
+      heavyMaxOutputTokens: 1024,
+      heavyThinkingBudgetTokens: 0,
+      hedgeAfterMs: 0,
+    });
+    const repo = new MemoryRepository();
+    const { deps } = fakeDeps({ repo, provider, routing, search: async () => [page(1)] });
+
+    const { events } = await runTurn(deps, { action: "send", message: "q", webSearch: true });
+
+    expect(ofType(events, "done")[0]!.message).toMatchObject({ content: "Answer.", route: { model: LIGHTNING, fallback: true } });
+  });
+
+  it("gives back the tool search credit when Stop comes while the credit is held", async () => {
+    const spend = new FakeSpend();
+    const controller = new AbortController();
+    const reserve = spend.reserve.bind(spend);
+    spend.reserve = async (provider, amount) => {
+      const result = await reserve(provider, amount);
+      if (provider === "tavily" && spend.reservations.filter((r) => r.provider === "tavily").length === 2) controller.abort();
+      return result;
+    };
+    const { deps, searches, waited } = setup([{ calls: [search("x")] }, { text: "never" }], { spend });
+
+    const prepared = await prepareChatTurn(deps, { userId: ALICE, requestId: "req-1", request: { action: "send", message: "q", webSearch: true } });
+    if (!prepared.ok) throw new Error("refused");
+    await collect(streamChatTurn(deps, prepared.turn, controller.signal));
+    await Promise.all(waited);
+
+    const tavily = spend.reservations.filter((r) => r.provider === "tavily");
+    expect(searches).toEqual(["q"]);
+    expect(tavily).toHaveLength(2);
+    expect(tavily[1]!.settled).toBe(0);
   });
 });
