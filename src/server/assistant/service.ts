@@ -356,6 +356,7 @@ export async function prepareChatTurn(
       toolGuidance: toolsBound.map((tool) => tool.guidance),
       serverNote: google?.note,
       tier: route.tier,
+      privateSources: privateSourcesNote(request.useGoogle === true || requestedApps.length > 0, googleFlags !== null || connectorTools.size > 0),
     });
     const toolDefinitionsBound = toolsBound.map(toToolDefinition);
     // The first attempt can run on any model of the tier (the breaker can skip
@@ -561,6 +562,16 @@ export async function* streamChatTurn(
   }
 }
 
+/**
+ * The prompt line about Google and the apps. Asked for and on: the tools are on
+ * now. Not asked for: say how to turn them on. Asked for but off: the server
+ * note of that turn explains why, so no line.
+ */
+function privateSourcesNote(asked: boolean, on: boolean): "on" | "off" | undefined {
+  if (on) return "on";
+  return asked ? undefined : "off";
+}
+
 async function* runChatTurn(
   deps: AssistantDeps,
   turn: PreparedTurn,
@@ -653,6 +664,10 @@ async function* runChatTurn(
     memories,
     serverNote: turn.google?.note,
     tier: turn.route.tier,
+    privateSources: privateSourcesNote(
+      turn.google !== null || turn.route.reason === "connector_read",
+      turn.toolFlags.google !== null || (turn.toolFlags.connectors?.size ?? 0) > 0,
+    ),
   });
   const plan = deps.routing[turn.route.tier];
   const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null) : null;

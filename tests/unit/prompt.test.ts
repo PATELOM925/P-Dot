@@ -241,6 +241,28 @@ describe("createReplyNormalizer", () => {
   });
 });
 
+describe("the line about Google and the apps", () => {
+  const base = { history: [{ role: "user" as const, content: "Check my latest emails" }], webSearch: "off" as const, results: [], now, mode: "work" as const };
+  const system = (privateSources?: "on" | "off") => buildPromptMessages({ ...base, privateSources })[0]!.content;
+
+  it("says the tools are on now when Google or an app is on", () => {
+    expect(system("on")).toContain("Earlier replies in this conversation may say you had no access. That is no longer true: the tools are on now. Use them.");
+    expect(system("on")).not.toContain("+ menu");
+  });
+
+  it("says how to turn them on when the user asked for neither", () => {
+    const text = system("off");
+    expect(text).toContain("Gmail, Google Calendar and the apps (Notion, Linear, Todoist) are off for this message.");
+    expect(text).toContain("do not say that you have no access");
+    expect(text).toContain("turn on Google or the app in the + menu");
+    expect(text).not.toContain("no longer true");
+  });
+
+  it("adds no line when the caller gives none", () => {
+    expect(system()).not.toMatch(/no longer true|\+ menu/);
+  });
+});
+
 describe("rich block rules", () => {
   const input = (webSearch: "off" | "used", results: { title: string; url: string; excerpt: string }[] = []) => ({
     history: [{ role: "user" as const, content: "Bars in Toronto?" }],

@@ -502,6 +502,34 @@ describe("Google on for a question about email or the calendar (live test, 2026-
     expect(s.logs).toContainEqual(expect.objectContaining({ event: "tool_ran", fields: expect.objectContaining({ tool: "gmail_search", ok: true }) }));
   });
 
+  it("forces gmail_search also when an earlier reply in the conversation said it had no access", async () => {
+    const REFUSAL = "I don't have access to your email or any external apps.";
+    const repo = new MemoryRepository();
+    const conversation = await repo.createConversation(ALICE, "Email", "work");
+    await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "user", content: "Check my latest emails" });
+    await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "assistant", content: REFUSAL });
+    const s = await setup([{ calls: [call("gmail_search", { query: "newer_than:7d" })] }, { text: "Two emails." }], { repo });
+
+    await runTurn(s.deps, send("Check my latest emails", { conversationId: conversation.id } as Partial<ChatRequest>));
+
+    expect(s.requests[0]!.toolChoice).toEqual({ name: "gmail_search" });
+    expect(s.requests[0]!.messages.some((message) => message.content === REFUSAL)).toBe(true);
+    expect(String(s.requests[0]!.messages[0]!.content)).toContain("That is no longer true: the tools are on now. Use them.");
+  });
+
+  it("tells the model how to turn Google on when it is off, and adds no line when Google was asked for but is not set up", async () => {
+    const off = await setup([{ text: "Turn on Google in the + menu." }]);
+    await runTurn(off.deps, send("Check my latest emails", { useGoogle: undefined }));
+    expect(String(off.requests[0]!.messages[0]!.content)).toContain("turn on Google or the app in the + menu");
+    expect(off.requests[0]!.toolChoice).toBeUndefined();
+
+    const blocked = await setup([{ text: "Google is not set up." }], { blocked: "not_set_up" });
+    await runTurn(blocked.deps, send("Check my latest emails"));
+    const system = String(blocked.requests[0]!.messages[0]!.content);
+    expect(system).toContain("Google is not available now (not set up)");
+    expect(system).not.toMatch(/\+ menu|no longer true/);
+  });
+
   it("forces calendar_list_events for a meetings question in Personal mode", async () => {
     const s = await setup([
       { calls: [call("calendar_list_events", { from: "2026-10-12T00:00:00Z", to: "2026-10-19T00:00:00Z" })] },
