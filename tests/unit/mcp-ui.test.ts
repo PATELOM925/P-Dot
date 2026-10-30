@@ -85,7 +85,7 @@ describe("mcpOutcomeMessage", () => {
     expect(mcpOutcomeMessage("hacked", "notion")).toBeNull();
     expect(mcpOutcomeMessage(undefined, "notion")).toBeNull();
     expect(mcpOutcomeMessage(["connected"], "notion")).toBeNull();
-    expect(mcpOutcomeMessage("connected", "github")).toBeNull();
+    expect(mcpOutcomeMessage("connected", "vercel")).toBeNull();
     expect(mcpOutcomeMessage("connected", undefined)).toBeNull();
     expect(mcpOutcomeMessage("connected", ["notion"])).toBeNull();
   });

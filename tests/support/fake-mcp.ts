@@ -47,20 +47,77 @@ export const TODOIST_TOOLS: RemoteToolDef[] = [
   { name: "find-tasks", inputSchema: { type: "object", properties: { searchText: { type: "string" }, limit: { type: "number" } } } },
 ];
 
+/** Like GitHub's remote server (decision 0020): the read tools P-Dot uses, and one write tool. */
+export const GITHUB_TOOLS: RemoteToolDef[] = [
+  {
+    name: "search_issues",
+    description: POISON,
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" }, owner: { type: "string" }, repo: { type: "string" }, perPage: { type: "number" } },
+      required: ["query"],
+    },
+  },
+  {
+    name: "list_pull_requests",
+    inputSchema: {
+      type: "object",
+      properties: { owner: { type: "string" }, repo: { type: "string" }, state: { type: "string" }, perPage: { type: "number" } },
+      required: ["owner", "repo"],
+    },
+  },
+  {
+    name: "get_file_contents",
+    inputSchema: {
+      type: "object",
+      properties: { owner: { type: "string" }, repo: { type: "string" }, path: { type: "string" }, ref: { type: "string" }, sha: { type: "string" } },
+      required: ["owner", "repo"],
+    },
+  },
+  { name: "create_issue", inputSchema: { type: "object", properties: { owner: { type: "string" } }, required: ["owner"] } },
+];
+
 export interface AppSpec {
   resource: string;
   issuer: string;
   /** Where the token, registration and revocation endpoints live. */
   authBase: string;
   tools: RemoteToolDef[];
+  /** The scope in a token answer. */
   scope: string;
+  /** Default "/token". */
+  tokenPath?: string;
+  /** Default "/authorize". */
+  authorizePath?: string;
+  /** Overrides of the authorization server metadata. An undefined value removes the field. */
+  metadata?: Record<string, unknown>;
+  /** A confidential client: the token endpoint needs this ID and secret. */
+  client?: { id: string; secret: string };
+  /** GitHub answers an OAuth error with status 200. */
+  errorsWith200?: boolean;
 }
 
 export const APPS: Record<McpServerId, AppSpec> = {
   notion: { resource: "https://mcp.notion.com/mcp", issuer: "https://mcp.notion.com", authBase: "https://mcp.notion.com", tools: NOTION_TOOLS, scope: "default" },
   linear: { resource: "https://mcp.linear.app/mcp", issuer: "https://mcp.linear.app", authBase: "https://mcp.linear.app", tools: LINEAR_TOOLS, scope: "read" },
   todoist: { resource: "https://ai.todoist.net/mcp", issuer: "https://todoist.com", authBase: "https://todoist.com", tools: TODOIST_TOOLS, scope: "data:read" },
+  github: {
+    resource: "https://api.githubcopilot.com/mcp/readonly",
+    issuer: "https://github.com/login/oauth",
+    authBase: "https://github.com",
+    tools: GITHUB_TOOLS,
+    scope: "",
+    tokenPath: "/login/oauth/access_token",
+    authorizePath: "/login/oauth/authorize",
+    metadata: { registration_endpoint: undefined, revocation_endpoint: undefined, client_id_metadata_document_supported: undefined },
+    client: { id: "github-client", secret: "github-secret" },
+    errorsWith200: true,
+  },
 };
+
+/** The endpoints of an app, as its metadata names them. */
+export const tokenUrl = (spec: AppSpec) => `${spec.authBase}${spec.tokenPath ?? "/token"}`;
+export const revokeUrl = (spec: AppSpec) => (spec.metadata && "revocation_endpoint" in spec.metadata ? null : `${spec.authBase}/revoke`);
 
 export interface FakeAppOptions {
   /** "sse" answers each request as an event stream that stays open after the response. */
@@ -156,9 +213,13 @@ export function fakeApp(server: McpServerId, options: FakeAppOptions = {}) {
 
   async function handleToken(call: FakeCall): Promise<Response> {
     const form = new URLSearchParams(call.body);
+    const oauthError = (error: string) => json({ error }, app.errorsWith200 ? 200 : 400);
+    if (app.client && (form.get("client_id") !== app.client.id || form.get("client_secret") !== app.client.secret)) {
+      return oauthError("incorrect_client_credentials");
+    }
     if (form.get("grant_type") === "authorization_code") {
       if (form.get("code") !== "good-code" || !form.get("code_verifier") || form.get("resource") !== app.resource) {
-        return json({ error: "invalid_grant" }, 400);
+        return oauthError("invalid_grant");
       }
       serial += 1;
       return json(issue(`grant-${serial}`));
@@ -171,10 +232,10 @@ export function fakeApp(server: McpServerId, options: FakeAppOptions = {}) {
       const reused = rotatedOut.get(refresh);
       if (reused) {
         deadGrants.add(reused);
-        return json({ error: "invalid_grant" }, 400);
+        return oauthError("invalid_grant");
       }
       const grant = grantOf(refresh);
-      if (!grant || deadGrants.has(grant)) return json({ error: "invalid_grant" }, 400);
+      if (!grant || deadGrants.has(grant)) return oauthError("invalid_grant");
       rotatedOut.set(refresh, grant);
       return json(issue(grant));
     }
@@ -190,23 +251,25 @@ export function fakeApp(server: McpServerId, options: FakeAppOptions = {}) {
     const call: FakeCall = { url, method: init?.method ?? "GET", headers, body: typeof init?.body === "string" ? init.body : "" };
     calls.push(call);
     const resourceUrl = new URL(app.resource);
+    const issuerUrl = new URL(app.issuer);
     if (url === `${resourceUrl.origin}/.well-known/oauth-protected-resource${resourceUrl.pathname}`) {
       return json({ resource: app.resource, authorization_servers: [app.issuer], scopes_supported: [app.scope] });
     }
-    if (url === `${app.issuer}/.well-known/oauth-authorization-server`) {
+    if (url === `${issuerUrl.origin}/.well-known/oauth-authorization-server${issuerUrl.pathname === "/" ? "" : issuerUrl.pathname}`) {
       return json({
         issuer: app.issuer,
-        authorization_endpoint: `${app.authBase}/authorize`,
-        token_endpoint: `${app.authBase}/token`,
+        authorization_endpoint: `${app.authBase}${app.authorizePath ?? "/authorize"}`,
+        token_endpoint: tokenUrl(app),
         registration_endpoint: `${app.authBase}/register`,
         revocation_endpoint: `${app.authBase}/revoke`,
         code_challenge_methods_supported: ["S256"],
         authorization_response_iss_parameter_supported: options.issParameter ?? true,
         client_id_metadata_document_supported: options.cimd ?? true,
+        ...app.metadata,
         ...options.metadata,
       });
     }
-    if (url === `${app.authBase}/token`) return handleToken(call);
+    if (url === tokenUrl(app)) return handleToken(call);
     if (url === `${app.authBase}/register`) return json({ client_id: "registered-client" }, 201);
     if (url === `${app.authBase}/revoke`) return new Response(null, { status: 200 });
     if (url === app.resource && call.method === "POST") return handleMcp(call);
@@ -354,15 +417,15 @@ export async function seedConnection(
     server,
     issuer: spec.issuer,
     resource: spec.resource,
-    clientId: "https://pdot.example/oauth/client-metadata.json",
-    tokenEndpoint: `${spec.authBase}/token`,
-    revocationEndpoint: `${spec.authBase}/revoke`,
+    clientId: spec.client?.id ?? "https://pdot.example/oauth/client-metadata.json",
+    tokenEndpoint: tokenUrl(spec),
+    revocationEndpoint: revokeUrl(spec),
     accessToken: tokens.access_token,
     accessExpiresAt: options.accessExpiresAt ?? Date.now() + 3_600_000,
     refreshToken: options.noRefresh ? null : (tokens.refresh_token ?? null),
     pins: await pinTools(catalog, spec.tools),
     claim: null,
   });
-  await accounts.saveMcp(server, subject, [spec.scope], sealed, userId);
+  await accounts.saveMcp(server, subject, spec.scope ? [spec.scope] : [...catalog.acceptedScopes], sealed, userId);
   return { subject, sealed, tokens };
 }

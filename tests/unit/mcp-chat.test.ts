@@ -200,7 +200,7 @@ describe("connector reads in chat", () => {
     expect(parsed.success).toBe(false);
     expect(chatRequestSchema.safeParse({ action: "retry", conversationId: crypto.randomUUID(), webSearch: true, connectors: ["linear"] }).success).toBe(false);
     expect(chatRequestSchema.safeParse({ action: "send", message: "hi", webSearch: false, connectors: ["notion", "notion"] }).success).toBe(false);
-    expect(chatRequestSchema.safeParse({ action: "send", message: "hi", webSearch: false, connectors: ["github"] }).success).toBe(false);
+    expect(chatRequestSchema.safeParse({ action: "send", message: "hi", webSearch: false, connectors: ["vercel"] }).success).toBe(false);
     expect(chatRequestSchema.safeParse({ action: "send", message: "hi", webSearch: true }).success).toBe(true);
   });
 

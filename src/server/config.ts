@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import { MCP_CONFIG_GATED, type McpServerId } from "@/lib/connectors";
 import { ConfigError } from "@/lib/supabase-config";
 import { MODEL_TIERS, type ModelTier } from "@/lib/routing";
 import { buildRoutingConfig, DEFAULT_CHAINS, type RoutingConfig } from "@/server/assistant/tiers";
@@ -241,6 +242,35 @@ export function getMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfigSta
   if (!raw) return { status: "not_set_up", invalid: false };
   const encryptionKey = decodeKey(raw);
   return encryptionKey ? { status: "ready", encryptionKey } : { status: "not_set_up", invalid: true };
+}
+
+/** The client of an MCP app that has no CIMD and no DCR (decision 0020). */
+export interface McpClientCredentials {
+  clientId: string;
+  clientSecret: string;
+}
+
+/** Env names of the client of each config-gated MCP app. */
+export const MCP_CLIENT_ENV_NAMES: Partial<Record<McpServerId, { id: string; secret: string }>> = {
+  github: { id: "GITHUB_MCP_CLIENT_ID", secret: "GITHUB_MCP_CLIENT_SECRET" },
+};
+
+const CLIENT_ID = /^[A-Za-z0-9._-]{1,256}$/;
+
+/** The app's client ID and secret, or null when the app needs none or one is missing or bad. */
+export function getMcpClientCredentials(server: McpServerId, env: NodeJS.ProcessEnv = process.env): McpClientCredentials | null {
+  const names = MCP_CLIENT_ENV_NAMES[server];
+  if (!names) return null;
+  const clientId = blankToUndefined(env[names.id])?.trim();
+  const clientSecret = blankToUndefined(env[names.secret])?.trim();
+  if (!clientId || !CLIENT_ID.test(clientId) || !clientSecret || clientSecret.length > 256) return null;
+  return { clientId, clientSecret };
+}
+
+/** The sealing key is set and, for a config-gated app, its client too. */
+export function isMcpServerReady(server: McpServerId, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (getMcpConfig(env).status !== "ready") return false;
+  return !MCP_CONFIG_GATED.includes(server) || getMcpClientCredentials(server, env) !== null;
 }
 
 /** Public base URL used in auth emails (verification and password recovery). */

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAssistantConfig, getSiteUrl } from "@/server/config";
+import { getAssistantConfig, getMcpClientCredentials, getSiteUrl } from "@/server/config";
 import { createQuotaGate } from "@/server/db/quota";
 import { isSiteHost, secureCookies } from "@/server/google/connect-flow";
 import { pkceChallenge, randomToken } from "@/server/google/crypto";
@@ -25,6 +25,9 @@ export async function POST(request: Request, context: { params: Promise<{ server
     if (!server) return backToConnectors(request, null, "error");
     const key = readyMcpKey(requestId, ROUTE);
     if (!key) return backToConnectors(request, server.id, "not_set_up");
+    // A confidential client (decision 0020) needs its ID and secret from env.
+    const credentials = server.client === "confidential" ? getMcpClientCredentials(server.id) : null;
+    if (server.client === "confidential" && !credentials) return backToConnectors(request, server.id, "not_set_up");
     if (!isSiteHost(request)) return backToConnectors(request, server.id, "wrong_site");
 
     const { quota } = getAssistantConfig();
@@ -42,7 +45,7 @@ export async function POST(request: Request, context: { params: Promise<{ server
     try {
       const endpoints = await discover(mcpFetch, server);
       const siteUrl = getSiteUrl();
-      const clientId = await clientIdFor(mcpFetch, endpoints, siteUrl);
+      const clientId = credentials ? credentials.clientId : await clientIdFor(mcpFetch, endpoints, siteUrl);
       const state = randomToken();
       const verifier = randomToken();
       sealed = await sealMcpState(key, {

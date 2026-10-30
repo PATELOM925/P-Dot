@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAuthContext } from "@/server/auth/session";
-import { getSiteUrl } from "@/server/config";
+import { getMcpClientCredentials, getSiteUrl } from "@/server/config";
 import { createMcpAccountRepository } from "@/server/db/connected-accounts";
 import { sameText } from "@/server/google/crypto";
 import { hasAccount } from "@/lib/auth-identity";
@@ -61,12 +61,15 @@ export async function GET(request: NextRequest): Promise<Response> {
     if (!code || code.length > MAX_PARAM_CHARS) return done("error", "code");
 
     const catalog = MCP_SERVERS[saved.server];
+    const credentials = catalog.client === "confidential" ? getMcpClientCredentials(catalog.id) : null;
+    if (catalog.client === "confidential" && credentials?.clientId !== saved.clientId) return done("not_set_up", "config");
     const tokens = await exchangeCode(
       mcpFetch,
       catalog,
       {
         tokenEndpoint: saved.tokenEndpoint,
         clientId: saved.clientId,
+        clientSecret: credentials?.clientSecret ?? null,
         redirectUri: `${getSiteUrl()}/api/connectors/mcp/callback`,
         code,
         verifier: saved.verifier,

@@ -5,7 +5,7 @@ import { hasAccount } from "@/lib/auth-identity";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type { McpServerId } from "@/lib/connectors";
 import { requireAuth, type AuthContext } from "@/server/auth/session";
-import { getGoogleConfig, getMcpConfig } from "@/server/config";
+import { getGoogleConfig, getMcpConfig, isMcpServerReady } from "@/server/config";
 import { createConnectedAccountRepository, createMcpAccountRepository } from "@/server/db/connected-accounts";
 import { listConnections, usableApps } from "@/server/mcp/health";
 import { getMode } from "@/server/mode";
@@ -33,7 +33,8 @@ async function loadConnectedApps(auth: AuthContext): Promise<McpServerId[]> {
   const config = getMcpConfig();
   if (config.status !== "ready" || auth.isAnonymous) return [];
   try {
-    return usableApps(await listConnections(createMcpAccountRepository(auth.supabase), config.encryptionKey, auth.userId));
+    const apps = usableApps(await listConnections(createMcpAccountRepository(auth.supabase), config.encryptionKey, auth.userId));
+    return apps.filter((app) => isMcpServerReady(app));
   } catch {
     return [];
   }

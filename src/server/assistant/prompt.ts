@@ -2,7 +2,7 @@ import "server-only";
 import type { Mode, ModelTier, WebSearchStatus } from "@/types/api";
 import type { ChatMessage } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
-import { MCP_SERVER_IDS, MCP_SERVER_NAMES } from "@/lib/connectors";
+import { MCP_CONFIG_GATED, MCP_SERVER_IDS, MCP_SERVER_NAMES } from "@/lib/connectors";
 import { localTime } from "@/lib/time-zone";
 import type { HistoryMessage } from "./context";
 
@@ -60,8 +60,12 @@ const HEAVY_RULE = `- This request needs careful work. Give a useful answer or p
 const PRIVATE_ON_NOTE =
   "Earlier replies in this conversation may say you had no access. That is no longer true: the tools are on now. Use them.";
 
-/** Google and the apps are off for this message, so the model tells the user how to turn them on. */
-const PRIVATE_OFF_NOTE = `Gmail, Google Calendar and the apps (${MCP_SERVER_IDS.map((id) => MCP_SERVER_NAMES[id]).join(", ")}) are off for this message. If the user asks about their email, calendar or one of these apps, do not say that you have no access. Tell them to turn on Google or the app in the + menu next to the message box, then send the message again. If it is not connected yet, they can connect it on the Connectors page.`;
+/**
+ * Google and the apps are off for this message, so the model tells the user how to turn them on.
+ * A config-gated app may not be set up on this site, so the note does not name it (decision 0020, limit L4).
+ */
+const OFF_NOTE_APPS = MCP_SERVER_IDS.filter((id) => !MCP_CONFIG_GATED.includes(id)).map((id) => MCP_SERVER_NAMES[id]);
+const PRIVATE_OFF_NOTE = `Gmail, Google Calendar and the apps (${OFF_NOTE_APPS.join(", ")}) are off for this message. If the user asks about their email, calendar or one of these apps, do not say that you have no access. Tell them to turn on Google or the app in the + menu next to the message box, then send the message again. If it is not connected yet, they can connect it on the Connectors page.`;
 
 /** A message that asks to continue the previous reply. */
 export function isContinuationRequest(text: string): boolean {
