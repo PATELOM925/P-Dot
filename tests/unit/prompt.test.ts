@@ -207,3 +207,25 @@ describe("normalizeReplyText", () => {
     expect(normalizeReplyText("【note】 [2]")).toBe("【note】 [2]");
   });
 });
+
+describe("rich block rules", () => {
+  const input = (webSearch: "off" | "used", results: { title: string; url: string; excerpt: string }[] = []) => ({
+    history: [{ role: "user" as const, content: "Bars in Toronto?" }],
+    webSearch,
+    results,
+    now,
+    mode: "personal" as const,
+  });
+  const system = (messages: { role: string; content: unknown }[]) => String(messages[0]?.content);
+
+  it("always offers the table, checklist and steps blocks", () => {
+    expect(system(buildPromptMessages(input("off")))).toContain("pdot-checklist");
+  });
+
+  it("offers the places block only when web search found sources", () => {
+    expect(system(buildPromptMessages(input("off")))).not.toContain("pdot-places");
+    expect(system(buildPromptMessages(input("used", [])))).not.toContain("pdot-places");
+    const used = buildPromptMessages(input("used", [{ title: "Bars", url: "https://www.blogto.com/bars", excerpt: "Walrus Pub" }]));
+    expect(system(used)).toContain("pdot-places");
+  });
+});

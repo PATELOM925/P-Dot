@@ -142,7 +142,7 @@ P-Dot has the Gmail and Calendar modules, but the model cannot use them. A read 
     - The screen turns the other sources off when the user turns one on.
     - Past the schema, the server still keeps a Google or app turn safe: it does not run the first search and does not offer the `web_search` tool in that turn.
     - Later turns: any later reply can repeat private text, and the 40-message history window can drop the Google reply while a newer reply still carries the text. So the rule belongs to the conversation, not to the window. Once a conversation has any reply with route reason `google_request` or `connector_read`, the model-written `web_search` tool stays off in that conversation for good. `ConversationRepository.hasPrivateSourceReply(userId, conversationId)` runs `select id from messages where user_id = $1 and conversation_id = $2 and role = 'assistant' and route_reason in ('google_request', 'connector_read') limit 1`, with no window. One helper in `prepareChatTurn` calls it and feeds `ToolFlags.webSearchTool`. If that read fails, the answer is "yes" (fail closed). Every turn that offers a Google tool stores `google_request` as its route reason, before any other reason. The rule needs no migration.
-    - The user's toggle still runs the first search in such a conversation, because its query is the user's own new message, not model text. Under the search toggle the screen says: "In this chat, P-Dot searches only with your own words, because it read your Google data here."
+    - The user's toggle still runs the first search in such a conversation, because its query is the user's own new message, not model text. The "Search the web" row then says: "In this chat, only with your own words, because P-Dot read your Google or app data here."
     - Both tool selection and `checkToolCall` apply the rule, so a model-written search is refused also in a batch.
     - Other conversations are not affected: the read uses the user and the conversation as keys.
     - Limit: the user can paste private text into a message with search on. That is the user's own choice, as today.
@@ -295,9 +295,13 @@ Editing an external action on its card, attachments, reply threading, calendars 
 
 **Chat screen**
 
-- The chat page (a server component) reads the connection once and passes `google: { read, send, calendar } | null` to the chat workspace. It passes null for an anonymous session or when Google is not set up.
-- A "Use Google" checkbox sits next to the web search toggle, with a visible label and `aria-describedby` help: "P-Dot can read your Gmail and calendar for this message. It asks before it sends or adds anything."
-- The toggle resets to off after each send. It is hidden when `google` is null.
+- The chat page (a server component) reads the connection once and passes `google: "connected" | "not_connected" | "trial" | null` to the chat workspace. Null means Google is not set up.
+- "Use Google" is one `ToolItem` in the composer "+" menu (`ComposerTools.tsx`), after "Think harder" and before the apps. `googleToolItem` in `src/features/chat/composer-sources.ts` builds it:
+  - connected: a switch, "Gmail and calendar for this message. Asks before it sends or adds." When it is on, a "Google" chip shows above the text.
+  - not connected: a link row to `/connectors#google`.
+  - trial: a disabled row, "Create an account to use Google."
+- `toggleSource` keeps one kind of source on: turning Google on turns web search and the apps off, and turning either of those on turns Google off.
+- The toggle resets to off at each send. It is hidden when `google` is null.
 - `tool-status.ts` adds the lines "Searching Gmail for "<query>"…", "Reading an email…", "Checking your calendar…", "Preparing an email for you to approve…" and "Preparing an event for you to approve…".
 
 **Tests**

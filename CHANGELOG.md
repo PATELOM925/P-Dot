@@ -9,6 +9,14 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Rich answers: citation chips, a sources row, cards and a calm scroll** ([decision 0017](docs/decisions/0017-rich-answers.md)). Problem: sources were a long list after every reply, `[n]` marks were plain text, places came as raw lists, and each new token pulled the reader to the bottom. Resolution: `[n]` is a chip that opens the matching source; sources are one line ("N sources · M cited") that opens to a numbered list; strict-JSON `pdot-*` blocks show as cards, with places offered only when web search found sources and Maps links that P-Dot builds; the list follows a reply only at the bottom and shows "Jump to latest" otherwise. Also the empty chat copy, the approval setup as one line above the first card, and 44 px touch targets. ([PR #32](https://github.com/PATELOM925/P-Dot/pull/32))
+- **Chat UX fixes: the composer, safe Markdown, reply states and phone navigation.** ([PR #27](https://github.com/PATELOM925/P-Dot/pull/27))
+  - Problem: the "+" menu opened on top of the text box and stayed open, and the toolbar wrapped to 2 rows on a phone. Replies showed raw Markdown. A failed reply lost its text, and the error and Retry were in two places. On a phone, most pages were off screen and the conversation list had no close control.
+  - Resolution:
+    - Both composer menus open above the box and share one set of close rules (`usePopover`). The toolbar has "+", approval mode, mic and one Send/Stop button. "Think harder" is in the "+" menu, and tools that are on show as chips above the text. A `--border-field` token gives field edges 3:1 contrast.
+    - Replies render as safe Markdown with no new dependency: React elements only, links through `toSafeHttpUrl`, images as alt text, raw HTML as text. Parsing is linear. Sources keep their numbers when a link is removed.
+    - Each reply turn shows one state: Working, no update for 15 seconds, Waiting for you, Stopped, Did not finish or Done. One error block under the turn shows Retry only when it can help, and the partial text stays, marked as not saved.
+    - Phones get bottom tabs (Today, Chat, Memory, More), a More sheet with the other pages, Devices and sign-out, and a conversation drawer with Close, Esc, a backdrop and focus return.
 - **Gmail and Calendar chat tools with a "Use Google" toggle** ([decision 0014, section 3](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #30](https://github.com/PATELOM925/P-Dot/pull/30))
   - Problem: P-Dot could connect Google, but the assistant could not read the user's mail or calendar, or propose an email or an event. Email text can try to give the model instructions, and private text could leave through a web search query.
   - Resolution:
