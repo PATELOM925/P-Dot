@@ -103,7 +103,7 @@ Requires Node.js 22.12 or newer.
 
      The default `{{ .ConfirmationURL }}` templates also work, but only when the link is opened in the same browser that started the flow.
 
-4. **Set environment variables**: copy `.env.example` to `.env.local` and fill it in. You need the Supabase URL and publishable key, a Nebius API key, and a Nebius chat model ID (list available models with `GET https://api.tokenfactory.nebius.com/v1/models`). `TAVILY_API_KEY` is optional. Never use the Supabase secret/service-role key in this app.
+4. **Set environment variables**: copy `.env.example` to `.env.local` and fill it in. You need the Supabase URL and publishable key, a Nebius API key, and a Nebius chat model ID (list available models with `GET https://api.tokenfactory.nebius.com/v1/models`). `TAVILY_API_KEY` is optional. The three `GOOGLE_*` values are optional; see "One-time setup", item 7, in `docs/DEPLOYMENT.md`. Never use the Supabase secret/service-role key in this app.
 
 5. **Run the app**
 

@@ -151,6 +151,26 @@ export async function updatePasswordAction(_prev: AuthFormState, formData: FormD
   redirect("/chat");
 }
 
+/**
+ * "Continue with Google" (decision 0014). Supabase stores the PKCE verifier in
+ * a cookie and gives the Google URL; /auth/callback finishes the sign-in. Any
+ * failure gives one message that does not say whether an account exists.
+ */
+export async function signInWithGoogleAction(formData: FormData): Promise<void> {
+  const next = safeNextPath(field(formData, "next"));
+  const supabase = await supabaseOrNull();
+  let url: string | null = null;
+  if (supabase) {
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${getSiteUrl()}/auth/callback?next=${encodeURIComponent(next)}`, skipBrowserRedirect: true },
+    });
+    if (!error && data.url && new URL(data.url).protocol === "https:") url = data.url;
+    else logEvent("warn", "google_sign_in_start_failed", { route: "auth.google" });
+  }
+  redirect(url ?? "/login?error=oauth");
+}
+
 export async function signOutAction(): Promise<void> {
   const supabase = await supabaseOrNull();
   // "local" ends this browser's session only; other devices stay signed in.

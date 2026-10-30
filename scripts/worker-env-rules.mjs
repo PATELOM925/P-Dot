@@ -27,6 +27,9 @@ export const ALLOWED_NAMES = new Set([
   "TAVILY_DAILY_CREDITS",
   "TAVILY_MONTHLY_CREDITS",
   "TAVILY_USER_DAILY_CREDITS",
+  // Public: Google shows it in every sign-in URL. GOOGLE_OAUTH_CLIENT_SECRET and
+  // GOOGLE_TOKEN_ENCRYPTION_KEY are secrets and must never be on this list.
+  "GOOGLE_OAUTH_CLIENT_ID",
 ]);
 
 /** Returns "mode.NAME" for each variable that has a value but is not allowed. Names only, never values. */

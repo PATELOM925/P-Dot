@@ -18,6 +18,14 @@ export async function decideAction(
   });
 }
 
+/**
+ * For an external action that stays "executing" (decision 0014). No answer:
+ * P-Dot checks again (calendar only). An answer: the user says if it happened.
+ */
+export async function recoverAction(id: string, answer?: "done" | "not_done"): Promise<ActionProposalDTO> {
+  return sendJson<ActionProposalDTO>(`/api/actions/${encodeURIComponent(id)}/recover`, "POST", answer ? { answer } : {});
+}
+
 export async function fetchActionLog(signal?: AbortSignal): Promise<ActionLogEntryDTO[]> {
   return (await getJson<{ entries: ActionLogEntryDTO[] }>("/api/action-log", signal)).entries;
 }

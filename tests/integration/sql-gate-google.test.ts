@@ -588,15 +588,15 @@ describe.each(MODES)("Google connection and external actions with %s default gra
     });
   });
 
-  describe("main's code on the new schema", () => {
-    it("still decides the older kinds and lists proposals; it leaves out a row of a new kind it cannot parse", async () => {
+  describe("the app's repository on the new schema", () => {
+    it("still decides the older kinds and lists proposals of every kind", async () => {
       const owner = await gate.createUser();
       const repo = createActionProposalRepository(sqlGateClient(gate, owner));
       const task = await propose(gate, owner, TASK);
-      await propose(gate, owner, EMAIL);
+      const email = await propose(gate, owner, EMAIL);
       expect((await repo.decide(task, "approve")).outcome).toBe("executed");
       const listed = await repo.listProposals(owner, undefined, 50);
-      expect(listed.map((proposal) => proposal.id)).toEqual([task]);
+      expect(listed.map((proposal) => proposal.id).sort()).toEqual([task, email].sort());
       expect(await proposalEvents(gate, task)).toEqual(["proposed", "approved", "executed"]);
       const log = await createActionLogRepository(sqlGateClient(gate, owner)).list(owner, 50);
       expect(log.length).toBeGreaterThanOrEqual(4);

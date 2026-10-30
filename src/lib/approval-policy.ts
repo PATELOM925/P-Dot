@@ -32,6 +32,8 @@ export const ACTION_EFFECTS: Record<ActionKind, ActionEffect> = {
   create_task: "create_own",
   create_reminder: "create_own",
   save_memory: "store_personal",
+  send_email: "external",
+  create_calendar_event: "external",
 };
 
 /** Only these may run without asking, and only in Auto: adding to P-Dot's own lists, which the user can undo. */
