@@ -2774,6 +2774,11 @@ label.button[aria-disabled="true"] {
     background: var(--surface);
   }
 
+  /* An on-screen keyboard is open (VisualViewport, not focus): the tabs give the chat their space. */
+  .bottom-nav[data-keyboard="open"] {
+    display: none;
+  }
+
   .bottom-tab {
     flex: 1;
     display: inline-flex;
