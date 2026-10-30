@@ -34,7 +34,7 @@ import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
-import { googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
+import { autoSources, googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -121,6 +121,8 @@ export function ChatWorkspace({
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
   const [apps, setApps] = useState<McpServerId[]>([]);
+  // True once the user picks or turns off a source for this draft: the auto pick then stays off.
+  const [autoOff, setAutoOff] = useState(false);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
@@ -334,13 +336,17 @@ export function ChatWorkspace({
     }
   }
 
+  // The sources the next message uses: the user's pick, or the source that the draft names.
+  const picked = { webSearch, useGoogle, apps };
+  const sources = autoOff ? picked : autoSources(draft, picked, google, connectedApps);
+
   async function submit(action: "send" | "retry") {
     if (sending) return;
     const text = draft.trim();
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
-    const sentApps = apps;
+    const sentApps = sources.apps;
     const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
     const timeZone = browserTimeZone();
     const zone = timeZone ? { timeZone } : {};
@@ -349,10 +355,10 @@ export function ChatWorkspace({
         ? {
             action,
             message: text,
-            webSearch,
+            webSearch: sources.webSearch,
             effort,
             ...connectors,
-            ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...(sources.useGoogle ? { useGoogle: true as const } : {}),
             ...(activeId ? { conversationId: activeId } : { mode }),
             ...zone,
           }
@@ -401,6 +407,7 @@ export function ChatWorkspace({
       dictation.cancel();
       setDraft("");
       setUseGoogle(false);
+      setAutoOff(false);
       starterToolsRef.current = false;
       setMessages((current) => [
         ...current,
@@ -558,7 +565,7 @@ export function ChatWorkspace({
     }
   }
 
-  const googleItem = googleToolItem(google, useGoogle);
+  const googleItem = googleToolItem(google, sources.useGoogle);
   // The "+" menu: web search, Think harder, Google, then each connected app. A new tool is one more item.
   const tools: ToolItem[] = [
     {
@@ -590,7 +597,7 @@ export function ChatWorkspace({
         chip: MCP_SERVER_NAMES[app],
         chipClass: "chip-app",
         icon: "app",
-        on: apps.includes(app),
+        on: sources.apps.includes(app),
       }),
     ),
   ];
@@ -603,7 +610,8 @@ export function ChatWorkspace({
       return;
     }
     if (key === "google" && google !== "connected") return;
-    const next = toggleSource({ webSearch, useGoogle, apps }, key, connectedApps);
+    const next = toggleSource(sources, key, connectedApps);
+    setAutoOff(true);
     setWebSearch(next.webSearch);
     setUseGoogle(next.useGoogle);
     setApps(next.apps);
@@ -980,6 +988,7 @@ export function ChatWorkspace({
               onChange={(event) => {
                 const value = event.target.value;
                 setDraft(value);
+                if (!value.trim()) setAutoOff(false);
                 if (!value.trim() && starterToolsRef.current) {
                   starterToolsRef.current = false;
                   setWebSearch(false);

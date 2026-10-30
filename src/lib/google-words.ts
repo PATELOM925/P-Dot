@@ -36,11 +36,12 @@ export interface GoogleWords {
 
 export function googleWords(message: string): GoogleWords {
   const mail = MAIL.test(message);
-  const calendar = CALENDAR.test(message);
+  const scheduleMeeting = SCHEDULE_MEETING.test(message);
+  const calendar = scheduleMeeting || CALENDAR.test(message);
   return {
     mail,
     calendar,
     read: (mail || calendar) && !WRITE.test(message),
-    scheduleMeeting: SCHEDULE_MEETING.test(message),
+    scheduleMeeting,
   };
 }
