@@ -62,6 +62,7 @@ export type ApiErrorCode =
   | "unauthorized"
   | "forbidden"
   | "account_required"
+  | "reconnect_required"
   | "invalid_request"
   | "unsupported_media_type"
   | "payload_too_large"
@@ -157,14 +158,20 @@ export interface DocumentDTO {
   createdAt: string;
 }
 
-/** Actions the assistant may propose. None of them changes an outside account. */
-export type ActionKind = "create_task" | "create_reminder" | "save_memory";
-export type ActionStatus = "proposed" | "approved" | "rejected" | "executed" | "failed";
+/**
+ * Actions the assistant may propose. send_email and create_calendar_event act
+ * in the user's Google account and always ask (decision 0014).
+ */
+export type ActionKind = "create_task" | "create_reminder" | "save_memory" | "send_email" | "create_calendar_event";
+/** "executing": an external action whose Google call has started and has no stored outcome yet (decision 0014). */
+export type ActionStatus = "proposed" | "approved" | "executing" | "rejected" | "executed" | "failed";
 
 export type ActionPayload =
   | { kind: "create_task"; mode: Mode; title: string }
   | { kind: "create_reminder"; mode: Mode; title: string; dueAt: string }
-  | { kind: "save_memory"; mode: Mode; content: string };
+  | { kind: "save_memory"; mode: Mode; content: string }
+  | { kind: "send_email"; mode: Mode; to: string[]; subject: string; body: string }
+  | { kind: "create_calendar_event"; mode: Mode; title: string; start: string; end: string; attendees: string[] };
 
 export interface ActionProposalDTO {
   id: string;
@@ -181,6 +188,8 @@ export interface ActionProposalDTO {
   result: Record<string, string | number | boolean | null> | null;
   createdAt: string;
   decidedAt: string | null;
+  /** For an external action: when its Google call started. Null for the other kinds. */
+  executionStartedAt?: string | null;
   /**
    * True only when the database function decide_action_proposal decided this
    * proposal, so `status` and `result` are a record of what the database ran.

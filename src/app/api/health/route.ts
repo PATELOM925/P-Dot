@@ -1,5 +1,5 @@
 import { isSupabaseConfigured } from "@/lib/supabase-config";
-import { getAssistantConfig } from "@/server/config";
+import { getAssistantConfig, getGoogleConfig } from "@/server/config";
 
 export const dynamic = "force-dynamic";
 
@@ -19,11 +19,13 @@ export function GET(): Response {
     // Not configured.
   }
 
+  const google = getGoogleConfig().status === "ready";
+
   return Response.json(
     {
       status: "ok",
       time: new Date().toISOString(),
-      configured: { auth: isSupabaseConfigured(), inference, webSearch },
+      configured: { auth: isSupabaseConfigured(), inference, webSearch, google },
     },
     { headers: { "Cache-Control": "no-store" } },
   );

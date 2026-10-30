@@ -2,6 +2,7 @@
 
 import { ApprovalCard } from "@/features/actions/ApprovalCard";
 import { AutoRanProposal } from "@/features/actions/AutoRanProposal";
+import { needsUser } from "@/features/actions/format";
 import { PastProposal } from "@/features/actions/PastProposal";
 import type { AutoRunOutcome } from "@/features/actions/useAutoApprovals";
 import { MemorySuggestionCard } from "@/features/memory/MemorySuggestionCard";
@@ -47,8 +48,8 @@ export function TurnExtras({
   if (proposals.length === 0 && suggestions.length === 0) return null;
   const isAuto = (p: ActionProposalDTO) => autoRunning.has(p.id) || autoRan.get(p.id) === "done";
   const auto = proposals.filter(isAuto);
-  const open = proposals.filter((p) => !isAuto(p) && (p.status === "proposed" || decidedHere.has(p.id)));
-  const past = proposals.filter((p) => !isAuto(p) && p.status !== "proposed" && !decidedHere.has(p.id));
+  const open = proposals.filter((p) => !isAuto(p) && (needsUser(p) || decidedHere.has(p.id)));
+  const past = proposals.filter((p) => !isAuto(p) && !needsUser(p) && !decidedHere.has(p.id));
 
   return (
     <section className="turn-extras" aria-label="P-Dot's suggestions for this reply">

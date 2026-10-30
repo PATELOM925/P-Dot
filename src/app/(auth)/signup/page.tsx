@@ -4,6 +4,7 @@ import { signUpAction } from "@/features/auth/actions";
 import { AuthForm } from "@/features/auth/AuthForm";
 import { ConfigError } from "@/lib/supabase-config";
 import { getAuthContext } from "@/server/auth/session";
+import { GoogleSignInButton } from "@/features/auth/GoogleSignInButton";
 
 export const metadata: Metadata = { title: "Create account · P-Dot" };
 
@@ -26,6 +27,8 @@ export default async function SignupPage() {
           Your trial chats do not move to the new account. The new account starts empty.
         </p>
       )}
+      <GoogleSignInButton />
+      <p className="muted">Or create an account with your email and a password.</p>
       <AuthForm
         action={signUpAction}
         submitLabel="Create account"
