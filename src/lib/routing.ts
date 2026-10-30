@@ -23,6 +23,9 @@ export const ROUTE_REASONS = [
   "user_deep",
   "image",
   "requested",
+  "task_request",
+  "memory_request",
+  "own_data",
 ] as const;
 export type RouteReason = (typeof ROUTE_REASONS)[number];
 
@@ -48,6 +51,9 @@ const REASON_LABELS: Record<RouteReason, string> = {
   user_deep: "you asked to think harder",
   image: "image input",
   requested: "requested by the assistant",
+  task_request: "task or reminder request, tools on",
+  memory_request: "request to remember, tools on",
+  own_data: "about your notes or memories, tools on",
 };
 
 const MODEL_NAMES: Record<string, string> = {

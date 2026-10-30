@@ -3,6 +3,7 @@ import {
   HISTORY_CHAR_BUDGET,
   HISTORY_MESSAGE_LIMIT,
   MAX_ASSISTANT_CHARS,
+  MEMORY_CONTEXT_COUNT,
   REPLY_CLAIM_LEASE_SECONDS,
 } from "@/lib/limits";
 import type {
@@ -37,9 +38,12 @@ import {
 } from "./executor";
 import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
 import { normalizeReplyText } from "./reply-text";
+import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
+import { detectToolIntent } from "./tool-intent";
 import {
   budgetRefusal,
+  MEMORY_BLOCK_MAX_BYTES,
   nebiusHoldMicroUsd,
   nebiusSettleMicroUsd,
   NebiusHoldTooLargeError,
@@ -50,14 +54,17 @@ import {
 import { RETRY_POLICY, type RoutingConfig } from "./tiers";
 import {
   checkToolCall,
+  earlierAttemptCheck,
   MAX_TOOL_CALLS_PER_HOP,
   MAX_TOOL_HOPS,
   selectTools,
   TOOLS,
   toToolDefinition,
+  type OwnDataServices,
   type ToolFlags,
   type ToolSpec,
 } from "./tools";
+import type { MemoryMatch } from "@/server/db/retrieval";
 
 export interface AssistantDeps {
   repo: ConversationRepository;
@@ -83,6 +90,14 @@ export interface AssistantDeps {
    * without it, no record is written. A failed write never fails the reply.
    */
   contextRecords?: ContextRecordRepository;
+  /**
+   * The user's own P-Dot data for memory retrieval and the own-data tools
+   * (decision 0013). Optional: without it, replies use no memories and those
+   * tools are not offered.
+   */
+  ownData?: OwnDataServices | null;
+  /** Make a title with the model for a new conversation, after the reply. Off when missing. */
+  titles?: boolean;
 }
 
 /** A Nebius hold made before the stream starts and settled when it ends. */
@@ -109,6 +124,12 @@ export interface PreparedTurn {
   userId: string;
   conversation: ConversationSummary;
   userMessage: MessageDTO;
+  /**
+   * True when this request answers a user message that was already saved:
+   * "Retry reply", or a resend that found its message. False when this
+   * request saved the message (a fresh turn).
+   */
+  repeat: boolean;
   /** Chronological history ending with `userMessage`. */
   history: HistoryMessage[];
   webSearch: boolean;
@@ -263,13 +284,19 @@ export async function prepareChatTurn(
     const searchWanted = request.webSearch && deps.search !== null;
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
     // which only makes the prompt smaller than the one this hold prices.
-    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted });
+    // Memories go into every turn when the data services exist. The own-data tools only
+    // when the message asks for them (detectToolIntent), so a plain message stays on the fast tier.
+    const ownData = Boolean(deps.ownData);
+    const latest = pendingHistory.at(-1)?.content ?? "";
+    const toolIntent = ownData ? detectToolIntent(latest) : null;
+    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted, ownData: toolIntent !== null });
     const route = withToolTier(
       routeRequest({
-        message: pendingHistory.at(-1)?.content ?? "",
+        message: latest,
         historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
         webSearch: request.webSearch,
         effort: request.effort ?? "auto",
+        toolIntent,
       }),
       toolsBound.length > 0,
     );
@@ -293,7 +320,7 @@ export async function prepareChatTurn(
             model,
             promptBound,
             plan.maxOutputTokens,
-            searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0,
+            (searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0) + (ownData ? MEMORY_BLOCK_MAX_BYTES : 0),
             toolDefinitionsBound,
           ),
         ),
@@ -355,11 +382,12 @@ export async function prepareChatTurn(
         userId,
         conversation: { ...conversation, updatedAt: userMessage.createdAt },
         userMessage,
+        repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
         webSearch: request.webSearch,
         searchBudgetExhausted,
         route,
-        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted },
+        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted, ownData: toolIntent !== null },
         holds,
       },
     };
@@ -517,6 +545,26 @@ async function* runChatTurn(
     }
   }
 
+  // Active memories of this mode, top MEMORY_CONTEXT_COUNT. A failure means a reply without memories.
+  let memories: MemoryMatch[] = [];
+  if (deps.ownData) {
+    try {
+      const [vector] = await deps.ownData.embedder.embed([turn.userMessage.content], signal);
+      if (vector) {
+        const found = await deps.ownData.retrieval.matchMemories(vector, turn.conversation.mode, MEMORY_CONTEXT_COUNT);
+        memories = found.slice(0, MEMORY_CONTEXT_COUNT);
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        deps.log("info", "chat_client_aborted", { ...logBase, stage: "memories" });
+        return;
+      }
+      deps.log("warn", "memory_retrieval_failed", { ...logBase, kind: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  const memoryIds = new Set(memories.map((memory) => memory.id));
+  const documentChunkIds = new Set<string>();
+
   // 2. Inference over a bounded context window, on the routed tier. When tools
   // are offered, up to MAX_TOOL_HOPS hops can call them, then one final pass
   // runs with tools off. Every attempt of every hop holds and settles spend.
@@ -530,12 +578,20 @@ async function* runChatTurn(
     now: deps.now(),
     mode: turn.conversation.mode,
     toolGuidance: tools.map((tool) => tool.guidance),
+    memories,
   });
   const plan = deps.routing[turn.route.tier];
-  // One deadline for all hops, so a turn stays inside the reply claim lease (decision 0012).
+  // One deadline for all hops and tool runs, so a turn stays inside the reply claim lease (decision 0012).
   const deadlineAt = Date.now() + plan.deadlineMs;
+  const toolSignal = AbortSignal.any([signal, AbortSignal.timeout(plan.deadlineMs)]);
   const sources: WebSearchResult[] = [...results];
   const callsPerTool = new Map<string, number>();
+  const earlierAttemptWrote = earlierAttemptCheck(deps.ownData, deps.repo, {
+    repeat: turn.repeat,
+    userId: turn.userId,
+    conversationId: turn.conversation.id,
+    userMessage: turn.userMessage,
+  });
 
   let content = "";
   let truncated = false;
@@ -703,10 +759,13 @@ async function* runChatTurn(
             mode: turn.conversation.mode,
             conversationId: turn.conversation.id,
             userMessageId: turn.userMessage.id,
-            signal,
+            earlierAttemptWrote,
+            signal: toolSignal,
             sources,
           });
           result = outcome.content;
+          for (const id of outcome.memoryIds ?? []) memoryIds.add(id);
+          for (const id of outcome.documentChunkIds ?? []) documentChunkIds.add(id);
           if (outcome.sources && outcome.sources.length > 0) {
             sources.push(...outcome.sources);
             yield { type: "search", status: "used", sources: toSourceRefs(sources) };
@@ -776,8 +835,8 @@ async function* runChatTurn(
         model: report.model,
         historyMessageCount: historyWindow.length,
         historyChars: historyWindow.reduce((sum, m) => sum + m.content.length, 0),
-        memoryIds: [],
-        documentChunkIds: [],
+        memoryIds: [...memoryIds],
+        documentChunkIds: [...documentChunkIds],
         webSourceCount: webSearch === "used" ? sources.length : 0,
         promptVersion: PROMPT_VERSION,
         inputTokens: validUsage?.promptTokens ?? null,
@@ -799,6 +858,65 @@ async function* runChatTurn(
     completionTokens: usage?.completionTokens,
   });
   yield { type: "done", message: saved, truncated: truncated || finishReason === "length" };
+
+  // 4. A title made by the model for a new conversation, after the reply (decision 0013).
+  if (deps.titles && turn.history.length === 1 && turn.conversation.title === titleFromMessage(turn.userMessage.content)) {
+    yield* makeTitle(deps, turn, signal, settle);
+  }
+}
+
+/**
+ * One short call on the fast tier. Each attempt holds and settles spend like a
+ * reply. Any failure keeps the title from the first message: the reply is
+ * already saved, so this step never sends an error.
+ */
+async function* makeTitle(
+  deps: AssistantDeps,
+  turn: PreparedTurn,
+  signal: AbortSignal,
+  settle: (hold: NebiusHold, amount: number) => void,
+): AsyncGenerator<ChatStreamEvent> {
+  const logBase = { requestId: turn.requestId, route: "chat" };
+  const plan = titlePlan(deps.routing.fast);
+  const messages = titleMessages(turn.userMessage.content);
+  const budget: AttemptBudget = {
+    async reserve(model) {
+      const heldMicroUsd = nebiusHoldMicroUsd(model, messages, plan.maxOutputTokens);
+      const reservation = await deps.spend.reserve("nebius", heldMicroUsd);
+      if (!reservation.allowed) return { allowed: false, limit: reservation.limit };
+      return { allowed: true, hold: { reservationId: reservation.id, heldMicroUsd } };
+    },
+    settle(hold, model, outcome) {
+      settle(hold, outcome.sent ? nebiusSettleMicroUsd(model, hold.heldMicroUsd, outcome.usage) : 0);
+    },
+  };
+  let text = "";
+  try {
+    for await (const chunk of executeRouted({
+      plan,
+      messages,
+      provider: deps.provider,
+      budget,
+      breaker: deps.breaker,
+      signal,
+      report: newRouteReport(plan.tier),
+      random: deps.random,
+    })) {
+      if (chunk.type === "text") text += chunk.text;
+      if (text.length > 400) break;
+    }
+  } catch (error) {
+    deps.log("warn", "title_failed", { ...logBase, kind: error instanceof Error ? error.name : "unknown" });
+    return;
+  }
+  const title = cleanTitle(text);
+  if (!title || signal.aborted) return;
+  // Only while the title is still the one this turn started with: a rename by the user wins.
+  const renamed = await deps.repo.renameConversation(turn.userId, turn.conversation.id, title, turn.conversation.title).catch(() => {
+    deps.log("warn", "title_save_failed", logBase);
+    return null;
+  });
+  if (renamed) yield { type: "title", conversationId: renamed.id, title: renamed.title };
 }
 
 /**

@@ -107,7 +107,7 @@ A status that means work is in progress must name how a row leaves it when a req
 
 ## Not in this change
 
-Scheduled reminder delivery and push notifications, the tool loop that creates proposals, using memories and documents in the chat prompt, and the frontend screens. They build on these shapes.
+Scheduled reminder delivery and push notifications, the tool loop that creates proposals, using memories and documents in the chat prompt, and the frontend screens. They build on these shapes. The tool loop, the proposal tools and memory and document retrieval came later, in [decision 0013](0013-ai-tools-and-scope.md).
 
 ## Frontend (2026-10-19)
 

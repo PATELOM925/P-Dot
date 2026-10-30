@@ -9,6 +9,19 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Replies use kept memories, the assistant can search the user's documents and propose tasks, reminders and memories, and new chats get titles from the model** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #24](https://github.com/PATELOM925/P-Dot/pull/24))
+  - Problem: replies did not use memories or documents, the context record always had empty memory and document lists, nothing created proposals for the approval cards, and titles came only from the first message.
+  - Resolution:
+    - The top 4 active memories of the mode go in the final user turn as an untrusted block. The embedding holds spend, and the first hold prices the block.
+    - The own-data tools are offered only when the message asks to remind, schedule, add a task, remember or save, or asks about the user's notes, documents or memories (`detectToolIntent`, a pure rule check next to the router). Such a turn runs on the standard tier, and the line under the reply says that tools are on. A plain message stays on the fast tier with no tools.
+    - `search_documents` and `search_memories` search the current mode, at most 5 matches, shown by title. Their IDs go in the context record.
+    - `propose_task`, `propose_reminder` and `save_memory` write proposals or a proposed memory before `done`. A new message always gets its cards, also when two tabs send the same text at the same time. A "Retry reply" or a resend of a saved message writes nothing when its first attempt already wrote a proposal or a memory, also after the user edited, approved or rejected that card. If another user message in the conversation has the same stored time, the repeat writes, because the two turns cannot be told apart.
+    - A short fast-tier call with a spend hold makes the title of a new conversation and sends a `title` event.
+    - The chat route's write-fault sweep now also covers the proposal, memory and title writes: a resend or Retry reply does not repeat a proposal or a memory. A second sweep starts from a Retry reply of a saved message, so the reads that find earlier rows also fail in it.
+    - After `done`, chat shows no error for a title event, Stop or a cut stream, and the composer is free at once. A late end of an earlier stream cannot free a newer send.
+    - A generated title never overwrites a rename by the user: the rename applies only while the title is still the first one.
+    - 10 hallucination guardrail tests on main's fakes, and updated screen copy.
+    - One-time effect: a chat tab opened before this deploy skips the new `title` event, but its message box stays busy after the reply until the title step ends (at most 15 seconds). A reload fixes it.
 - **Database step for Google sign-in and the Google connection** ([decision 0014](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #23](https://github.com/PATELOM925/P-Dot/pull/23))
   - Problem: P-Dot cannot store a connection to a user's Google account, and an action that acts outside P-Dot (send an email, create an event) has no safe path. The database cannot call Google, so the decision function cannot run such an action in its own transaction, and a retry must never send twice.
   - Resolution:
