@@ -31,6 +31,7 @@ A pure function (`routeRequest`) picks the tier. It makes no model call, so it a
 | A caller asks for a tier (the agent loop, later) | that tier | `requested` | requested by the assistant |
 | Image input | vision | `image` | image input |
 | The user chose "Think harder" (`effort: "deep"`) | heavy | `user_deep` | you asked to think harder |
+| The message asks for the own-data tools (`detectToolIntent`, [decision 0013](0013-ai-tools-and-scope.md)) | standard | `task_request`, `memory_request` or `own_data` | for example "task or reminder request, tools on" |
 | Two or more reasoning signals, or a list of 3+ steps or 3+ questions | heavy | `multi_step` | multi-step request |
 | One signal in a message of 1,200+ characters | heavy | the signal | for example "analysis or comparison" |
 | One signal | standard | `planning`, `analysis`, `math` or `code` | for example "planning request" |

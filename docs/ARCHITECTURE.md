@@ -130,6 +130,8 @@ Tools today:
 - `propose_task`, `propose_reminder`: write an `action_proposals` row that waits for approval.
 - `save_memory`: writes a proposed memory from the assistant, linked to the user message.
 
+The own-data tools are offered only when `detectToolIntent` (`src/server/assistant/tool-intent.ts`) finds a task, reminder, memory or own-data request in the message. A plain message gets no tools and stays on the fast tier.
+
 Before each turn, the top 4 active memories of the mode go in the final user turn, in an untrusted `<saved_memories>` block. After the reply of a new conversation, a short fast-tier call makes its title (`title` event).
 
 To add a tool, write a `ToolSpec`, add it to `TOOLS` in `tools/index.ts`, add its name to `AssistantToolName` and a status line in `src/features/chat/tool-status.ts`. A tool that a per-message toggle controls (for example "Use Google" for Gmail and Calendar tools, decision 0014) adds a flag to `ToolFlags`, a field to the chat request schema, and sets the flag in `prepareChatTurn`. A tool that changes anything is `propose` and writes an `action_proposals` row; a tool that reads private data outside P-Dot needs an approval step first (decision 0011, step 5).

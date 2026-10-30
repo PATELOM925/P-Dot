@@ -13,10 +13,14 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
   - Problem: replies did not use memories or documents, the context record always had empty memory and document lists, nothing created proposals for the approval cards, and titles came only from the first message.
   - Resolution:
     - The top 4 active memories of the mode go in the final user turn as an untrusted block. The embedding holds spend, and the first hold prices the block.
+    - The own-data tools are offered only when the message asks to remind, schedule, add a task, remember or save, or asks about the user's notes, documents or memories (`detectToolIntent`, a pure rule check next to the router). Such a turn runs on the standard tier, and the line under the reply says that tools are on. A plain message stays on the fast tier with no tools.
     - `search_documents` and `search_memories` search the current mode, at most 5 matches, shown by title. Their IDs go in the context record.
     - `propose_task`, `propose_reminder` and `save_memory` write proposals or a proposed memory before `done`, and do not write a second copy on "Retry reply".
     - A short fast-tier call with a spend hold makes the title of a new conversation and sends a `title` event.
+    - The chat route's write-fault sweep now also covers the proposal, memory and title writes: a resend or Retry reply never repeats a proposal or a memory.
+    - After `done`, chat shows no error for a title event, Stop or a cut stream, and the composer is free at once.
     - 10 hallucination guardrail tests on main's fakes, and updated screen copy.
+    - One-time effect: a chat tab opened before this deploy does not know the `title` event and shows an error after the reply, though the reply is saved. A reload fixes it.
 - **Tool calls, a tool hop loop with web search, and the eval port** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22))
   - Problem: the assistant had no tools. Tirth's tool loop on an old branch had no spend hold, parsed arguments by hand, offered web search without the user's toggle and showed model plan text. The PRD still excluded memory, documents and actions.
   - Resolution:
