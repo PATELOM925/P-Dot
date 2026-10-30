@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildContextWindow, titleFromMessage } from "@/server/assistant/context";
-import { buildPromptMessages } from "@/server/assistant/prompt";
+import { buildPromptMessages, formatSearchResults, isContinuationRequest, neutralize } from "@/server/assistant/prompt";
+import { normalizeReplyText } from "@/server/assistant/reply-text";
 
 const now = new Date(Date.UTC(2026, 9, 14));
 
@@ -126,5 +127,71 @@ describe("buildPromptMessages", () => {
     expect(personal).toContain("Personal mode");
     expect(personal).toContain("belongs in Work mode");
     expect(work).not.toContain("This conversation is in Personal mode");
+  });
+
+  it("says the assistant cannot act when no tool is offered, and names only offered tools otherwise", () => {
+    const base = { history: [{ role: "user" as const, content: "hi" }], webSearch: "off" as const, results: [], now, mode: "personal" as const };
+    const plain = buildPromptMessages(base)[0]!.content;
+    expect(plain).toContain("You cannot browse");
+    expect(plain).not.toContain("tools offered");
+
+    const withTools = buildPromptMessages({ ...base, toolGuidance: ["web_search: search once more."] })[0]!.content;
+    expect(withTools).toContain("only through the tools offered");
+    expect(withTools).toContain("- web_search: search once more.");
+    expect(withTools).not.toContain("You cannot browse");
+  });
+
+  it("adds the continuation note only when the latest user message asks to continue", () => {
+    const run = (content: string) =>
+      buildPromptMessages({ history: [{ role: "user", content }], webSearch: "off", results: [], now, mode: "personal" })[0]!.content;
+    expect(run("continue")).toContain("continue your previous reply");
+    expect(run("Please keep going")).toContain("continue your previous reply");
+    expect(run("What is a continuation?")).not.toContain("continue your previous reply");
+    expect(isContinuationRequest("contemplate this")).toBe(false);
+  });
+});
+
+describe("neutralize", () => {
+  it.each([
+    "web_search_results",
+    "user_message",
+    "source",
+    "saved_memories",
+    "memory",
+    "document_results",
+    "document_source",
+    "personal_document_results",
+    "relevant_memories",
+    "user_memories",
+    "tool_result",
+    "conversation_summary",
+  ])("removes an opening or closing %s tag in any case and spacing", (tag) => {
+    const text = `a <${tag}> b </ ${tag.toUpperCase()} > c <${tag} id="9">`;
+    expect(neutralize(text)).toBe("a [removed tag] b [removed tag] c [removed tag]");
+  });
+
+  it("keeps other markup", () => {
+    expect(neutralize("<b>bold</b> <sources>")).toBe("<b>bold</b> <sources>");
+  });
+});
+
+describe("formatSearchResults", () => {
+  const result = { title: "T", url: "https://example.com/", excerpt: "E" };
+
+  it("numbers sources from the given first ID and states the citation rule", () => {
+    const block = formatSearchResults([result, result], 4);
+    expect(block).toContain('<source id="4">');
+    expect(block).toContain('<source id="5">');
+    expect(block).toContain("cite it as [id], for example [4]");
+  });
+});
+
+describe("normalizeReplyText", () => {
+  it("replaces non-breaking spaces and full-width citation brackets", () => {
+    expect(normalizeReplyText("a\u00A0b\u202Fc 【1】【12】")).toBe("a b c [1][12]");
+  });
+
+  it("leaves other brackets alone", () => {
+    expect(normalizeReplyText("【note】 [2]")).toBe("【note】 [2]");
   });
 });
