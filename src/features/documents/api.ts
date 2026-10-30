@@ -22,3 +22,8 @@ export async function uploadDocument(
 export async function deleteDocument(id: string): Promise<void> {
   await deleteResource(`/api/documents/${encodeURIComponent(id)}`);
 }
+
+/** Sends a smaller JPEG copy of an image once, and gets back its text and a short description. Nothing is saved. */
+export async function readImageText(image: string): Promise<string> {
+  return (await sendJson<{ text: string }>("/api/documents/image-text", "POST", { image })).text;
+}

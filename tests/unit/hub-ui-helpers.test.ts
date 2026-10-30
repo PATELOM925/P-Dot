@@ -247,15 +247,15 @@ describe("action log wording", () => {
 
 describe("document file checks", () => {
   it("takes the title from the file name and the media type from its extension", () => {
-    expect(describeFile("Trip plan.md")).toEqual({ title: "Trip plan", mediaType: "text/markdown" });
-    expect(describeFile("notes.v2.TXT")).toEqual({ title: "notes.v2", mediaType: "text/plain" });
-    expect(describeFile("README.markdown")).toEqual({ title: "README", mediaType: "text/markdown" });
+    expect(describeFile("Trip plan.md")).toMatchObject({ title: "Trip plan", mediaType: "text/markdown", kind: "text" });
+    expect(describeFile("notes.v2.TXT")).toMatchObject({ title: "notes.v2", mediaType: "text/plain" });
+    expect(describeFile("README.markdown")).toMatchObject({ title: "README", mediaType: "text/markdown" });
     // A file called only ".md" keeps its whole name as the title.
-    expect(describeFile(".md")).toEqual({ title: ".md", mediaType: "text/markdown" });
+    expect(describeFile(".md")).toMatchObject({ title: ".md", mediaType: "text/markdown" });
   });
 
-  it("refuses files that are not plain text or Markdown", () => {
-    for (const name of ["report.pdf", "photo.png", "notes", "archive.md.zip"]) {
+  it("refuses files with no extension or an unknown one", () => {
+    for (const name of ["notes", "archive.md.zip", "setup.exe", "photo.heic"]) {
       expect(describeFile(name)).toHaveProperty("error");
     }
   });

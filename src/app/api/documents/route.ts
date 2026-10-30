@@ -48,7 +48,7 @@ export async function GET(request: Request): Promise<Response> {
 const KEY_MISMATCH = "This request key was used for a different document. Add the document again.";
 
 /**
- * POST /api/documents uploads plain text or Markdown. Body: { mode, title, mediaType, text }.
+ * POST /api/documents adds the text of a file (decision 0019). Body: { mode, title, mediaType, text }.
  * The text is split into chunks, embedded and stored. The answer is 201 only
  * when settle_document makes the document "ready". With an Idempotency-Key
  * header, a resend returns or completes the document the first request saved,
