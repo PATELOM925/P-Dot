@@ -152,7 +152,6 @@ export interface McpSession {
 }
 
 export function openMcpSession(options: McpSessionOptions): McpSession {
-  const origin = new URL(options.url).origin;
   const controller = new AbortController();
   let nextId = 1;
   let sessionId: string | null = null;
@@ -162,7 +161,8 @@ export function openMcpSession(options: McpSessionOptions): McpSession {
   let forced = false;
 
   async function post(body: Record<string, unknown>, maxBytes: number, expectReply: boolean): Promise<z.infer<typeof rpcResponse> | null> {
-    if (new URL(options.url).origin !== origin) throw new McpError("rejected");
+    options.signal.throwIfAborted();
+    controller.signal.throwIfAborted();
     const send = async (token: string) => {
       const headers: Record<string, string> = {
         "content-type": "application/json",
