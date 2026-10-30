@@ -612,7 +612,9 @@ export function ChatWorkspace({
       title: "Search the web",
       description: messages.some((m) => m.route?.reason === "google_request" || m.route?.reason === "connector_read")
         ? "In this chat, only with your own words, because P-Dot read your Google or app data here."
-        : "Current pages, with sources.",
+        : sources.useGoogle || sources.apps.length > 0
+          ? "With Google or apps on, it searches with only your words."
+          : "Current pages, with sources.",
       chip: "Web search",
       chipClass: "chip-web",
       icon: "web",
