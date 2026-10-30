@@ -879,8 +879,11 @@ async function* runChatTurn(
     }
   }
 
-  if (proposalsRun === 0) {
-    const actionAsked = turn.toolIntent === "task_request" || turn.toolIntent === "memory_request";
+  // Only a turn that asked for a task, a reminder or a memory can have a false
+  // "I added it" claim. In other turns the same words are a drafted email or a
+  // recap of an earlier card, so the reply stays as the model wrote it.
+  const actionAsked = turn.toolIntent === "task_request" || turn.toolIntent === "memory_request";
+  if (proposalsRun === 0 && actionAsked) {
     const guarded = removeFalseClaims(content, actionAsked);
     if (guarded.removed) {
       deps.log("warn", "false_claim_removed", { ...logBase, intent: turn.toolIntent ?? "none" });

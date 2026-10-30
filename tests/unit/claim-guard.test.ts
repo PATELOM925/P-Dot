@@ -164,6 +164,23 @@ describe("chat turns that ask for an action", () => {
     expect(repo.messages.at(-1)!.content).toBe("I've proposed a task to buy milk. Please approve it below.");
   });
 
+  it.each([
+    [
+      "Draft a short email to my team about the sprint board",
+      "Hi team,\n\nI have added the tasks to the sprint board and set a reminder for the Friday review.\n\nThanks",
+    ],
+    ["What did we talk about earlier?", "Earlier I proposed a task to buy milk. You can approve it on the Today page."],
+  ])("keeps the reply whole when the message %j asks for no action", async (message, reply) => {
+    const { deps, repo, logs, waited } = setup([{ text: reply }]);
+
+    const { events } = await runTurn(deps, { action: "send", message, webSearch: false }, waited);
+
+    expect(repo.messages.at(-1)!.content).toBe(reply);
+    const done = events.find((event) => event.type === "done");
+    expect(done && done.type === "done" && done.message.content).toBe(reply);
+    expect(logs.map((log) => log.event)).not.toContain("false_claim_removed");
+  });
+
   it("runs the first hop again with 'auto' when the model refuses the forced choice", async () => {
     const { deps, own, requests, logs, waited } = setup([
       { fail: new ProviderError("nebius", "invalid_request", 400) },
