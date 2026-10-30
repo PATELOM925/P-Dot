@@ -57,6 +57,7 @@ import {
 } from "./turn-state";
 import { appendDictation, useDictation } from "./useDictation";
 import { useStickToBottom } from "./useStickToBottom";
+import { orderByPins, usePins, useSidebarCollapsed } from "./sidebar-prefs";
 
 interface StreamingReply {
   text: string;
@@ -94,12 +95,15 @@ const EMPTY_TITLES: Record<Mode, string> = {
 };
 
 export function ChatWorkspace({
+  userId,
   initialConversationId,
   mode,
   google = null,
   trial = false,
   connectedApps = [],
 }: {
+  /** Keys this device's pinned conversations to the signed-in user. */
+  userId: string;
   initialConversationId: string | null;
   mode: Mode;
   google?: GoogleChatState;
@@ -146,6 +150,8 @@ export function ChatWorkspace({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
+  const pins = usePins(userId);
   // One composer menu at a time.
   const [openMenu, setOpenMenu] = useState<"tools" | "approval" | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -667,6 +673,7 @@ export function ChatWorkspace({
       }
     }
     setConversations((list) => list.filter((c) => c.id !== id));
+    pins.unpin(id);
     if (activeId === id) startNewConversation();
     setConfirmDeleteId(null);
     setDeletingId(null);
@@ -730,7 +737,7 @@ export function ChatWorkspace({
     );
 
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout${sidebarCollapsed ? " is-collapsed" : ""}`}>
       {showList && <div ref={drawerBackdropRef} className="drawer-backdrop" aria-hidden="true" onClick={closeList} />}
       <aside
         ref={drawerRef}
@@ -767,7 +774,7 @@ export function ChatWorkspace({
           <p className="muted small">No conversations yet.</p>
         )}
         <ul className="conversation-list">
-          {conversations.map((conversation) => (
+          {orderByPins(conversations, pins.pins).map((conversation) => (
             <li key={conversation.id} className={conversation.id === activeId ? "is-active" : undefined}>
               {renamingId === conversation.id ? (
                 <form
@@ -835,6 +842,18 @@ export function ChatWorkspace({
                   </button>
                   <button
                     type="button"
+                    className={`icon-button pin-button${pins.pins.includes(conversation.id) ? " is-pinned" : ""}`}
+                    onClick={() => pins.toggle(conversation.id)}
+                    aria-pressed={pins.pins.includes(conversation.id)}
+                    aria-label={`Pin “${conversation.title}”`}
+                    title={pins.pins.includes(conversation.id) ? "Unpin conversation" : "Pin conversation to the top"}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill={pins.pins.includes(conversation.id) ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M9 4h6l-1 6 4 4H6l4-4-1-6zM12 14v6" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     className="icon-button"
                     onClick={() => startRename(conversation)}
                     aria-label={`Rename “${conversation.title}”`}
@@ -867,6 +886,20 @@ export function ChatWorkspace({
 
       <main className="chat-main">
         <div className="chat-toolbar">
+          <button
+            type="button"
+            className="icon-button desktop-only"
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="chat-drawer"
+            aria-label={sidebarCollapsed ? "Show conversations" : "Hide conversations"}
+            title={sidebarCollapsed ? "Show conversations" : "Hide conversations"}
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16" />
+            </svg>
+          </button>
           <button
             ref={drawerToggleRef}
             type="button"

@@ -3275,3 +3275,25 @@ label.button[aria-disabled="true"] {
 .card-details > summary h2 {
   display: inline;
 }
+
+/* Chat sidebar: hide it on wide screens, and pinned conversations. */
+
+@media (min-width: 761px) {
+  .chat-layout.is-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-layout.is-collapsed .chat-sidebar {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .desktop-only {
+    display: none;
+  }
+}
+
+.pin-button.is-pinned {
+  color: var(--accent);
+}
