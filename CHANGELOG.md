@@ -9,6 +9,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Rich answers: citation chips, a sources row, cards and a calm scroll** ([decision 0016](docs/decisions/0016-rich-answers.md)). Problem: sources were a long list after every reply, `[n]` marks were plain text, places came as raw lists, and each new token pulled the reader to the bottom. Resolution: `[n]` is a chip that opens the matching source; sources are one line ("N sources · M cited") that opens to a numbered list; strict-JSON `pdot-*` blocks show as cards, with places offered only when web search found sources and Maps links that P-Dot builds; the list follows a reply only at the bottom and shows "Jump to latest" otherwise. Also the empty chat copy, the approval setup as one line above the first card, and 44 px touch targets. ([PR #32](https://github.com/PATELOM925/P-Dot/pull/32))
 - **Chat UX fixes: the composer, safe Markdown, reply states and phone navigation.** ([PR #27](https://github.com/PATELOM925/P-Dot/pull/27))
   - Problem: the "+" menu opened on top of the text box and stayed open, and the toolbar wrapped to 2 rows on a phone. Replies showed raw Markdown. A failed reply lost its text, and the error and Retry were in two places. On a phone, most pages were off screen and the conversation list had no close control.
   - Resolution:
