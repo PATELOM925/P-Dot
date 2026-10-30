@@ -42,7 +42,9 @@ class FakeAccounts implements ConnectedAccountRepository {
     const row = this.rows.get(userId);
     return row ? { email: row.email, scopes: row.scopes, status: row.status } : null;
   }
+  failReadAfterDelete = false;
   async getGoogleToken(userId: string) {
+    if (this.failReadAfterDelete && this.deletes > 0) throw new Error("read failed");
     return this.rows.get(userId) ?? null;
   }
   owner = ALICE;
@@ -369,6 +371,20 @@ describe("POST /api/connectors/google/disconnect", () => {
     expect(outcome(await disconnectRoute.POST(post("/api/connectors/google/disconnect")))).toBe("disconnect_changed");
     expect(accounts.rows.get(ALICE)).toEqual(replacement);
     expect(new URLSearchParams(google.calls[0]!.body).get("token")).toBe(REFRESH);
+  });
+
+  it("never says disconnected when nothing was deleted and the check read fails", async () => {
+    await connected();
+    stubGoogle({
+      [REVOKE_URL]: () => {
+        accounts.rows.set(ALICE, { ...accounts.rows.get(ALICE)!, tokenCiphertext: `v1.${"E".repeat(16)}.${"F".repeat(40)}` });
+        return json({});
+      },
+    });
+    accounts.failReadAfterDelete = true;
+    const response = await disconnectRoute.POST(post("/api/connectors/google/disconnect"));
+    expect(outcome(response)).toBe("disconnect_unknown");
+    expect(accounts.rows.has(ALICE)).toBe(true);
   });
 
   it("deletes the row without a revoke when Google is not set up any more", async () => {

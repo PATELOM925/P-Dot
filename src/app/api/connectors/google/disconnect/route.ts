@@ -58,8 +58,15 @@ export async function POST(request: Request): Promise<Response> {
       return backToConnectors(request, "disconnect_error");
     }
     if (!deleted) {
-      const now = await repo.getGoogleToken(auth.userId).catch(() => null);
-      if (now) return backToConnectors(request, "disconnect_changed");
+      // Nothing was deleted. Say "disconnected" only when a read proves that no connection is left.
+      let left;
+      try {
+        left = await repo.getGoogleToken(auth.userId);
+      } catch {
+        logEvent("error", "google_disconnect_failed", { requestId, route: ROUTE, step: "confirm" });
+        return backToConnectors(request, "disconnect_unknown");
+      }
+      if (left) return backToConnectors(request, "disconnect_changed");
     }
     return backToConnectors(request, confirmed ? "disconnected" : "disconnected_unconfirmed");
   });
