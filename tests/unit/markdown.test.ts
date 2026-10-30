@@ -61,6 +61,7 @@ describe("parseMarkdown", () => {
     ["[x]( with no )", "[x](a ".repeat(10_000)],
     ["unmatched backticks", "`a ``b ".repeat(8_600)],
     ["60,000 backticks in a row", "`".repeat(60_000)],
+    ["60,000 inline backticks after text", "a " + "`".repeat(60_000)],
     ["mixed backtick runs", Array.from({ length: 9_000 }, (_, k) => "`".repeat((k % 9) + 1) + "a").join(" ")],
     ["unmatched **", "**a ".repeat(15_000)],
     ["unmatched ~~ and _", "~~a _b ".repeat(8_600)],
