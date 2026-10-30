@@ -5,7 +5,20 @@ import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import { requestFingerprint } from "@/server/http/request-key";
 import { readChatStream } from "@/features/chat/stream";
-import { FakeContextRecords, FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps, testRouting } from "../support/fakes";
+import {
+  FakeContextRecords,
+  FakeOwnData,
+  FakeQuota,
+  FakeSpend,
+  MemoryRepository,
+  TEST_SPEND_CAPS,
+  fakeDeps,
+  testEmbedder,
+  testRouting,
+} from "../support/fakes";
+import { TITLE_MAX_OUTPUT_TOKENS } from "@/server/assistant/title";
+import { titleFromMessage } from "@/server/assistant/context";
+import type { CompletionChunk, ModelCallRequest, ModelProvider } from "@/server/providers/model";
 import { createBarrier } from "../support/barrier";
 import { collect } from "../support/streams";
 import {
@@ -183,7 +196,39 @@ describe("POST /api/chat when one write fails", () => {
   const MESSAGE = "Plan my week";
   const KEY = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const LEASE_MS = REPLY_CLAIM_LEASE_SECONDS * 1000;
-  type Variant = "new" | "existing" | "search";
+  type Variant = "new" | "existing" | "search" | "tools";
+  /** Asks for a task and a memory, so the own-data tools are offered and the model calls two of them. */
+  const TOOLS_MESSAGE = "Remember that I fly from BOM, and add a task to book flights";
+
+  /**
+   * A model for the tools variant: the first pass calls propose_task and
+   * save_memory, the next pass answers, and a title call gets a title.
+   */
+  function toolModel() {
+    const requests: ModelCallRequest[] = [];
+    const provider: ModelProvider = {
+      name: "nebius",
+      stream(request) {
+        requests.push(request);
+        const isTitle = request.maxOutputTokens === TITLE_MAX_OUTPUT_TOKENS;
+        const afterTools = request.messages.at(-1)?.role === "tool";
+        return (async function* (): AsyncGenerator<CompletionChunk> {
+          if (isTitle) yield { type: "text", text: "Flights from BOM" };
+          else if (request.tools && !afterTools) {
+            yield {
+              type: "tool_calls",
+              calls: [
+                { id: "c1", name: "propose_task", arguments: JSON.stringify({ title: "Book flights" }) },
+                { id: "c2", name: "save_memory", arguments: JSON.stringify({ content: "Flies from BOM" }) },
+              ],
+            };
+          } else yield { type: "text", text: "Approve the task and keep the memory below." };
+          yield { type: "finish", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5 } };
+        })();
+      },
+    };
+    return { provider, requests };
+  }
 
   /**
    * One chat turn with faults, then recovery as the chat screen does it: a
@@ -209,20 +254,36 @@ describe("POST /api/chat when one write fails", () => {
     });
     faults.wrap(quota, ["consume"]);
     faults.wrap(contextRecords, ["insertContextRecord"]);
-    const fake = fakeDeps({ repo, spend, quota, contextRecords });
+    const tools = variant === "tools";
+    const own = new FakeOwnData(ALICE, testEmbedder(spend));
+    const ownData = own.services();
+    const model = toolModel();
+    if (tools) {
+      faults.wrap(repo, ["renameConversation"]);
+      // Its spend writes are swept through FakeSpend; the call itself can only fail.
+      faults.wrap(ownData.embedder, ["embed"], { label: "Embedder", read: true });
+      faults.wrap(ownData.retrieval, ["matchMemories", "matchDocumentChunks"], { label: "Retrieval", read: true });
+      faults.wrap(ownData.proposals, ["listProposals"], { label: "Proposals", read: true });
+      faults.wrap(ownData.proposals, ["createProposal"], { label: "Proposals" });
+      faults.wrap(ownData.memories, ["listMemories"], { label: "Memories", read: true });
+      faults.wrap(ownData.memories, ["createMemory"], { label: "Memories" });
+    }
+    const fake = fakeDeps({ repo, spend, quota, contextRecords, ...(tools ? { ownData, provider: model.provider } : {}) });
+    if (tools) fake.deps.titles = true;
     vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
     signInAs(ALICE);
 
     const webSearch = variant === "search";
+    // A title event can follow done; the checks below look at the reply's own last event.
     const events = async (response: Response) => {
       const read = response.status === 200 ? await collect(readChatStream(response.body!)) : [];
       await Promise.all(fake.waited.splice(0));
-      return read;
+      return read.filter((event) => event.type !== "title");
     };
     const send = () =>
       chatRoute.POST(
         chatRequest(
-          { action: "send", message: MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) },
+          { action: "send", message: tools ? TOOLS_MESSAGE : MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) },
           { "Idempotency-Key": KEY },
         ),
       );
@@ -271,6 +332,26 @@ describe("POST /api/chat when one write fails", () => {
     expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
     expect(fake.calls.length, `${at}: at most one provider call for each claim`).toBeLessThanOrEqual(quota.calls);
 
+    if (tools) {
+      // Tool hops and the title are extra calls; each claim still starts at most one first pass.
+      const firstPasses = model.requests.filter(
+        (r) => r.maxOutputTokens !== TITLE_MAX_OUTPUT_TOKENS && r.messages.at(-1)?.role !== "tool",
+      );
+      expect(firstPasses.length, `${at}: at most one first pass for each claim`).toBeLessThanOrEqual(quota.calls);
+      // A retry or resend never repeats a proposal or a memory, and nothing stays in another status.
+      expect(own.proposals.length, `${at}: at most one proposal`).toBeLessThanOrEqual(1);
+      expect(own.memories.length, `${at}: at most one suggested memory`).toBeLessThanOrEqual(1);
+      expect(own.proposals.every((p) => p.status === "proposed" && p.conversationId === target?.id), `${at}: proposal`).toBe(true);
+      expect(own.memories.every((m) => m.status === "proposed" && m.source === "assistant"), `${at}: memory`).toBe(true);
+      const ownFaults = sweepCase.some((f) => /^(Proposals|Memories|Embedder|Retrieval|FakeSpend)\./.test(f.label));
+      if (!ownFaults) {
+        expect(own.proposals, `${at}: the proposal is saved`).toHaveLength(1);
+        expect(own.memories, `${at}: the memory is saved`).toHaveLength(1);
+      }
+      const title = mine[0]?.title;
+      expect(["Flights from BOM", titleFromMessage(TOOLS_MESSAGE)], `${at}: a whole title`).toContain(title);
+    }
+
     const records = contextRecords.records.filter((r) => r.messageId === reply?.id);
     // A refused record write only logs a warning (decision 0009). A reply whose save could not be
     // confirmed in its own request (lost or delayed insert, refused read-back) has no record.
@@ -286,7 +367,7 @@ describe("POST /api/chat when one write fails", () => {
     expect(contextRecords.records.length, `${at}: no record without a saved reply`).toBeLessThanOrEqual(1);
   }
 
-  it.each(["new", "existing", "search"] as const)(
+  it.each(["new", "existing", "search", "tools"] as const)(
     "%s conversation: every write and read, up to two faults, ends with one message, its reply and its record",
     async (variant) => {
       const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase), {
@@ -304,6 +385,9 @@ describe("POST /api/chat when one write fails", () => {
         "FakeContextRecords.insertContextRecord",
         ...(variant === "existing" ? [] : ["MemoryRepository.findConversationByClientRequest", "MemoryRepository.createConversation"]),
         ...(variant === "search" ? ["FakeSpend.reserve:tavily"] : []),
+        ...(variant === "tools"
+          ? ["Proposals.createProposal", "Memories.createMemory", "Embedder.embed", "MemoryRepository.renameConversation"]
+          : []),
       ]) {
         expect(labels, label).toContain(label);
       }
