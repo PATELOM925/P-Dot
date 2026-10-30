@@ -4,6 +4,7 @@ export interface GoogleCall {
   method: string;
   body: string;
   headers: Record<string, string>;
+  signal?: AbortSignal | null;
 }
 
 export type GoogleHandler = (call: GoogleCall) => Response | Promise<Response>;
@@ -16,7 +17,13 @@ export function fakeGoogle(handlers: Record<string, GoogleHandler>) {
     new Headers(init?.headers).forEach((value, key) => {
       headers[key] = value;
     });
-    const call: GoogleCall = { url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : "", headers };
+    const call: GoogleCall = {
+      url,
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? init.body : "",
+      headers,
+      signal: init?.signal,
+    };
     calls.push(call);
     const prefix = Object.keys(handlers)
       .filter((key) => url.startsWith(key))

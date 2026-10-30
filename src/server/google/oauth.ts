@@ -130,6 +130,7 @@ export async function refreshAccessToken(
   fetchImpl: FetchLike,
   config: GoogleConfig,
   refreshToken: string,
+  signal?: AbortSignal,
 ): Promise<{ accessToken: string; expiresIn: number }> {
   const body = await googleRequest(
     fetchImpl,
@@ -142,6 +143,7 @@ export async function refreshAccessToken(
     }),
     READ_TIMEOUT_MS,
     refreshResponse,
+    signal,
   );
   return { accessToken: body.access_token, expiresIn: body.expires_in };
 }

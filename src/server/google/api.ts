@@ -25,7 +25,7 @@ export async function authorizedRequest<T>(
   schema: z.ZodType<T>,
   signal?: AbortSignal,
 ): Promise<T> {
-  const token = await access.accessToken();
+  const token = await access.accessToken(signal);
   const headers = new Headers(init.headers);
   headers.set("authorization", `Bearer ${token}`);
   return googleRequest(access.fetch, url, { ...init, headers }, timeoutMs, schema, signal);

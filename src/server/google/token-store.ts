@@ -23,8 +23,11 @@ export interface GoogleAccess {
   readonly subject: string;
   readonly scopes: readonly DataScope[];
   readonly fetch: FetchLike;
-  /** A valid access token. Refreshes when there is none or it ends within 60 seconds. */
-  accessToken(): Promise<string>;
+  /**
+   * A valid access token. Refreshes when there is none or it ends within 60
+   * seconds. `signal` (for example Stop) cancels a refresh that is running.
+   */
+  accessToken(signal?: AbortSignal): Promise<string>;
   /**
    * Marks the connection `needs_reconnect`, only while the row still has the
    * ciphertext this access opened. Never throws; true when the write worked.
@@ -82,9 +85,9 @@ export async function openGoogleAccess(deps: GoogleAccessDeps): Promise<GoogleAc
   let cached: { token: string; expiresAt: number } | null = null;
   let pending: Promise<string> | null = null;
 
-  const refresh = async (): Promise<string> => {
+  const refresh = async (signal?: AbortSignal): Promise<string> => {
     try {
-      const fresh = await refreshAccessToken(deps.fetch, config, refreshToken);
+      const fresh = await refreshAccessToken(deps.fetch, config, refreshToken, signal);
       cached = { token: fresh.accessToken, expiresAt: now() + fresh.expiresIn * 1000 };
       return fresh.accessToken;
     } catch (error) {
@@ -104,9 +107,9 @@ export async function openGoogleAccess(deps: GoogleAccessDeps): Promise<GoogleAc
       scopes: row.scopes,
       fetch: deps.fetch,
       reportUnauthorized: markDead,
-      accessToken() {
+      accessToken(signal) {
         if (cached && cached.expiresAt - EARLY_REFRESH_MS > now()) return Promise.resolve(cached.token);
-        pending ??= refresh().finally(() => {
+        pending ??= refresh(signal).finally(() => {
           pending = null;
         });
         return pending;
