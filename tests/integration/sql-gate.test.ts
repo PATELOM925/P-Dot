@@ -58,6 +58,8 @@ const PROTECTED_COLUMNS = [
   "execution_started_at",
   "execution_account_subject",
   "execution_target",
+  "execution_attempt",
+  "execution_outcome_unknown",
 ];
 const PERMISSION_DENIED = "42501";
 const GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";

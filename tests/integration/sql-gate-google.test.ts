@@ -469,7 +469,8 @@ describe.each(MODES)("Google connection and external actions with %s default gra
       await save(owner, [CALENDAR], OTHER_CIPHERTEXT, "b@example.com", "account-b");
       expect((await reclaim(owner, id)).outcome).toBe("account_changed");
       expect((await stored(id)).execution_claim_id).toBe(claim);
-      expect((await finish(owner, id, claim, false, { error: "execution_failed", reason: "account_changed" })).outcome).toBe("failed");
+      expect((await settleUnknown(owner, id, true)).outcome).toBe("executed");
+      expect(await stored(id)).toMatchObject({ result: { userConfirmed: true }, decided_by_function: false });
 
       const second = await propose(gate, owner, EVENT);
       await approveClaim(owner, second);
@@ -487,6 +488,59 @@ describe.each(MODES)("Google connection and external actions with %s default gra
       expect((await reclaim(owner, third)).outcome).toBe("account_changed");
       await save(owner, [CALENDAR], CIPHERTEXT, "a@example.com", "account-a");
       expect((await reclaim(owner, third)).outcome).toBe("claimed");
+    });
+
+    it("an account change after a reclaim never records a verified failure: the outcome stays unknown for the user", async () => {
+      const owner = await gate.createUser();
+      await save(owner, [CALENDAR], CIPHERTEXT, "a@example.com", "account-a");
+      const id = await propose(gate, owner, EVENT);
+      // Request 1 claims and calls Google in account A; Google creates the event, and the response is lost.
+      const first = await approveClaim(owner, id);
+      await ageClaim(id, LEASE + 1);
+      // Request 2 reclaims while account A is still connected.
+      const second = await reclaim(owner, id);
+      expect(second.outcome).toBe("claimed");
+      // Another tab connects account B before request 2 loads its token, so request 2 reports account_changed.
+      await save(owner, [CALENDAR], OTHER_CIPHERTEXT, "b@example.com", "account-b");
+      const reported = await finish(owner, id, second.claimId!, false, { error: "execution_failed", reason: "account_changed" });
+      expect(reported.outcome).toBe("outcome_unknown");
+      expect(await stored(id)).toMatchObject({ status: "executing", result: null });
+      const row = await gate.admin<{ execution_outcome_unknown: boolean; execution_attempt: number }>(
+        "select execution_outcome_unknown, execution_attempt from action_proposals where id = $1",
+        [id],
+      );
+      expect(row.rows[0]).toEqual({ execution_outcome_unknown: true, execution_attempt: 2 });
+      expect((await logRows(id)).map((log) => log.event)).toEqual(["proposed", "approved"]);
+      // The late finish of request 1 is fenced, and nothing can run the event again.
+      expect((await finish(owner, id, first, true, { eventId: id.replaceAll("-", "") })).outcome).toBe("stale_claim");
+      await ageClaim(id, LEASE + 1);
+      await save(owner, [CALENDAR], CIPHERTEXT, "a@example.com", "account-a");
+      expect((await reclaim(owner, id)).outcome).toBe("outcome_unknown");
+      // Only the user's answer settles it, and it is not verified.
+      expect((await settleUnknown(owner, id, true)).outcome).toBe("executed");
+      expect(await stored(id)).toMatchObject({ status: "executed", result: { userConfirmed: true }, decided_by_function: false });
+      expect((await logRows(id)).at(-1)).toMatchObject({ event: "executed", verified: false });
+    });
+
+    it("any failure after a reclaim, also a 4xx from Google, keeps the outcome unknown; the first attempt can still fail", async () => {
+      const owner = await gate.createUser();
+      await save(owner, [CALENDAR], CIPHERTEXT, "a@example.com", "account-a");
+      const reclaimed = await propose(gate, owner, EVENT);
+      await approveClaim(owner, reclaimed);
+      await ageClaim(reclaimed, LEASE + 1);
+      const again = await reclaim(owner, reclaimed);
+      expect((await finish(owner, reclaimed, again.claimId!, false, { error: "execution_failed", reason: "google_rejected" })).outcome).toBe(
+        "outcome_unknown",
+      );
+      expect((await settleUnknown(owner, reclaimed, false)).outcome).toBe("busy");
+      await ageClaim(reclaimed, LEASE + 1);
+      expect((await settleUnknown(owner, reclaimed, false)).outcome).toBe("failed");
+      expect(await stored(reclaimed)).toMatchObject({ result: { error: "execution_failed", reason: "not_done" }, decided_by_function: false });
+
+      const firstTry = await propose(gate, owner, EVENT);
+      const claim = await approveClaim(owner, firstTry);
+      expect((await finish(owner, firstTry, claim, false, { error: "execution_failed", reason: "google_rejected" })).outcome).toBe("failed");
+      expect((await stored(firstTry)).decided_by_function).toBe(true);
     });
 
     it("an email whose Google account changed: no claim, and the answer is about the earlier account", async () => {
