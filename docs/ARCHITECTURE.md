@@ -23,7 +23,7 @@ Cloudflare Worker (OpenNext): Next.js API routes
    `-- persistence (src/server/db) -> Supabase Postgres with row-level security
 ```
 
-A single Next.js application. Its API routes form the backend, deployed as one Cloudflare Worker through the OpenNext adapter ([decision 0004](decisions/0004-cloudflare-workers-deployment.md)); there is no separate always-on API server. Sessions are Supabase Auth cookies managed by `@supabase/ssr`. The app uses only the publishable key, so every database query runs under RLS as the signed-in user ([decision 0001](decisions/0001-supabase-auth-and-database.md)).
+A single Next.js application. Its API routes form the backend, deployed as one Cloudflare Worker through the OpenNext adapter ([decision 0004](decisions/0004-cloudflare-workers-deployment.md)); there is no separate always-on API server. Sessions are Supabase Auth cookies managed by `@supabase/ssr`. The app uses only the publishable key, so every database query runs under RLS as the signed-in user ([decision 0001](decisions/0001-supabase-auth-and-database.md)). A trial user is a Supabase anonymous user that the browser creates. The server reads `is_anonymous` from the verified token and refuses a trial on routes with `requireAccount` ([decision 0015](decisions/0015-judge-demo-mode.md)).
 
 ## Intended directory structure
 

@@ -1,3 +1,4 @@
+import { TrialBanner } from "@/components/layout/TrialBanner";
 import { WorkspaceHeader } from "@/components/layout/WorkspaceHeader";
 import { requireAuth } from "@/server/auth/session";
 import { getMode } from "@/server/mode";
@@ -9,7 +10,8 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
 
   return (
     <div className="workspace">
-      <WorkspaceHeader email={auth.email} mode={mode} />
+      <WorkspaceHeader email={auth.email} trial={auth.isAnonymous === true} mode={mode} />
+      {auth.isAnonymous && <TrialBanner />}
       {children}
     </div>
   );

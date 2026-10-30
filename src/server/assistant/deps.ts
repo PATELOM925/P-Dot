@@ -12,6 +12,7 @@ import { createSpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
 import { createNebiusProvider } from "@/server/providers/model";
 import { searchWeb } from "@/server/providers/tavily/client";
+import { limitsFor } from "@/server/trial-limits";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
 import { createBudgetedEmbedder, type Embedder } from "./embed";
 import type { AssistantDeps } from "./service";
@@ -26,10 +27,13 @@ const breaker = createCircuitBreaker(BREAKER_DEFAULTS);
 /** Wires the assistant service to real providers for one authenticated request. */
 export function createAssistantDeps(auth: AuthContext, config: AssistantConfig): AssistantDeps {
   const tavily = config.tavily;
-  const spend = createSpendGuard(auth.supabase, config.spend);
+  // One guard with this user's caps (trial caps for a trial) for every paid call of the turn:
+  // the reply, tool hops, the title and the retrieval embeddings.
+  const limits = limitsFor(auth, config);
+  const spend = createSpendGuard(auth.supabase, limits.spend);
   return {
     repo: createConversationRepository(auth.supabase),
-    quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
+    quota: createQuotaGate(auth.supabase, limits.quota.requestsPerWindow, limits.quota.windowSeconds),
     spend,
     routing: config.routing,
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
@@ -72,6 +76,6 @@ export function waitUntil(work: Promise<unknown>): void {
 export function createEmbedderForRequest(auth: AuthContext, config: AssistantConfig): Embedder {
   return createBudgetedEmbedder({
     settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
-    spend: createSpendGuard(auth.supabase, config.spend),
+    spend: createSpendGuard(auth.supabase, limitsFor(auth, config).spend),
   });
 }

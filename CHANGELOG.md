@@ -9,6 +9,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Try P-Dot without an account** ([decision 0015](docs/decisions/0015-judge-demo-mode.md)). Problem: hackathon judges had to create an account before they could try P-Dot. Resolution: a "Try P-Dot now, no account" button on the landing and login pages starts a Supabase anonymous user from the browser. The server reads `is_anonymous` from the verified token, gives a trial lower per-user limits, refuses it on account-only actions (`requireAccount`, the password action), and shows a trial banner. An empty chat shows 4 example prompts. DEPLOYMENT.md has the owner step, the abuse bounds and the clean-up runbook. ([PR #26](https://github.com/PATELOM925/P-Dot/pull/26))
 - **Sign in with Google, and connect Google for Gmail and Calendar** ([decision 0014](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #25](https://github.com/PATELOM925/P-Dot/pull/25))
   - Problem: a user can sign in only with an email and a password, and P-Dot cannot read the user's Gmail or calendar or act there after approval.
   - Resolution:
