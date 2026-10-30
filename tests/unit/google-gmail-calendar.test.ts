@@ -114,7 +114,8 @@ describe("gmailSend and the message it builds", () => {
     const [head, body] = raw.split("\r\n\r\n");
     expect(head).toBe(
       [
-        "To: sam@example.com, kim@example.org",
+        "To: sam@example.com,",
+        " kim@example.org",
         "Subject: Lunch on Friday",
         "MIME-Version: 1.0",
         'Content-Type: text/plain; charset="UTF-8"',
@@ -122,6 +123,14 @@ describe("gmailSend and the message it builds", () => {
       ].join("\r\n"),
     );
     expect(Buffer.from(body!, "base64").toString()).toBe("Hi Sam,\r\nnoon?");
+  });
+
+  it("folds a long recipient list so no physical line passes 998 characters", () => {
+    const to = Array.from({ length: 10 }, (_, i) => `${String(i).padStart(2, "0")}${"a".repeat(240)}@example.com`);
+    const raw = buildEmail({ to, subject: "Hi", body: "x" });
+    expect(raw.split("\r\n").every((line) => line.length <= 998)).toBe(true);
+    const header = /^To: ([\s\S]*?)\r\nSubject:/.exec(raw)![1]!;
+    expect(header.replace(/\r\n /g, " ").split(", ")).toEqual(to);
   });
 
   it("encodes a non-ASCII subject as RFC 2047 words", () => {

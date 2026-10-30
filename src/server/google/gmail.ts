@@ -188,14 +188,18 @@ function base64Lines(text: string): string {
   return (btoa(binary).match(/.{1,76}/g) ?? [""]).join("\r\n");
 }
 
-/** The RFC 2822 message. Headers come only from the checked payload; the body is base64. */
+/**
+ * The RFC 2822 message. Headers come only from the checked payload; the body
+ * is base64. The To header folds after each comma, so every physical line
+ * stays far below the 998-character limit (one address is at most 254).
+ */
 export function buildEmail(message: EmailToSend): string {
   if (message.to.length < 1 || message.to.length > 10 || !message.to.every((address) => address.length <= 254 && EMAIL.test(address))) {
     throw new RangeError("recipients");
   }
   if (/[\u0000-\u001f\u007f]/.test(message.subject) || message.subject.length === 0) throw new RangeError("subject");
   return [
-    `To: ${message.to.join(", ")}`,
+    `To: ${message.to.join(",\r\n ")}`,
     `Subject: ${encodeHeader(message.subject)}`,
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',

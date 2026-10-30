@@ -6,6 +6,7 @@ import {
   MAX_EMAIL_ADDRESS_CHARS,
   MAX_EMAIL_BODY_CHARS,
   MAX_EMAIL_RECIPIENTS,
+  MAX_EMAIL_RECIPIENTS_TOTAL_CHARS,
   MAX_EMAIL_SUBJECT_CHARS,
   MAX_EVENT_ATTENDEES,
   MAX_EVENT_DAYS,
@@ -172,7 +173,13 @@ const sendEmailPayload = z
   .object({
     kind: z.literal("send_email"),
     mode: modeSchema,
-    to: z.array(emailAddress).min(1, "Add a recipient.").max(MAX_EMAIL_RECIPIENTS, `At most ${MAX_EMAIL_RECIPIENTS} recipients.`),
+    to: z
+      .array(emailAddress)
+      .min(1, "Add a recipient.")
+      .max(MAX_EMAIL_RECIPIENTS, `At most ${MAX_EMAIL_RECIPIENTS} recipients.`)
+      .refine((list) => list.join(", ").length <= MAX_EMAIL_RECIPIENTS_TOTAL_CHARS, {
+        message: `The recipients must be at most ${MAX_EMAIL_RECIPIENTS_TOTAL_CHARS} characters together.`,
+      }),
     subject: oneLine(MAX_EMAIL_SUBJECT_CHARS, "The subject"),
     body: z
       .string()

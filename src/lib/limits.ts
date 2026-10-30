@@ -67,6 +67,8 @@ export const MAX_REMINDER_TITLE_CHARS = 200;
 /** External actions (decision 0014). The same limits as normalize_action_payload in the migration. */
 export const MAX_EMAIL_RECIPIENTS = 10;
 export const MAX_EMAIL_ADDRESS_CHARS = 254;
+/** All recipients together, so a proposal stays readable on its card. */
+export const MAX_EMAIL_RECIPIENTS_TOTAL_CHARS = 2000;
 export const MAX_EMAIL_SUBJECT_CHARS = 200;
 export const MAX_EMAIL_BODY_CHARS = 4000;
 export const MAX_EVENT_TITLE_CHARS = 200;

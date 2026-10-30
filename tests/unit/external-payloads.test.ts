@@ -26,6 +26,7 @@ describe("external action payloads (the same limits as the database)", () => {
     ["a recipient without a domain dot", { ...EMAIL, to: ["sam@localhost"] }],
     ["no recipient", { ...EMAIL, to: [] }],
     ["11 recipients", { ...EMAIL, to: Array(11).fill("a@example.com") }],
+    ["recipients over 2,000 characters together", { ...EMAIL, to: Array.from({ length: 10 }, (_, i) => `${i}${"a".repeat(192)}@example.com`) }],
     ["a line break in the subject", { ...EMAIL, subject: "Lunch\nBcc: eve@example.com" }],
     ["a subject of 201 characters", { ...EMAIL, subject: "s".repeat(201) }],
     ["a body of 4,001 characters", { ...EMAIL, body: "b".repeat(4001) }],
