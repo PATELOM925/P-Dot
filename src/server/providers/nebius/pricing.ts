@@ -47,13 +47,16 @@ export function costMicroUsd(price: ModelPrice, usage: TokenUsage): number {
 const TOKENS_PER_MESSAGE = 16;
 const TOKENS_PER_PROMPT = 64;
 /**
- * Tokens a chat template can add when tools are offered: its fixed text that
- * explains tool use, and the wrapper around each tool and each tool call.
- * Not measured; chosen well above the templates we know.
+ * Tokens a chat template can add around tools: its fixed text that explains
+ * tool use (when tools are offered or earlier tool messages are in the
+ * prompt), the wrapper around each tool definition, each tool call and each
+ * tool result. An estimate, not a measurement: chosen well above the
+ * templates we know (decision 0013).
  */
-const TOKENS_FOR_TOOLS = 512;
-const TOKENS_PER_TOOL = 64;
-const TOKENS_PER_TOOL_CALL = 32;
+const TOKENS_FOR_TOOLS = 1_024;
+const TOKENS_PER_TOOL = 128;
+const TOKENS_PER_TOOL_CALL = 64;
+const TOKENS_PER_TOOL_RESULT = 64;
 
 /**
  * An upper bound on the input tokens of a prompt. Byte-level tokenizers never
@@ -66,17 +69,22 @@ export function inputTokenBound(messages: ChatMessage[], extraBytes = 0, tools: 
   const encoder = new TextEncoder();
   const size = (text: string) => encoder.encode(text).length;
   let tokens = extraBytes + messages.length * TOKENS_PER_MESSAGE + TOKENS_PER_PROMPT;
+  let toolParts = tools.length;
   for (const message of messages) {
     tokens += size(message.content);
-    if (message.role === "tool") tokens += size(message.toolCallId);
+    if (message.role === "tool") {
+      tokens += size(message.toolCallId) + TOKENS_PER_TOOL_RESULT;
+      toolParts += 1;
+    }
     if (message.role === "assistant") {
       for (const call of message.toolCalls ?? []) {
         tokens += size(call.id) + size(call.name) + size(call.arguments) + TOKENS_PER_TOOL_CALL;
+        toolParts += 1;
       }
     }
   }
-  if (tools.length > 0) {
-    tokens += size(JSON.stringify(toolFields(tools))) + TOKENS_FOR_TOOLS + tools.length * TOKENS_PER_TOOL;
-  }
+  if (tools.length > 0) tokens += size(JSON.stringify(toolFields(tools))) + tools.length * TOKENS_PER_TOOL;
+  // The final pass has no tools field, but its earlier tool messages can still bring the template's tool text.
+  if (toolParts > 0) tokens += TOKENS_FOR_TOOLS;
   return tokens;
 }
