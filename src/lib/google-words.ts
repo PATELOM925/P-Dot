@@ -3,15 +3,33 @@
 // calendar) and the server (it makes the first hop read before it answers).
 // Pure rules, no model call.
 
-const MAIL = /\b(?:e-?mail(?:s|ed)?|gmail|inbox|unread|mails?)\b/i;
+import { SCHEDULE_VERB } from "./tool-intent";
+
+const MAIL = /\b(?:e-?mail(?:s|ed)?|gmail|inbox|unread)\b|\bmails?\s+(?:from|for\s+me)\b/i;
+
+/**
+ * Words with a common meaning outside the user's own data ("mail merge", "the
+ * Fed meeting", "Translate 'appointment'"). They count only with an anchor.
+ */
+const WEAK_MAIL = /\bmails?\b/i;
+const WEAK_CALENDAR = /\b(?:meetings?|agenda|appointments?)\b/i;
+
+/** Words that make the message about the user's own mail or calendar. A bare "I" is not enough: "How do I prepare for a meeting?" */
+const OWN = new RegExp(
+  [
+    String.raw`\b(?:my|our|inbox|gmail|calendar)\b`,
+    String.raw`\b(?:with|for)\s+me\b`,
+    String.raw`\bi(?:'|’)m\b|\bam\s+i\b`,
+    String.raw`\b(?:do|did)\s+i\s+(?:have|get|miss|receive)\b|\bhave\s+i\s+(?:got|received|missed)\b`,
+  ].join("|"),
+  "i",
+);
 
 const CALENDAR = new RegExp(
   [
     String.raw`\bcalendar\b`,
-    String.raw`\bmeetings?\b`,
-    String.raw`\bagenda\b`,
-    String.raw`\bappointments?\b`,
     String.raw`\bmy\s+(?:events?|schedule)\b`,
+    String.raw`\bschedule\s+(?:for\s+)?(?:today|tonight|tomorrow|this\s+week|next\s+week)\b(?!['’])`,
     String.raw`\bam\s+i\s+(?:free|busy)\b`,
     String.raw`\bfree\s+(?:time|slots?)\b`,
     String.raw`\bwhat(?:'|’)?s\s+on\s+(?:my|today|tomorrow|this|next)\b`,
@@ -23,7 +41,7 @@ const CALENDAR = new RegExp(
 const SCHEDULE_MEETING = /\b(?:schedule|book|set\s+up)\s+(?:a\s+|an\s+|the\s+)?(?:meeting|call|event)\b/i;
 
 /** Verbs that make a message a request to write, send or change, not a question to read. */
-const WRITE = /\b(?:send|write|draft|compose|reply|respond|forward|book|invite|create|add|cancel|reschedule|schedule|set\s+up)\b/i;
+const WRITE = new RegExp(String.raw`\b(?:send|write|draft|compose|reply|respond|forward|book|invite|create|add|cancel|reschedule|set\s+up)\b|${SCHEDULE_VERB}`, "i");
 
 /** Verbs that ask P-Dot to send an email. */
 const SEND = /\b(?:send|reply|forward)\b/i;
@@ -40,9 +58,10 @@ export interface GoogleWords {
 }
 
 export function googleWords(message: string): GoogleWords {
-  const mail = MAIL.test(message);
+  const own = OWN.test(message);
+  const mail = MAIL.test(message) || (own && WEAK_MAIL.test(message));
   const scheduleMeeting = SCHEDULE_MEETING.test(message);
-  const calendar = scheduleMeeting || CALENDAR.test(message);
+  const calendar = scheduleMeeting || CALENDAR.test(message) || (own && WEAK_CALENDAR.test(message));
   return {
     mail,
     calendar,

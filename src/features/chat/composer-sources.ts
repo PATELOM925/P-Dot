@@ -11,19 +11,26 @@ export interface MessageSources {
   webSearch: boolean;
   useGoogle: boolean;
   apps: McpServerId[];
+  /** Deep research (decision 0018): a kind of web search, so `webSearch` is on with it. */
+  research?: true;
 }
 
 /**
- * Turns one source on or off (`web`, `google` or `app:<id>`). Turning one kind
- * on turns the other kinds off; several apps together stay on. The request
- * schema refuses two kinds in one message (decisions 0014 and 0016).
+ * Turns one source on or off (`web`, `research`, `google` or `app:<id>`).
+ * Turning one kind on turns the other kinds off; several apps together stay
+ * on. Web search and deep research replace each other. The request schema
+ * refuses two kinds in one message (decisions 0014, 0016 and 0018).
  */
 export function toggleSource(sources: MessageSources, key: string, connectedApps: readonly McpServerId[]): MessageSources {
+  const plain = { webSearch: sources.webSearch, useGoogle: sources.useGoogle, apps: sources.apps };
   if (key === "web") {
-    return sources.webSearch ? { ...sources, webSearch: false } : { webSearch: true, useGoogle: false, apps: [] };
+    return sources.webSearch && !sources.research ? { ...plain, webSearch: false } : { webSearch: true, useGoogle: false, apps: [] };
+  }
+  if (key === "research") {
+    return sources.research ? { ...plain, webSearch: false } : { webSearch: true, useGoogle: false, apps: [], research: true };
   }
   if (key === "google") {
-    return sources.useGoogle ? { ...sources, useGoogle: false } : { webSearch: false, useGoogle: true, apps: [] };
+    return sources.useGoogle ? { ...plain, useGoogle: false } : { webSearch: false, useGoogle: true, apps: [] };
   }
   const app = connectedApps.find((id) => `app:${id}` === key);
   if (!app) return sources;

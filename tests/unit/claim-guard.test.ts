@@ -115,6 +115,8 @@ describe("forcedToolChoice", () => {
       ["Any unread mail from Sam?", { name: "gmail_search" }],
       ["What meetings do I have this week?", { name: "calendar_list_events" }],
       ["Am I free on Friday afternoon?", { name: "calendar_list_events" }],
+      ["What's my schedule today?", { name: "calendar_list_events" }],
+      ["What's on my schedule?", { name: "calendar_list_events" }],
       ["Do my emails mention the meeting on Monday?", "required"],
     ])("forces a read for the question %j", (message, expected) => {
       expect(choice(message)).toEqual(expected);
@@ -125,8 +127,15 @@ describe("forcedToolChoice", () => {
       expect(choice("Remember that my work email is sam@example.com")).toEqual({ name: "save_memory" });
     });
 
-    it.each(["Send an email to Bob about the launch", "Draft a reply to the email from Sam", "Write an email to my team"])(
-      "does not force a read for the request %j",
+    it.each([
+      "Send an email to Bob about the launch",
+      "Draft a reply to the email from Sam",
+      "Write an email to my team",
+      "Any news about the Fed meeting today?",
+      "mail merge in Word",
+      "Translate 'appointment'",
+    ])(
+      "does not force a read for %j",
       (message) => {
         expect(choice(message)).toBeNull();
       },

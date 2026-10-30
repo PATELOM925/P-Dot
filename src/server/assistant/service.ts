@@ -8,6 +8,7 @@ import {
 } from "@/lib/limits";
 import type {
   ApiErrorCode,
+  BriefRequest,
   ChatRequest,
   ChatStreamEvent,
   ConversationSummary,
@@ -36,20 +37,24 @@ import {
   type AttemptBudget,
   type RouteReport,
 } from "./executor";
-import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
+import { PROMPT_VERSION, buildPromptMessages, type ReplyFormat } from "./prompt";
+import { briefSearch, deepResearch, type ResearchServices } from "./research";
 import { createReplyNormalizer } from "@/lib/reply-text";
 import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
 import { detectToolIntent, type ToolIntent } from "@/lib/tool-intent";
 import { forcedToolChoice, removeFalseClaims } from "./claim-guard";
 import {
+  BRIEF_RESULTS_MAX_BYTES,
   budgetRefusal,
   MEMORY_BLOCK_MAX_BYTES,
+  RESEARCH_RESULTS_MAX_BYTES,
   nebiusHoldMicroUsd,
   nebiusSettleMicroUsd,
   NebiusHoldTooLargeError,
   SEARCH_BUDGET_MESSAGE,
   SEARCH_RESULTS_MAX_BYTES,
+  TAVILY_ADVANCED_SEARCH_CREDITS,
   TAVILY_BASIC_SEARCH_CREDITS,
 } from "./spend";
 import { RETRY_POLICY, type RoutingConfig } from "./tiers";
@@ -80,6 +85,8 @@ export interface AssistantDeps {
   routing: RoutingConfig;
   /** Null when web search is not configured on this server. */
   search: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
+  /** Deep research and the morning brief (decision 0018). Null or missing when Tavily is not set up. */
+  research?: ResearchServices | null;
   /** The model provider used by the executor for every attempt. */
   provider: ModelProvider;
   /** Soft per-model circuit breaker (isolate memory, best effort). */
@@ -126,8 +133,8 @@ export interface NebiusHold {
 export interface TurnHolds {
   /** Leaves when the first attempt takes it. That attempt settles it from its outcome. */
   nebius: NebiusHold | null;
-  /** Leaves when the search starts: a search that was sent keeps its credit. */
-  tavily: string | null;
+  /** Tavily credits, in the order of use. Each leaves when its search starts: a search that was sent keeps its credit. */
+  tavily: string[];
   /** The claim to write the reply (decision 0012). Leaves when the reply is saved. */
   claim: { messageId: string; claimId: string } | null;
 }
@@ -146,6 +153,13 @@ export interface PreparedTurn {
   /** Chronological history ending with `userMessage`. */
   history: HistoryMessage[];
   webSearch: boolean;
+  /**
+   * How the web is read: one basic search, deep research (decision 0018) or
+   * the morning brief. Null when web search is off or not set up.
+   */
+  retrieval: "basic" | "deep" | "brief" | null;
+  /** The brief's topics that have a held credit, in order. Empty for other turns. */
+  briefTopics: string[];
   /** The user's IANA time zone from the browser, or null. */
   timeZone: string | null;
   /** True when search was requested but the Tavily budget refused it. */
@@ -274,7 +288,7 @@ export async function prepareChatTurn(
     answering = last;
   }
 
-  const holds: TurnHolds = { nebius: null, tavily: null, claim: null };
+  const holds: TurnHolds = { nebius: null, tavily: [], claim: null };
   if (answering) {
     const claim = await deps.repo.claimReply(answering.id, REPLY_CLAIM_LEASE_SECONDS);
     if (claim.outcome === "busy") return stillReplying(existing!.id);
@@ -309,7 +323,21 @@ export async function prepareChatTurn(
     const google = await googleForTurn(deps, userId, request.useGoogle === true, pendingHistory.at(-1)?.content ?? "");
     const googleFlags = google?.flags ?? null;
     // The schema refuses two sources in one request; this keeps the server safe also without it.
-    const searchWanted = request.webSearch && deps.search !== null && googleFlags === null && requestedApps.length === 0;
+    const noPrivateSource = googleFlags === null && requestedApps.length === 0;
+    const searchWanted = request.webSearch && deps.search !== null && noPrivateSource;
+    const brief: BriefRequest | null = request.action === "send" && !request.conversationId && !answering ? (request.brief ?? null) : null;
+    const research = deps.research ?? null;
+    const retrieval: PreparedTurn["retrieval"] =
+      brief && noPrivateSource
+        ? research
+          ? "brief"
+          : null
+        : searchWanted
+          ? request.research === true && research
+            ? "deep"
+            : "basic"
+          : null;
+    const format: ReplyFormat | undefined = retrieval === "deep" ? "research" : retrieval === "brief" ? "brief" : undefined;
     // The model may write a web search only in a conversation that never read Google or an app.
     const webSearchTool = googleFlags === null && requestedApps.length === 0 && !(await hadPrivateSourceReply(deps, userId, existing));
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
@@ -318,11 +346,12 @@ export async function prepareChatTurn(
     // when the message asks for them (detectToolIntent), so a plain message stays on the fast tier.
     const ownData = Boolean(deps.ownData);
     const latest = pendingHistory.at(-1)?.content ?? "";
-    const toolIntent = ownData ? detectToolIntent(latest) : null;
+    // A brief message holds the topics, which can be memory text such as "Remind me to ...": not a request.
+    const toolIntent = ownData && !brief ? detectToolIntent(latest) : null;
     const connectorTools =
       requestedApps.length > 0 && deps.connectors ? await deps.connectors.available(requestedApps) : new Map();
     const toolsBound = selectTools(TOOLS, {
-      webSearch: searchWanted,
+      webSearch: retrieval === "basic",
       ownData: toolIntent !== null,
       webSearchTool,
       google: googleFlags,
@@ -336,7 +365,7 @@ export async function prepareChatTurn(
         effort: request.effort ?? "auto",
         toolIntent,
       }),
-      toolsBound.length > 0,
+      toolsBound.length > 0 || retrieval === "deep" || retrieval === "brief",
     );
     // The reply of a turn that reads a private source is marked in its own row, before any read, so the
     // conversation never gets a model-written search again (decision 0014, decision 10; decision 0016).
@@ -348,16 +377,25 @@ export async function prepareChatTurn(
     const plan = deps.routing[route.tier];
     const promptBound = buildPromptMessages({
       history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
-      webSearch: request.webSearch && googleFlags === null ? "failed" : "off",
+      webSearch: (request.webSearch || brief !== null) && googleFlags === null ? "failed" : "off",
       results: [],
       now: deps.now(),
       timeZone: request.timeZone,
       mode,
       toolGuidance: toolsBound.map((tool) => tool.guidance),
       serverNote: google?.note,
+      format,
       tier: route.tier,
       privateSources: privateSourcesNote(request.useGoogle === true || requestedApps.length > 0, googleFlags !== null || connectorTools.size > 0),
     });
+    const retrievalBytes =
+      retrieval === "basic"
+        ? SEARCH_RESULTS_MAX_BYTES
+        : retrieval === "deep"
+          ? RESEARCH_RESULTS_MAX_BYTES
+          : retrieval === "brief"
+            ? BRIEF_RESULTS_MAX_BYTES
+            : 0;
     const toolDefinitionsBound = toolsBound.map(toToolDefinition);
     // The first attempt can run on any model of the tier (the breaker can skip
     // the first one), so hold for the most expensive one.
@@ -369,7 +407,7 @@ export async function prepareChatTurn(
             model,
             promptBound,
             plan.maxOutputTokens,
-            (searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0) + (ownData ? MEMORY_BLOCK_MAX_BYTES : 0),
+            retrievalBytes + (ownData ? MEMORY_BLOCK_MAX_BYTES : 0),
             toolDefinitionsBound,
           ),
         ),
@@ -391,23 +429,33 @@ export async function prepareChatTurn(
     }
     holds.nebius = { reservationId: nebius.id, heldMicroUsd };
 
+    // One credit hold for each search the turn sends: 2 for an advanced search, 1 for each brief topic.
+    // The deep research extract holds its own credit later, just before it is sent.
     let searchBudgetExhausted = false;
-    if (searchWanted) {
-      const tavily = await deps.spend.reserve("tavily", TAVILY_BASIC_SEARCH_CREDITS);
-      if (tavily.allowed) {
-        holds.tavily = tavily.id;
-      } else {
-        searchBudgetExhausted = true;
+    const briefTopics: string[] = [];
+    const searchCount = retrieval === "brief" ? brief!.topics.length : retrieval ? 1 : 0;
+    for (let index = 0; index < searchCount; index += 1) {
+      const tavily = await deps.spend.reserve(
+        "tavily",
+        retrieval === "deep" ? TAVILY_ADVANCED_SEARCH_CREDITS : TAVILY_BASIC_SEARCH_CREDITS,
+      );
+      if (!tavily.allowed) {
         deps.log("warn", "spend_limit_reached", { requestId, route: "chat", provider: "tavily", limit: tavily.limit });
+        break;
       }
+      holds.tavily.push(tavily.id);
+      if (retrieval === "brief") briefTopics.push(brief!.topics[index]!);
     }
+    searchBudgetExhausted = searchCount > 0 && holds.tavily.length === 0;
 
     let conversation: ConversationSummary;
     let userMessage: MessageDTO;
     if (!answering && request.action === "send") {
       conversation =
         existing ??
-        (await deps.repo.createConversation(userId, titleFromMessage(request.message), mode, { clientRequest }));
+        (await deps.repo.createConversation(userId, brief ? `Brief for ${brief.date}` : titleFromMessage(request.message), mode, {
+          clientRequest,
+        }));
       // The claim is known before the insert, so a lost response can still end it.
       holds.claim = { messageId: crypto.randomUUID(), claimId: crypto.randomUUID() };
       userMessage = await deps.repo.insertMessage(userId, {
@@ -433,12 +481,14 @@ export async function prepareChatTurn(
         userMessage,
         repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
-        webSearch: request.webSearch && googleFlags === null,
+        webSearch: (request.webSearch || brief !== null) && googleFlags === null,
+        retrieval,
+        briefTopics,
         timeZone: request.timeZone ?? null,
         searchBudgetExhausted,
         route,
         toolFlags: {
-          webSearch: searchWanted && !searchBudgetExhausted,
+          webSearch: retrieval === "basic" && !searchBudgetExhausted,
           ownData: toolIntent !== null,
           webSearchTool,
           google: googleFlags,
@@ -489,13 +539,13 @@ function withToolTier(route: RouteDecision, offersTools: boolean): RouteDecision
  */
 function releaseHolds(deps: AssistantDeps, requestId: string, holds: TurnHolds): Promise<void> {
   const { nebius, tavily, claim } = holds;
-  if (!nebius && !tavily && !claim) return Promise.resolve();
+  if (!nebius && tavily.length === 0 && !claim) return Promise.resolve();
   holds.nebius = null;
-  holds.tavily = null;
+  holds.tavily = [];
   holds.claim = null;
   const work = Promise.all([
     nebius ? settleQuietly(deps, requestId, "nebius", nebius.reservationId, 0) : null,
-    tavily ? settleQuietly(deps, requestId, "tavily", tavily, 0) : null,
+    ...tavily.map((id) => settleQuietly(deps, requestId, "tavily", id, 0)),
     claim
       ? deps.repo.releaseReplyClaim(claim.messageId, claim.claimId).catch(() => {
           deps.log("warn", "reply_claim_release_failed", { requestId, route: "chat" });
@@ -601,7 +651,7 @@ async function* runChatTurn(
     if (turn.searchBudgetExhausted) {
       webSearch = "failed";
       yield { type: "search", status: "failed", sources: [], message: SEARCH_BUDGET_MESSAGE };
-    } else if (!deps.search) {
+    } else if (!turn.retrieval) {
       webSearch = "failed";
       yield {
         type: "search",
@@ -611,8 +661,18 @@ async function* runChatTurn(
       };
     } else {
       try {
-        holds.tavily = null;
-        results = await deps.search(turn.userMessage.content, signal);
+        const research = deps.research ?? null;
+        const context = research
+          ? { research, spend: deps.spend, log: deps.log, waitUntil: deps.waitUntil, requestId: turn.requestId, credits: holds.tavily, signal }
+          : null;
+        if (turn.retrieval === "deep" && context) {
+          results = yield* deepResearch(context, turn.userMessage.content);
+        } else if (turn.retrieval === "brief" && context) {
+          results = yield* briefSearch(context, turn.briefTopics);
+        } else {
+          holds.tavily = [];
+          results = await deps.search!(turn.userMessage.content, signal);
+        }
         webSearch = results.length > 0 ? "used" : "no_results";
         yield {
           type: "search",
@@ -622,6 +682,9 @@ async function* runChatTurn(
             ? { message: "Web search found no usable results, so this answer is not based on web sources." }
             : {}),
         };
+        if (webSearch === "used" && (turn.retrieval === "deep" || turn.retrieval === "brief")) {
+          yield { type: "status", tool: "research_write" };
+        }
       } catch (error) {
         if (signal.aborted) {
           deps.log("info", "chat_client_aborted", { ...logBase, stage: "search" });
@@ -663,6 +726,7 @@ async function* runChatTurn(
     toolGuidance: tools.map((tool) => tool.guidance),
     memories,
     serverNote: turn.google?.note,
+    format: turn.retrieval === "deep" ? "research" : turn.retrieval === "brief" ? "brief" : undefined,
     tier: turn.route.tier,
     privateSources: privateSourcesNote(
       turn.google !== null || turn.route.reason === "connector_read",
@@ -983,7 +1047,12 @@ async function* runChatTurn(
   yield { type: "done", message: saved, truncated: truncated || finishReason === "length" };
 
   // 4. A title made by the model for a new conversation, after the reply (decision 0013).
-  if (deps.titles && turn.history.length === 1 && turn.conversation.title === titleFromMessage(turn.userMessage.content)) {
+  if (
+    deps.titles &&
+    turn.retrieval !== "brief" &&
+    turn.history.length === 1 &&
+    turn.conversation.title === titleFromMessage(turn.userMessage.content)
+  ) {
     yield* makeTitle(deps, turn, signal, settle);
   }
 }

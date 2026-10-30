@@ -114,6 +114,13 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - **Rule:** cleanup that must always run cannot live only in a generator's `finally`. Give it an owner that exists before the stream starts, and test a cancel before the first read.
 - **Sources:** [decision 0012](decisions/0012-resend-idempotency.md), review round 1; `tests/unit/api-routes.test.ts` ("cancelled before its first read").
 
+### 13. One Tavily reservation holds at most 2 credits
+
+- **What happened:** deep research and the morning brief make more than one Tavily call in a turn (decision 0018). The SQL bound on `reserve_provider_spend` allows at most 2 credits for one Tavily reservation, which is one advanced search.
+- **Fix:** each search holds its own credits. `TurnHolds.tavily` is a list in the order of use, and a credit leaves it when its search starts. The extract holds its 1 credit just before it is sent and settles at 0 if Stop comes first.
+- **Rule:** hold credits for each paid call, not for the whole turn, and give back only credits whose call was not sent. Tavily charges an extract by successful pages (1 credit for each 5), so 1 held credit covers an extract of 3 pages.
+- **Sources:** [decision 0018](decisions/0018-tavily-research-and-brief.md); `supabase/migrations/20261019000000_global_spend_guard.sql`; the Tavily credits page, read on 2026-10-30; `tests/unit/research.test.ts`.
+
 ## Checklists
 
 **Add or change a model**

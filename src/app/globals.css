@@ -1748,6 +1748,19 @@ a.tool-row {
   gap: 0.5rem;
 }
 
+.brief-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.brief-form {
+  flex-wrap: wrap;
+}
+
+.task-form.brief-form input {
+  flex: 1 1 14rem;
+}
+
 .task-form input {
   flex: 1;
   min-width: 0;
