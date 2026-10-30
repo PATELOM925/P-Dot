@@ -9,6 +9,7 @@ import {
   toLocalInputValue,
   visibleProposals,
   needsUser,
+  leaseTimerDelayMs,
   leaseRemainingMs,
 } from "@/features/actions/format";
 import { builtInStatus, countPhrase } from "@/features/connectors/status";
@@ -77,6 +78,17 @@ describe("approval list filtering", () => {
     expect(leaseRemainingMs(start, t0 + 121_000, 120)).toBe(0);
     expect(leaseRemainingMs(null, t0, 120)).toBe(0);
     expect(leaseRemainingMs("not a date", t0, 120)).toBe(0);
+  });
+
+  it("schedules the lease check from the clock at scheduling time, also after a renewal", () => {
+    const first = "2026-10-30T09:00:00.000Z";
+    const t0 = Date.parse(first);
+    expect(leaseTimerDelayMs(first, t0 + 60_000, 120)).toBe(60_500);
+    // The lease is renewed at t0 + 130 s; the card schedules again with the clock of that moment.
+    const renewed = new Date(t0 + 130_000).toISOString();
+    expect(leaseTimerDelayMs(renewed, t0 + 131_000, 120)).toBe(119_500);
+    expect(leaseTimerDelayMs(first, t0 + 200_000, 120)).toBe(0);
+    expect(leaseTimerDelayMs(null, t0, 120)).toBe(0);
   });
 
   it("counts proposals waiting in the other mode", () => {

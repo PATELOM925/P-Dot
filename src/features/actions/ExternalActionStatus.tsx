@@ -5,7 +5,7 @@ import { ApiError, errorMessage } from "@/lib/api-client";
 import { EXTERNAL_ACTION_LEASE_SECONDS } from "@/lib/limits";
 import type { ActionProposalDTO } from "@/types/api";
 import { recoverAction } from "./api";
-import { EXTERNAL_CHECK_PLACE, leaseRemainingMs } from "./format";
+import { EXTERNAL_CHECK_PLACE, leaseRemainingMs, leaseTimerDelayMs } from "./format";
 
 /**
  * An external action that has no stored outcome yet (decision 0014). Inside
@@ -27,15 +27,15 @@ export function ExternalActionStatus({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const remaining = leaseRemainingMs(proposal.executionStartedAt, now, EXTERNAL_ACTION_LEASE_SECONDS);
-  const leaseOver = remaining === 0;
+  const leaseOver = leaseRemainingMs(proposal.executionStartedAt, now, EXTERNAL_ACTION_LEASE_SECONDS) === 0;
 
-  // One re-render when the lease ends, so the recovery controls appear on an open page.
+  // Re-render when the lease ends, so the recovery controls appear on an open page. The delay is
+  // measured from the clock at scheduling time, and a new start time (a renewed lease) schedules again.
   useEffect(() => {
-    if (remaining === 0) return;
-    const timer = setTimeout(() => setNow(Date.now()), remaining + 500);
+    const delay = leaseTimerDelayMs(proposal.executionStartedAt, Date.now(), EXTERNAL_ACTION_LEASE_SECONDS);
+    const timer = setTimeout(() => setNow(Date.now()), delay);
     return () => clearTimeout(timer);
-  }, [remaining]);
+  }, [proposal.executionStartedAt]);
 
   async function recover(answer?: "done" | "not_done") {
     setBusy(true);

@@ -156,6 +156,16 @@ export function leaseRemainingMs(executionStartedAt: string | null | undefined, 
 }
 
 /**
+ * How long to wait before the card checks the lease again, from the clock at
+ * scheduling time. 0 when the lease has ended, so the card updates at once.
+ * A renewed lease (a later start time) gives its full length again.
+ */
+export function leaseTimerDelayMs(executionStartedAt: string | null | undefined, now: number, leaseSeconds: number): number {
+  const remaining = leaseRemainingMs(executionStartedAt, now, leaseSeconds);
+  return remaining === 0 ? 0 : remaining + 500;
+}
+
+/**
  * What an approval list shows: proposals that need the user, plus the ones
  * decided in this view so their outcome stays visible. Also counts proposals waiting
  * in the other mode, which the Today page mentions.
