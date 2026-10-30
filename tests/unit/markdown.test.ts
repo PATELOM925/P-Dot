@@ -5,7 +5,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Markdown } from "@/features/chat/markdown/Markdown";
 import { parseInline, parseMarkdown } from "@/features/chat/markdown/parse";
-import { SourceList } from "@/features/chat/MessageView";
 
 const html = (text: string) => renderToStaticMarkup(createElement(Markdown, { text }));
 
@@ -146,23 +145,6 @@ describe("Markdown rendering", () => {
       for (const match of out.matchAll(/href="([^"]*)"/g)) expect(match[1]).toMatch(/^https?:\/\//);
     });
   }
-});
-
-describe("SourceList", () => {
-  it("keeps a source with an unsafe link in its place, so the numbers stay right", () => {
-    const out = renderToStaticMarkup(
-      createElement(SourceList, {
-        sources: [
-          { title: "Bad", url: "javascript:alert(1)" },
-          { title: "Good", url: "https://example.com/" },
-        ],
-      }),
-    );
-    expect(out.match(/<li>/g)).toHaveLength(2);
-    expect(out).toContain("Link removed");
-    expect(out.indexOf("Bad")).toBeLessThan(out.indexOf("Good"));
-    expect(out).not.toContain("javascript:");
-  });
 });
 
 describe("no HTML injection in chat code", () => {

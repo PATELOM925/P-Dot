@@ -30,7 +30,8 @@ import {
   renameConversation,
 } from "./api";
 import { Markdown } from "./markdown/Markdown";
-import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
+import { AssistantReply } from "./AssistantReply";
+import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ComposerToolState } from "./ComposerTools";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
@@ -783,7 +784,13 @@ export function ChatWorkspace({
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
               {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
               {streaming.text ? (
-                <Markdown text={streaming.text} />
+                <AssistantReply
+                  text={streaming.text}
+                  sources={streaming.search?.sources ?? []}
+                  messageId="live"
+                  showSources={streaming.search?.status === "used"}
+                  streaming
+                />
               ) : (
                 <div className="message-content">
                   <span className="muted">
@@ -795,7 +802,6 @@ export function ChatWorkspace({
                   </span>
                 </div>
               )}
-              {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
           )}
           {(stopped || error?.partial) && (
