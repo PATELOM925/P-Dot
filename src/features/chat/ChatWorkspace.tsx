@@ -107,6 +107,8 @@ export function ChatWorkspace({
   const [stalled, setStalled] = useState(false);
   const stalledRef = useRef(false);
   const leftStreamRef = useRef<AbortController | null>(null);
+  const drawerToggleRef = useRef<HTMLButtonElement>(null);
+  const drawerCloseRef = useRef<HTMLButtonElement>(null);
   const [status, setStatus] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -212,6 +214,28 @@ export function ChatWorkspace({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [sending]);
+
+  function closeList() {
+    setShowList(false);
+  }
+
+  // The phone drawer: focus goes to its Close button, and Esc closes it. On close, focus goes back to
+  // the toggle, after the render that takes `inert` off the chat.
+  const drawerWasOpen = useRef(false);
+  useEffect(() => {
+    if (!showList) {
+      if (drawerWasOpen.current) drawerToggleRef.current?.focus();
+      drawerWasOpen.current = false;
+      return;
+    }
+    drawerWasOpen.current = true;
+    drawerCloseRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowList(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showList]);
 
   /** Stops a reply because the user leaves its conversation. That is not a "Stopped" turn to show. */
   function leaveStream() {
@@ -562,7 +586,28 @@ export function ChatWorkspace({
 
   return (
     <div className="chat-layout">
-      <aside className={`chat-sidebar${showList ? " is-open" : ""}`} aria-label="Conversations">
+      {showList && <div className="drawer-backdrop" aria-hidden="true" onClick={closeList} />}
+      <aside
+        id="chat-drawer"
+        className={`chat-sidebar${showList ? " is-open" : ""}`}
+        aria-label="Conversations"
+        role={showList ? "dialog" : undefined}
+        aria-modal={showList ? true : undefined}
+      >
+        <div className="drawer-head">
+          <p className="drawer-title">Conversations</p>
+          <button
+            ref={drawerCloseRef}
+            type="button"
+            className="icon-button drawer-close"
+            aria-label="Close conversations"
+            onClick={closeList}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        </div>
         <button type="button" className="button button-primary" onClick={startNewConversation}>
           New conversation
         </button>
@@ -674,12 +719,14 @@ export function ChatWorkspace({
         </ul>
       </aside>
 
-      <main className="chat-main">
+      <main className="chat-main" inert={showList ? true : undefined}>
         <div className="chat-toolbar">
           <button
+            ref={drawerToggleRef}
             type="button"
             className="button button-small mobile-only"
             aria-expanded={showList}
+            aria-controls="chat-drawer"
             onClick={() => setShowList((open) => !open)}
           >
             Conversations

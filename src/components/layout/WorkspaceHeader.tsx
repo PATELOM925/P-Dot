@@ -20,7 +20,7 @@ export function WorkspaceHeader({ email, trial, mode }: { email: string | null; 
         ) : (
           email && <span className="muted small header-email">{email}</span>
         )}
-        <form action={signOutAction}>
+        <form action={signOutAction} className="header-signout">
           <button type="submit" className="button button-small">
             {trial ? "End trial" : "Sign out"}
           </button>

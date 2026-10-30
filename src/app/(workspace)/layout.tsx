@@ -1,3 +1,4 @@
+import { BottomNav } from "@/components/layout/BottomNav";
 import { TrialBanner } from "@/components/layout/TrialBanner";
 import { WorkspaceHeader } from "@/components/layout/WorkspaceHeader";
 import { requireAuth } from "@/server/auth/session";
@@ -13,6 +14,7 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
       <WorkspaceHeader email={auth.email} trial={auth.isAnonymous === true} mode={mode} />
       {auth.isAnonymous && <TrialBanner />}
       {children}
+      <BottomNav trial={auth.isAnonymous === true} />
     </div>
   );
 }
