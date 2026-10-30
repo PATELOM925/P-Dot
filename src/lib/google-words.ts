@@ -3,14 +3,29 @@
 // calendar) and the server (it makes the first hop read before it answers).
 // Pure rules, no model call.
 
-const MAIL = /\b(?:e-?mail(?:s|ed)?|gmail|inbox|unread|mails?)\b/i;
+const MAIL = /\b(?:e-?mail(?:s|ed)?|gmail|inbox|unread)\b|\bmails?\s+(?:from|for\s+me)\b/i;
+
+/**
+ * Words with a common meaning outside the user's own data ("mail merge", "the
+ * Fed meeting", "Translate 'appointment'"). They count only with an anchor.
+ */
+const WEAK_MAIL = /\bmails?\b/i;
+const WEAK_CALENDAR = /\b(?:meetings?|agenda|appointments?)\b/i;
+
+/** Words that make the message about the user's own mail or calendar. A bare "I" is not enough: "How do I prepare for a meeting?" */
+const OWN = new RegExp(
+  [
+    String.raw`\b(?:my|our|inbox|gmail|calendar)\b`,
+    String.raw`\b(?:with|for)\s+me\b`,
+    String.raw`\bi(?:'|’)m\b|\bam\s+i\b`,
+    String.raw`\b(?:do|did)\s+i\s+(?:have|get|miss|receive)\b|\bhave\s+i\s+(?:got|received|missed)\b`,
+  ].join("|"),
+  "i",
+);
 
 const CALENDAR = new RegExp(
   [
     String.raw`\bcalendar\b`,
-    String.raw`\bmeetings?\b`,
-    String.raw`\bagenda\b`,
-    String.raw`\bappointments?\b`,
     String.raw`\bmy\s+(?:events?|schedule)\b`,
     String.raw`\bam\s+i\s+(?:free|busy)\b`,
     String.raw`\bfree\s+(?:time|slots?)\b`,
@@ -35,9 +50,10 @@ export interface GoogleWords {
 }
 
 export function googleWords(message: string): GoogleWords {
-  const mail = MAIL.test(message);
+  const own = OWN.test(message);
+  const mail = MAIL.test(message) || (own && WEAK_MAIL.test(message));
   const scheduleMeeting = SCHEDULE_MEETING.test(message);
-  const calendar = scheduleMeeting || CALENDAR.test(message);
+  const calendar = scheduleMeeting || CALENDAR.test(message) || (own && WEAK_CALENDAR.test(message));
   return {
     mail,
     calendar,

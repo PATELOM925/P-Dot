@@ -103,6 +103,9 @@ describe("autoSources", () => {
     "Show my agenda for Monday",
     "Am I free on Friday afternoon?",
     "Find free time next week",
+    "Do I have any meetings tomorrow?",
+    "Search my Gmail",
+    "Is anything new in my inbox?",
     "Any free slot on Tuesday?",
     "Am I busy at 3pm?",
     "What's on today?",
@@ -143,6 +146,9 @@ describe("autoSources", () => {
     "Remember that my work email is sam@example.com",
     "Give me ideas, e.g. for dinner",
     "What are current events in Toronto?",
+    "Any news about the Fed meeting today?",
+    "mail merge in Word",
+    "Translate 'appointment'",
     "",
   ])("turns nothing on for %j", (message) => {
     expect(auto(message)).toEqual(NONE);

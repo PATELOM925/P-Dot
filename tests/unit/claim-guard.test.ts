@@ -125,8 +125,15 @@ describe("forcedToolChoice", () => {
       expect(choice("Remember that my work email is sam@example.com")).toEqual({ name: "save_memory" });
     });
 
-    it.each(["Send an email to Bob about the launch", "Draft a reply to the email from Sam", "Write an email to my team"])(
-      "does not force a read for the request %j",
+    it.each([
+      "Send an email to Bob about the launch",
+      "Draft a reply to the email from Sam",
+      "Write an email to my team",
+      "Any news about the Fed meeting today?",
+      "mail merge in Word",
+      "Translate 'appointment'",
+    ])(
+      "does not force a read for %j",
       (message) => {
         expect(choice(message)).toBeNull();
       },
