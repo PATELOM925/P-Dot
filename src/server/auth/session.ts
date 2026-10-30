@@ -1,11 +1,14 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { redirect } from "next/navigation";
+import { readIdentity } from "@/lib/auth-identity";
 import { createSupabaseServerClient } from "@/server/db/supabase";
 
 export interface AuthContext {
   userId: string;
   email: string | null;
+  /** True for a trial user (Supabase anonymous sign-in). Set by `getAuthContext`. */
+  isAnonymous?: boolean;
   /** Client bound to this user's session; queries run under RLS as this user. */
   supabase: SupabaseClient;
 }
@@ -19,15 +22,9 @@ export interface AuthContext {
 export async function getAuthContext(): Promise<AuthContext | null> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.auth.getClaims();
-  const claims = data?.claims;
-  if (error || !claims || typeof claims.sub !== "string" || claims.sub.length === 0) {
-    return null;
-  }
-  return {
-    userId: claims.sub,
-    email: typeof claims.email === "string" ? claims.email : null,
-    supabase,
-  };
+  const identity = error ? null : readIdentity(data?.claims);
+  if (!identity) return null;
+  return { ...identity, supabase };
 }
 
 /** For pages: redirects to the login page when there is no valid session. */
