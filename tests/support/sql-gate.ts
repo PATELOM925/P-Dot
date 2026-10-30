@@ -40,6 +40,12 @@ const SUPABASE_BOOTSTRAP = `
       (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')
     )::uuid
   $$;
+  create function auth.jwt() returns jsonb language sql stable as $$
+    select coalesce(
+      nullif(current_setting('request.jwt.claim', true), ''),
+      nullif(current_setting('request.jwt.claims', true), '')
+    )::jsonb
+  $$;
   grant usage on schema auth to anon, authenticated, service_role;
 
   grant usage on schema public to anon, authenticated, service_role;
@@ -52,7 +58,8 @@ const LEGACY_DEFAULT_GRANTS = `
   alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
 `;
 
-export type Actor = { role: "anon" } | { role: "authenticated"; userId: string };
+/** `anonymous` is the verified `is_anonymous` claim of a Supabase anonymous sign-in. */
+export type Actor = { role: "anon" } | { role: "authenticated"; userId: string; anonymous?: boolean };
 
 export interface SqlGate {
   readonly defaults: DefaultGrants;
@@ -68,10 +75,14 @@ export interface SqlGate {
 
 export const anon: Actor = { role: "anon" };
 export const user = (userId: string): Actor => ({ role: "authenticated", userId });
+export const anonymousUser = (userId: string): Actor => ({ role: "authenticated", userId, anonymous: true });
 
 async function enterRole(tx: Transaction, actor: Actor): Promise<void> {
   await tx.exec(`set local role ${actor.role}`);
-  const claims = actor.role === "authenticated" ? { sub: actor.userId, role: "authenticated" } : { role: "anon" };
+  const claims =
+    actor.role === "authenticated"
+      ? { sub: actor.userId, role: "authenticated", ...(actor.anonymous ? { is_anonymous: true } : {}) }
+      : { role: "anon" };
   await tx.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify(claims)]);
 }
 
