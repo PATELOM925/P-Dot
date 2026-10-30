@@ -26,3 +26,6 @@ test-results/
 .DS_Store
 Thumbs.db
 .idea/
+
+# Eval output (npm run eval:live). Never commit it.
+tests/evals/reports/
