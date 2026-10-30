@@ -113,6 +113,16 @@ describe("buildPromptMessages", () => {
     expect(messages[1]!.content).toBe("hi");
   });
 
+  it("tells the heavy tier to give a plan first and ask at most 2 questions", () => {
+    const base = { history: [{ role: "user" as const, content: "plan my move" }], webSearch: "off" as const, results: [], now, mode: "personal" as const };
+    const heavy = buildPromptMessages({ ...base, tier: "heavy" })[0]!.content;
+    expect(heavy).toContain("Give a useful answer or plan first");
+    expect(heavy).toContain("ask at most 2 questions");
+    for (const tier of ["fast", "standard", undefined] as const) {
+      expect(buildPromptMessages({ ...base, tier })[0]!.content).not.toContain("at most 2 questions");
+    }
+  });
+
   it("includes the current date", () => {
     const messages = buildPromptMessages({ history: [{ role: "user", content: "hi" }], webSearch: "off", results: [], now, mode: "personal" });
     expect(messages[0]!.content).toContain("2026-10-14");
