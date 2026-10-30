@@ -218,24 +218,31 @@ function parseList(lines: string[], depth: number): Block {
 
 const BARE_URL = /https?:\/\/[^\s<>()]+/y;
 
-function findClosing(text: string, from: number, marker: string): number {
-  let index = text.indexOf(marker, from);
-  while (index !== -1 && text[index - 1] === "\\") index = text.indexOf(marker, index + 1);
-  return index;
+/** Longest link destination read, so a "(" with no ")" costs at most this much. */
+const MAX_DESTINATION_CHARS = 2100;
+
+/** For each "[", the index of its matching "]", or -1. One pass with a stack, so unmatched brackets cost nothing more. */
+function matchBrackets(text: string): Int32Array {
+  const match = new Int32Array(text.length).fill(-1);
+  const stack: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\\") i += 1;
+    else if (text[i] === "[") stack.push(i);
+    else if (text[i] === "]" && stack.length > 0) match[stack.pop()!] = i;
+  }
+  return match;
 }
 
-/** Finds the matching "]" of a "[" at `open`, allowing nested brackets. */
-function closingBracket(text: string, open: number): number {
-  let level = 0;
-  for (let i = open; i < text.length; i += 1) {
-    if (text[i] === "\\") i += 1;
-    else if (text[i] === "[") level += 1;
-    else if (text[i] === "]") {
-      level -= 1;
-      if (level === 0) return i;
-    }
+/** For each "(", the index of its matching ")" on the same line, or -1. One pass with a stack. */
+function matchParens(text: string): Int32Array {
+  const match = new Int32Array(text.length).fill(-1);
+  const stack: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\n") stack.length = 0;
+    else if (text[i] === "(") stack.push(i);
+    else if (text[i] === ")" && stack.length > 0) match[stack.pop()!] = i;
   }
-  return -1;
+  return match;
 }
 
 export function parseInline(text: string, depth = 0): Inline[] {
@@ -244,6 +251,18 @@ export function parseInline(text: string, depth = 0): Inline[] {
   const flush = () => {
     if (buffer) out.push({ type: "text", text: buffer });
     buffer = "";
+  };
+
+  const brackets = matchBrackets(text);
+  const parens = matchParens(text);
+  // A search for a closing marker that found none from some point finds none from any later point.
+  const noneFrom = new Map<string, number>();
+  const findClosing = (from: number, marker: string): number => {
+    if (from >= (noneFrom.get(marker) ?? Infinity)) return -1;
+    let index = text.indexOf(marker, from);
+    while (index !== -1 && text[index - 1] === "\\") index = text.indexOf(marker, index + 1);
+    if (index === -1) noneFrom.set(marker, Math.min(from, noneFrom.get(marker) ?? Infinity));
+    return index;
   };
 
   let i = 0;
@@ -265,7 +284,7 @@ export function parseInline(text: string, depth = 0): Inline[] {
       let tickCount = 0;
       while (text[i + tickCount] === "`") tickCount += 1;
       const ticks = "`".repeat(tickCount);
-      const end = text.indexOf(ticks, i + ticks.length);
+      const end = findClosing(i + ticks.length, ticks);
       if (end !== -1) {
         flush();
         out.push({ type: "code", text: text.slice(i + ticks.length, end).trim() || text.slice(i + ticks.length, end) });
@@ -276,10 +295,10 @@ export function parseInline(text: string, depth = 0): Inline[] {
     if ((char === "[" || (char === "!" && text[i + 1] === "[")) && depth < MAX_DEPTH) {
       const image = char === "!";
       const open = image ? i + 1 : i;
-      const close = closingBracket(text, open);
+      const close = brackets[open]!;
       if (close !== -1 && text[close + 1] === "(") {
-        const end = text.indexOf(")", close + 2);
-        if (end !== -1) {
+        const end = parens[close + 1]!;
+        if (end !== -1 && end - close <= MAX_DESTINATION_CHARS) {
           const label = text.slice(open + 1, close);
           const href = text.slice(close + 2, end).trim().split(/\s+/)[0] ?? "";
           flush();
@@ -303,7 +322,7 @@ export function parseInline(text: string, depth = 0): Inline[] {
     if (depth < MAX_DEPTH) {
       const strong = text.startsWith("**", i) ? "**" : text.startsWith("__", i) && (i === 0 || /\W/.test(text[i - 1]!)) ? "__" : null;
       if (strong) {
-        const end = findClosing(text, i + 2, strong);
+        const end = findClosing(i + 2, strong);
         if (end > i + 2) {
           flush();
           out.push({ type: "strong", children: parseInline(text.slice(i + 2, end), depth + 1) });
@@ -312,7 +331,7 @@ export function parseInline(text: string, depth = 0): Inline[] {
         }
       }
       if (text.startsWith("~~", i)) {
-        const end = findClosing(text, i + 2, "~~");
+        const end = findClosing(i + 2, "~~");
         if (end > i + 2) {
           flush();
           out.push({ type: "del", children: parseInline(text.slice(i + 2, end), depth + 1) });
@@ -322,7 +341,7 @@ export function parseInline(text: string, depth = 0): Inline[] {
       }
       const emphasis = (char === "*" || (char === "_" && (i === 0 || /\W/.test(text[i - 1]!)))) && text[i + 1] !== " " && text[i + 1] !== char;
       if (emphasis) {
-        const end = findClosing(text, i + 1, char);
+        const end = findClosing(i + 1, char);
         const after = text[end + 1];
         if (end > i + 1 && text[end - 1] !== " " && (char === "*" || after === undefined || /\W/.test(after))) {
           flush();

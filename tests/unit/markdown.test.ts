@@ -56,6 +56,30 @@ describe("parseMarkdown", () => {
     expect(list?.type === "list" && list.items.map((i) => i.task)).toEqual(["open", "done"]);
   });
 
+  const ADVERSARIAL: [string, string][] = [
+    ["unmatched [", "[a ".repeat(20_000)],
+    ["[x]( with no )", "[x](a ".repeat(10_000)],
+    ["unmatched backticks", "`a ``b ".repeat(8_600)],
+    ["unmatched **", "**a ".repeat(15_000)],
+    ["unmatched ~~ and _", "~~a _b ".repeat(8_600)],
+  ];
+  for (const [name, text] of ADVERSARIAL) {
+    it(`parses 60k characters of ${name} in under 100 ms`, () => {
+      expect(text.length).toBeGreaterThanOrEqual(60_000);
+      parseMarkdown("warm up [x](https://example.com)");
+      const started = performance.now();
+      parseMarkdown(text);
+      expect(performance.now() - started).toBeLessThan(100);
+    });
+  }
+
+  it("reads a link destination with balanced parentheses", () => {
+    expect(parseInline("[wiki](https://en.wikipedia.org/wiki/Lisbon_(city)) ok")[0]).toMatchObject({
+      type: "link",
+      href: "https://en.wikipedia.org/wiki/Lisbon_(city)",
+    });
+  });
+
   it("stays fast on a long reply", () => {
     const text = "Some **bold** text with a [link](https://example.com) and `code`.\n\n".repeat(400);
     const started = performance.now();

@@ -101,6 +101,7 @@ export function ChatWorkspace({
   const [streaming, setStreaming] = useState<StreamingReply | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
   const [stopped, setStopped] = useState<{ partial: string } | null>(null);
+  const [noRetryId, setNoRetryId] = useState<string | null>(null);
   // "Working" only while events arrive (spec D1): the time of the last stream event, and whether it is too long ago.
   const lastEventRef = useRef(0);
   const streamTextRef = useRef("");
@@ -215,6 +216,11 @@ export function ChatWorkspace({
     return () => window.clearInterval(timer);
   }, [sending]);
 
+  function showTurnError(view: Omit<ErrorState, "turn">, userMessageId: string | null) {
+    setError({ ...view, turn: true });
+    if (!view.retryable && userMessageId) setNoRetryId(userMessageId);
+  }
+
   function closeList() {
     setShowList(false);
   }
@@ -316,6 +322,8 @@ export function ChatWorkspace({
     abortRef.current = controller;
     const tempId = `pending-${now()}`;
     let accepted = false;
+    // The user message this turn answers: the retried one, or the new one once the server saved it.
+    let turnUserId: string | null = action === "retry" ? (messages.at(-1)?.id ?? null) : null;
     let finished = false;
 
     const restoreDraft = () => {
@@ -364,6 +372,7 @@ export function ChatWorkspace({
         switch (event.type) {
           case "start":
             accepted = true;
+            turnUserId = event.userMessage.id;
             if (action === "send") sendKey.saved();
             if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
@@ -426,11 +435,10 @@ export function ChatWorkspace({
           case "error":
             finished = true;
             setStreaming(null);
-            setError({
-              ...chatErrorView(event.code, event.message, { retryable: event.retryable, trial }),
-              partial: streamTextRef.current,
-              turn: true,
-            });
+            showTurnError(
+              { ...chatErrorView(event.code, event.message, { retryable: event.retryable, trial }), partial: streamTextRef.current },
+              turnUserId,
+            );
             setStatus("");
             break;
         }
@@ -457,7 +465,7 @@ export function ChatWorkspace({
           err instanceof ApiError
             ? chatErrorView(err.code, err.message, { trial })
             : { message: "P-Dot could not reply. Try again.", retryable: true, limit: false };
-        setError({ ...view, partial: accepted ? streamTextRef.current : "", turn: true });
+        showTurnError({ ...view, partial: accepted ? streamTextRef.current : "" }, turnUserId);
         setStatus("");
         if (!accepted && sendKey.refused(err, action) === "answered") {
           void showSavedMessage((err as ApiError).conversationId ?? activeId, action === "send" ? text : "");
@@ -534,7 +542,9 @@ export function ChatWorkspace({
   }
 
   const last = messages.at(-1);
-  const canRetry = !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending;
+  // A message whose last error said Retry cannot help keeps no Retry, also after Dismiss.
+  const canRetry =
+    !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending && last.id !== noRetryId;
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
 
   // Oldest first, so a reply's suggestions read in the order P-Dot made them.
@@ -561,8 +571,9 @@ export function ChatWorkspace({
   const lastReply = [...messages].reverse().find((m) => m.role === "assistant");
   for (const message of messages) {
     if (message.role !== "assistant") continue;
-    const open = placedProposals.byMessage.get(message.id)?.some((p) => p.status === "proposed" && !autoRunning.has(p.id));
-    if (open) turnStates.set(message.id, "waiting");
+    const openAction = placedProposals.byMessage.get(message.id)?.some((p) => p.status === "proposed" && !autoRunning.has(p.id));
+    const openMemory = placedSuggestions.get(message.id)?.some((s) => s.outcome === "waiting");
+    if (openAction || openMemory) turnStates.set(message.id, "waiting");
     else if (message.id === lastReply?.id && !sending) turnStates.set(message.id, "done");
   }
   const showSuggestions = activeId !== null && !loadingMessages;
