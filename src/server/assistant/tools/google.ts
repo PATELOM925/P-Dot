@@ -8,11 +8,12 @@ import {
   MAX_ACTION_SUMMARY_CHARS,
 } from "@/lib/limits";
 import { actionPayloadSchema } from "@/lib/schemas";
+import { dateDay, zonedDayTime } from "@/lib/time-zone";
 import type { GoogleConfig } from "@/server/config";
 import type { ActionProposalRepository } from "@/server/db/action-proposals";
 import type { ConnectedAccountRepository } from "@/server/db/connected-accounts";
 import { GoogleScopeMissingError, bounded, untrustedGoogleBlock } from "@/server/google/api";
-import { calendarListEvents } from "@/server/google/calendar";
+import { calendarListEvents, type CalendarEvent } from "@/server/google/calendar";
 import { gmailRead, gmailSearch } from "@/server/google/gmail";
 import { GoogleApiError, type FetchLike } from "@/server/google/http";
 import { CALENDAR_ALL_SCOPE, CALENDAR_SCOPE, GMAIL_READ_SCOPE } from "@/server/google/oauth";
@@ -46,12 +47,14 @@ export interface GoogleTurn {
   stopped: boolean;
   /** One access for the whole turn; the access token stays in its memory. */
   access: Promise<GoogleAccessOutcome> | null;
+  /** The user's IANA time zone from the browser, or null. Event times are shown in it, else in UTC. */
+  timeZone: string | null;
 }
 
 type GoogleAccessOutcome = { ok: true; access: GoogleAccess } | { ok: false; content: string };
 
-export function newGoogleTurn(userText: string, ownAddress: string | null): GoogleTurn {
-  return { userText, ownAddress, textLeft: GOOGLE_TOOL_TEXT_MAX_CHARS, stopped: false, access: null };
+export function newGoogleTurn(userText: string, ownAddress: string | null, timeZone: string | null = null): GoogleTurn {
+  return { userText, ownAddress, textLeft: GOOGLE_TOOL_TEXT_MAX_CHARS, stopped: false, access: null, timeZone };
 }
 
 const NOT_CONNECTED = "Google is not connected. Tell the user to connect Google on the Connectors page.";
@@ -257,15 +260,38 @@ export const calendarListTool: ToolSpec<z.infer<typeof listArgs>> = {
     googleRead(context, "calendar_list_events", async (access) => {
       const events = await calendarListEvents(access, { from: new Date(from), to: new Date(to), maxResults: max }, context.signal);
       if (events.length === 0) return "The calendar has no events in this time.";
+      const zone = turnOf(context).timeZone;
       const lines = events.map(
         (e, i) =>
-          `[${i + 1}] ${oneLine(e.title) || "(no title)"} | Start: ${e.start} | End: ${e.end}${e.allDay ? " | All day" : ""}${
+          `[${i + 1}] ${oneLine(e.title) || "(no title)"} | When: ${eventWhen(e, zone ?? "UTC")}${
             e.location ? ` | Location: ${oneLine(e.location)}` : ""
           } | Attendees: ${e.attendeeCount}`,
       );
-      return takeText(context, "calendar", lines.join("\n"));
+      const note = zone
+        ? `Times are in the user's time zone, ${zone}. Copy each weekday, date and time as written.`
+        : "Times are in UTC, because the user's time zone is not known. Copy each weekday, date and time as written.";
+      return `${note}\n${takeText(context, "calendar", lines.join("\n"))}`;
     }),
 };
+
+/**
+ * When an event is, already in the user's time zone with its weekday, so the
+ * model copies it and does not work it out: "Wed 2026-11-04 10:00 to 11:00".
+ * An all-day event has dates only; Google's end date is the day after it ends.
+ */
+function eventWhen(event: CalendarEvent, timeZone: string): string {
+  if (event.allDay) {
+    const first = dateDay(event.start);
+    if (!first) return oneLine(event.start) || "(no time)";
+    const last = dateDay(event.end, -1);
+    return `${first}${last && last.slice(4) > first.slice(4) ? ` to ${last}` : ""}, all day`;
+  }
+  const start = zonedDayTime(event.start, timeZone);
+  if (!start) return oneLine(event.start) || "(no time)";
+  const end = zonedDayTime(event.end, timeZone);
+  if (!end) return `${start.day} ${start.time}`;
+  return `${start.day} ${start.time} to ${end.day === start.day ? "" : `${end.day} `}${end.time}`;
+}
 
 /** Scopes needed for the reads above, for the offer flags. */
 export const hasReadScope = (scopes: readonly string[]) => scopes.includes(GMAIL_READ_SCOPE);

@@ -707,3 +707,57 @@ describe("selectTools", () => {
     expect(names).toEqual([]);
   });
 });
+
+describe("calendar times in the user's time zone (live test, 2026-10-30)", () => {
+  // The shape events.list returns, with keys that the schema drops and the gaps a real calendar has.
+  const items = [
+    {
+      kind: "calendar#event",
+      etag: '"3400000000000000"',
+      id: "d1",
+      status: "confirmed",
+      summary: "Dentist appointment",
+      start: { dateTime: "2026-11-04T10:00:00-05:00", timeZone: "America/Toronto" },
+      end: { dateTime: "2026-11-04T11:00:00-05:00", timeZone: "America/Toronto" },
+    },
+    { kind: "calendar#event", id: "d2", status: "confirmed", summary: "Late call", start: { dateTime: "2026-11-04T22:30:00-05:00" }, end: { dateTime: "2026-11-05T01:00:00-05:00" } },
+    { kind: "calendar#event", id: "d3", status: "confirmed", summary: "Holiday", start: { date: "2026-11-06" }, end: { date: "2026-11-07" } },
+    { kind: "calendar#event", id: "d4", status: "confirmed", summary: "Trip", start: { date: "2026-11-09" }, end: { date: "2026-11-12" } },
+    { kind: "calendar#event", id: "d5", status: "confirmed", start: { dateTime: "2026-11-10T09:00:00Z" } },
+    { kind: "calendar#event", id: "d6", status: "confirmed", summary: "No time" },
+    { kind: "calendar#event", id: "d7", status: "cancelled", summary: "Gone", start: { dateTime: "2026-11-04T12:00:00Z" }, end: { dateTime: "2026-11-04T13:00:00Z" } },
+  ];
+  const list = async (timeZone?: string) => {
+    const s = await setup([{ calls: [call("calendar_list_events", { from: "2026-11-01T00:00:00Z", to: "2026-11-15T00:00:00Z" })] }, { text: "Ok." }], {
+      google: { [`${EVENTS}?`]: () => json({ items }) },
+    });
+    await runTurn(s.deps, send("What is on my calendar next week?", timeZone ? { timeZone } : {}));
+    return toolResults(s.requests)[0]!;
+  };
+
+  it("gives each event its weekday and local time, ready to copy", async () => {
+    const text = await list("America/Toronto");
+    expect(text.split("\n")[0]).toBe("Times are in the user's time zone, America/Toronto. Copy each weekday, date and time as written.");
+    expect(text).toContain("[1] Dentist appointment | When: Wed 2026-11-04 10:00 to 11:00 | Attendees: 0");
+    expect(text).toContain("[2] Late call | When: Wed 2026-11-04 22:30 to Thu 2026-11-05 01:00");
+    expect(text).toContain("[3] Holiday | When: Fri 2026-11-06, all day");
+    expect(text).toContain("[4] Trip | When: Mon 2026-11-09 to Wed 2026-11-11, all day");
+    expect(text).toContain("[5] (no title) | When: Tue 2026-11-10 04:00 |");
+    expect(text).toContain("[6] No time | When: (no time) |");
+    expect(text).not.toContain("Gone");
+    expect(text).not.toMatch(/Thu 2026-11-04|-05:00/);
+  });
+
+  it("moves the weekday with the user's time zone", async () => {
+    const text = await list("Asia/Kolkata");
+    expect(text).toContain("[1] Dentist appointment | When: Wed 2026-11-04 20:30 to 21:30");
+    expect(text).toContain("[2] Late call | When: Thu 2026-11-05 09:00 to 11:30");
+    expect(text).toContain("[3] Holiday | When: Fri 2026-11-06, all day");
+  });
+
+  it("says the times are UTC when the browser sent no time zone", async () => {
+    const text = await list();
+    expect(text.split("\n")[0]).toBe("Times are in UTC, because the user's time zone is not known. Copy each weekday, date and time as written.");
+    expect(text).toContain("[1] Dentist appointment | When: Wed 2026-11-04 15:00 to 16:00");
+  });
+});
