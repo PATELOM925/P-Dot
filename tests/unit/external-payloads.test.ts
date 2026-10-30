@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { alwaysAskReason, mayRunOnItsOwn } from "@/lib/approval-policy";
 import { actionPayloadSchema } from "@/lib/schemas";
-import { failureText, isExternalKind, payloadDetails, pastProposalView } from "@/features/actions/format";
+import { failureText, formatLength, isExternalKind, payloadDetails, pastProposalView } from "@/features/actions/format";
+import { formatLocal } from "@/components/ui/LocalTime";
 import type { ActionPayload, ActionProposalDTO } from "@/types/api";
 
 const EMAIL: Extract<ActionPayload, { kind: "send_email" }> = { kind: "send_email", mode: "personal", to: ["sam@example.com"], subject: "Lunch", body: "Noon?" };
@@ -64,10 +65,35 @@ describe("the approval card details", () => {
       Event: "Planning",
       Starts: "local(2026-11-02T10:00:00Z)",
       Ends: "local(2026-11-02T11:00:00Z)",
+      Length: "1 hour",
       Guests: "sam@example.com",
       Invitations: "Google emails an invitation to each guest.",
     });
     expect(Object.fromEntries(payloadDetails({ ...EVENT, attendees: [] }, (iso) => iso))).toMatchObject({ Guests: "None" });
+  });
+
+  it("shows the length in words (live test, 2026-10-30: 10 am to 5 pm went unseen)", () => {
+    const length = (end: string) => Object.fromEntries(payloadDetails({ ...EVENT, end }, (iso) => iso)).Length;
+    expect(length("2026-11-02T10:30:00Z")).toBe("30 minutes");
+    expect(length("2026-11-02T11:30:00Z")).toBe("1 hour 30 minutes");
+    expect(length("2026-11-02T17:00:00Z")).toBe("7 hours");
+    expect(length("2026-11-03T10:00:00Z")).toBe("1 day");
+    expect(length("2026-11-04T12:01:00Z")).toBe("2 days 2 hours 1 minute");
+    expect(formatLength(Number.NaN)).toBe("Not known");
+  });
+
+  it("shows the weekday and the time zone name in the viewer's time zone", () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "America/Toronto";
+    try {
+      const text = formatLocal("2026-11-04T15:00:00Z", "dateTimeZone");
+      expect(text).toContain("Wed");
+      expect(text).toContain("Nov 4, 2026");
+      expect(text).toMatch(/10:00\s?AM/);
+      expect(text).toMatch(/EST|GMT-5/);
+    } finally {
+      process.env.TZ = zone;
+    }
   });
 
   it("names the failure reason and the in-progress state", () => {
