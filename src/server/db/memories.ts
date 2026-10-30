@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import type { MemoryDTO, MemorySource, MemoryStatus, Mode } from "@/types/api";
 import { toPgVector, EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
-import { RepositoryError } from "./conversations";
+import type { ClientRequest } from "@/server/http/request-key";
+import { RepositoryError, repositoryError } from "./conversations";
 
 /**
  * Memory persistence (decision 0009). As with tasks, every method filters by
@@ -18,25 +19,41 @@ export interface NewMemory {
   status: MemoryStatus;
   source: MemorySource;
   sourceMessageId: string | null;
+  /** Only for a memory the user adds (decision 0012). */
+  clientRequest?: ClientRequest | null;
 }
 
 export interface MemoryRepository {
   /** Newest first. `status` filters by proposed or active; undefined returns both. */
   listMemories(userId: string, mode: Mode, status: MemoryStatus | undefined, limit: number): Promise<MemoryDTO[]>;
+  /** True when a memory the assistant suggested, in any status, links to the message. */
+  hasAssistantMemoryFrom(userId: string, messageId: string): Promise<boolean>;
   /** Returns null when no memory with that ID belongs to the user. */
   getMemory(userId: string, memoryId: string): Promise<MemoryDTO | null>;
   /** A null embedding stores no vector and no model name. */
   createMemory(userId: string, memory: NewMemory, embedding: number[] | null): Promise<MemoryDTO>;
+  /** The memory saved with this request key, and the fingerprint of that request. */
+  findMemoryByClientRequest(userId: string, key: string): Promise<{ memory: MemoryDTO; hash: string } | null>;
   /**
    * Returns null when no memory with that ID belongs to the user. When
    * `embedding` is passed (even null), the stored vector and model are replaced.
+   * When `ifContent` is passed, the update applies only while the stored text
+   * still equals it (the comparison is in the update); otherwise it returns null.
    */
   updateMemory(
     userId: string,
     memoryId: string,
     changes: { content?: string; mode?: Mode; status?: MemoryStatus },
     embedding?: number[] | null,
+    ifContent?: string,
   ): Promise<MemoryDTO | null>;
+  /**
+   * Writes a vector only if the memory still has `content`, the text that was
+   * embedded. The text comparison is part of the database update, so a late
+   * vector can never replace the vector of newer text. Returns false when no
+   * row matched (the text changed, or the memory is gone).
+   */
+  setEmbeddingIfContent(userId: string, memoryId: string, content: string, embedding: number[]): Promise<boolean>;
   /** Returns false when no memory with that ID belongs to the user. */
   deleteMemory(userId: string, memoryId: string): Promise<boolean>;
 }
@@ -90,6 +107,18 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
       return (data ?? []).map(toMemory);
     },
 
+    async hasAssistantMemoryFrom(userId, messageId) {
+      const { data, error } = await supabase
+        .from("memories")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("source_message_id", messageId)
+        .eq("source", "assistant")
+        .limit(1);
+      if (error) throw new RepositoryError("hasAssistantMemoryFrom");
+      return (data ?? []).length > 0;
+    },
+
     async getMemory(userId, memoryId) {
       const { data, error } = await supabase
         .from("memories")
@@ -112,24 +141,48 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
           source: memory.source,
           source_message_id: memory.sourceMessageId,
           ...embeddingColumns(embedding),
+          ...(memory.clientRequest
+            ? { client_request_id: memory.clientRequest.id, client_request_hash: memory.clientRequest.hash }
+            : {}),
         })
         .select(MEMORY_COLUMNS)
         .single();
-      if (error || !data) throw new RepositoryError("createMemory");
+      if (error || !data) throw repositoryError("createMemory", error);
       return toMemory(data);
     },
 
-    async updateMemory(userId, memoryId, changes, embedding) {
-      const update = embedding === undefined ? { ...changes } : { ...changes, ...embeddingColumns(embedding) };
+    async findMemoryByClientRequest(userId, key) {
       const { data, error } = await supabase
         .from("memories")
-        .update(update)
-        .eq("id", memoryId)
+        .select(`${MEMORY_COLUMNS}, client_request_hash`)
         .eq("user_id", userId)
-        .select(MEMORY_COLUMNS)
+        .eq("client_request_id", key)
         .maybeSingle();
+      if (error) throw repositoryError("findMemoryByClientRequest", error);
+      if (!data) return null;
+      return { memory: toMemory(data), hash: z.object({ client_request_hash: z.string() }).parse(data).client_request_hash };
+    },
+
+    async updateMemory(userId, memoryId, changes, embedding, ifContent) {
+      const update = embedding === undefined ? { ...changes } : { ...changes, ...embeddingColumns(embedding) };
+      let query = supabase.from("memories").update(update).eq("id", memoryId).eq("user_id", userId);
+      if (ifContent !== undefined) query = query.eq("content", ifContent);
+      const { data, error } = await query.select(MEMORY_COLUMNS).maybeSingle();
       if (error) throw new RepositoryError("updateMemory");
       return data ? toMemory(data) : null;
+    },
+
+    async setEmbeddingIfContent(userId, memoryId, content, embedding) {
+      const { data, error } = await supabase
+        .from("memories")
+        .update(embeddingColumns(embedding))
+        .eq("id", memoryId)
+        .eq("user_id", userId)
+        .eq("content", content)
+        .select("id")
+        .maybeSingle();
+      if (error) throw new RepositoryError("setMemoryEmbedding");
+      return data !== null;
     },
 
     async deleteMemory(userId, memoryId) {

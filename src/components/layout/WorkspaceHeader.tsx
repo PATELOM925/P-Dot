@@ -5,7 +5,7 @@ import type { Mode } from "@/types/api";
 import { ModeToggle } from "./ModeToggle";
 import { NavLinks } from "./NavLinks";
 
-export function WorkspaceHeader({ email, mode }: { email: string | null; mode: Mode }) {
+export function WorkspaceHeader({ email, trial, mode }: { email: string | null; trial: boolean; mode: Mode }) {
   return (
     <header className="workspace-header">
       <Link href="/chat" className="brand">
@@ -15,10 +15,14 @@ export function WorkspaceHeader({ email, mode }: { email: string | null; mode: M
       <div className="header-account">
         <InstallButton />
         <ModeToggle mode={mode} />
-        {email && <span className="muted small header-email">{email}</span>}
-        <form action={signOutAction}>
+        {trial ? (
+          <span className="status-pill header-trial">Trial</span>
+        ) : (
+          email && <span className="muted small header-email">{email}</span>
+        )}
+        <form action={signOutAction} className="header-signout">
           <button type="submit" className="button button-small">
-            Sign out
+            {trial ? "End trial" : "Sign out"}
           </button>
         </form>
       </div>

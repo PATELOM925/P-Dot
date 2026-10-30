@@ -1,9 +1,10 @@
 import "server-only";
-import { SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
+import { MAX_MEMORY_CHARS, MEMORY_CONTEXT_COUNT, SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
+import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
 import type { ApiErrorCode } from "@/types/api";
 import type { SpendLimit } from "@/server/db/spend";
-import type { ChatMessage, TokenUsage } from "@/server/providers/nebius/client";
+import type { ChatMessage, TokenUsage, ToolDefinition } from "@/server/providers/nebius/client";
 import {
   costMicroUsd,
   inputTokenBound,
@@ -20,10 +21,18 @@ export const TAVILY_BASIC_SEARCH_CREDITS = 1;
 
 /**
  * Bytes that search results can add to the prompt: each result has a title
- * (200 characters), a URL (2,048) and an excerpt, with up to 4 UTF-8 bytes
- * per character, plus the wrapper text.
+ * (200 characters) and an excerpt, with up to 4 UTF-8 bytes per character,
+ * a normalized ASCII URL, and the wrapper text.
  */
-export const SEARCH_RESULTS_MAX_BYTES = SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + 2_048 + 128) + 512;
+export const SEARCH_RESULTS_MAX_BYTES =
+  SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + MAX_SAFE_URL_CHARS + 128) + 512;
+
+/**
+ * Bytes that the saved memories block can add to the prompt: the most
+ * memories a turn takes, each at its longest with up to 4 UTF-8 bytes per
+ * character, and the wrapper text.
+ */
+export const MEMORY_BLOCK_MAX_BYTES = MEMORY_CONTEXT_COUNT * (MAX_MEMORY_CHARS * 4 + 64) + 512;
 
 /** The model's price. A model without a price is a configuration error: it is never called. */
 function requirePrice(model: string): ModelPrice {
@@ -33,21 +42,55 @@ function requirePrice(model: string): ModelPrice {
 }
 
 /**
+ * The worst-case cost of one Nebius call is above the largest hold the
+ * database accepts. The call is refused before anything is reserved or sent,
+ * because a smaller hold would not cover its real cost.
+ */
+export class NebiusHoldTooLargeError extends Error {
+  constructor() {
+    super("refused: the worst-case cost is too large for one spend hold");
+    this.name = "NebiusHoldTooLargeError";
+  }
+}
+
+function requireHold(price: ModelPrice, worstCase: TokenUsage): number {
+  const hold = Math.max(1, costMicroUsd(price, worstCase));
+  if (hold > MAX_NEBIUS_HOLD_MICRO_USD) throw new NebiusHoldTooLargeError();
+  return hold;
+}
+
+/** Bytes an embedding request can add for each text, on top of its own UTF-8 bytes. */
+const EMBEDDING_BYTES_PER_TEXT = 16;
+
+/**
+ * Worst-case cost of one embedding batch: every UTF-8 byte is one token, plus
+ * a small overhead for each text. Throws NebiusHoldTooLargeError above the
+ * ceiling and ConfigError for a model without a price.
+ */
+export function nebiusEmbeddingHoldMicroUsd(model: string, texts: string[]): number {
+  const encoder = new TextEncoder();
+  const bytes = texts.reduce((sum, t) => sum + encoder.encode(t).length + EMBEDDING_BYTES_PER_TEXT, 0);
+  return requireHold(requirePrice(model), { promptTokens: bytes, completionTokens: 0 });
+}
+
+/**
  * Worst-case cost of one Nebius call, in micro-dollars: every input byte as a
- * token, plus the full output token limit, at the model's price. Throws a
- * ConfigError for a model that has no price, before any provider call.
+ * token (tool definitions included), plus the full output token limit, at the
+ * model's price. Throws a
+ * ConfigError for a model that has no price and NebiusHoldTooLargeError above
+ * the ceiling, before any provider call.
  */
 export function nebiusHoldMicroUsd(
   model: string,
   messages: ChatMessage[],
   maxOutputTokens: number,
   extraInputBytes = 0,
+  tools: ToolDefinition[] = [],
 ): number {
-  const cost = costMicroUsd(requirePrice(model), {
-    promptTokens: inputTokenBound(messages, extraInputBytes),
+  return requireHold(requirePrice(model), {
+    promptTokens: inputTokenBound(messages, extraInputBytes, tools),
     completionTokens: maxOutputTokens,
   });
-  return Math.max(1, Math.min(cost, MAX_NEBIUS_HOLD_MICRO_USD));
 }
 
 /**

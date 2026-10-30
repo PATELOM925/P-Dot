@@ -8,7 +8,8 @@ MVP implementation was authorized on 2026-10-14. The backend and a minimal front
 
 - Every change goes through a pull request into `main`. Do not push to `main`. Do not merge your own pull request; the owner merges.
 - Each pull request gets an adversarial review posted as pull request comments. Fix or answer every comment in new commits before merge.
-- A merge to `main` deploys production through Cloudflare Workers Builds (once the owner connects it). Pull request branches get preview links that use the production database.
+- A merge to `main` deploys production through Cloudflare Workers Builds. Pull request branches get preview links that use the production database.
+- When several pull requests, or a stack, are ready at about the same time, merge them all first and let one build deploy them together. Do not deploy after each merge. See "Merging several pull requests" in `docs/DEPLOYMENT.md`. Exception: a pull request with a database expand or contract step merges and deploys on its own; see "Expand, then contract" in `docs/DEPLOYMENT.md`.
 - Read `docs/DEPLOYMENT.md` before you change deployment settings, environment variables, `wrangler.jsonc`, `open-next.config.ts` or the deploy scripts. It lists the commands agents must not run.
 - Read `docs/PROVIDER-RELIABILITY.md` before you change provider calls, model routing, retries, timeouts, the spend guard, usage parsing or a migration on `messages`. Add any new lesson there, with its source.
 - Add an entry to `CHANGELOG.md` under "Unreleased" in every pull request: what changed, the problem it solves, how it was resolved, and the pull request link.
@@ -48,6 +49,17 @@ MVP implementation was authorized on 2026-10-14. The backend and a minimal front
 - Use bounded requests, provider timeouts, and persistent rate limits suitable for serverless hosting. Do not rely on process memory for durable data or production limits.
 - Do not simulate successful authentication, saved data, provider responses, or deployment. Label mocks and unfinished behavior.
 - Preserve existing user changes. Never force-push or run destructive Git operations without explicit authorization.
+
+## Rules and what enforces them
+
+Level 1: one owner in the code. Level 3: a test that reads the source and fails on a copy. Level 4: a test that runs the code and fails on the mistake. Level 5: review only, because no check can decide it.
+
+| Rule | Enforced by | Level |
+| --- | --- | --- |
+| Only `src/server/assistant/spend.ts` computes a worst-case Nebius hold. It refuses a hold above the ceiling and never reduces it. | `nebiusHoldMicroUsd`, `nebiusEmbeddingHoldMicroUsd` and `tests/unit/spend-hold-owner.test.ts` | 1 and 3 |
+| Every entry under "Unreleased" in `CHANGELOG.md` has a bold title, a "Problem:" line, a "Resolution:" line and a pull request link (a commit link only when there was no pull request). "PR: not opened yet" fails. | `scripts/check-changelog.mjs` in `npm run lint`, and `tests/unit/check-changelog.test.ts` | 3 (lint): a check that reads `CHANGELOG.md`, not source code, and fails on a bad entry |
+| A status that means work is in progress names its recovery path in the decision record. | review only | 5 |
+| A route that does more than one write in one request has a test that makes its writes fail, refused and lost after they commit, also a write that runs only after an earlier one failed (up to two faults). The test wraps every fake the route writes through (repositories, spend, embedder, context records). It checks that no row stays in an in-between status, that the HTTP status is correct and that a retry does not repeat the effect. A new route needs its own sweep. | `sweepWriteFaults` in `tests/support/write-faults.ts`, used in the documents, actions, external actions, chat and memories route tests | 4 |
 
 ## Validation and handoff
 

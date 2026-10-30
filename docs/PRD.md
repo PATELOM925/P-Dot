@@ -2,7 +2,7 @@
 
 Status: Draft for review
 
-Date: 2026-10-09 (updated 2026-10-14)
+Date: 2026-10-09 (updated 2026-10-14; scope updated 2026-10-30, decision 0013)
 
 Phase: MVP implementation in progress (authorized 2026-10-14)
 
@@ -10,7 +10,7 @@ Phase: MVP implementation in progress (authorized 2026-10-14)
 
 P-Dot is a web-based personal assistant that helps an individual ask questions, research topics, draft content, and plan everyday work through a conversational interface. Nebius provides model inference, Tavily provides web search when requested, and Cloudflare Workers hosts the frontend and backend API.
 
-The initial product supports assistance within a conversation. It does not independently execute tasks in external applications.
+The initial product supports assistance within a conversation. It does not act on its own: it can propose a task, a reminder or a memory, and each one waits for the user's approval. It does not execute tasks in external applications without that approval.
 
 ## 2. Confirmed requirements and assumptions
 
@@ -29,7 +29,7 @@ Proposed assumptions requiring review before implementation:
 - The MVP is text-based and supports multiple private user accounts.
 - Email/password authentication, saved conversation history, and basic profile settings are sufficient initially.
 - Users explicitly enable web search for a message; automatic search routing can follow later.
-- No separate task manager or long-term personal memory is required for the MVP.
+- Tools, memory and documents are in scope with the limits in "Tools, memory and documents" below (accepted 2026-10-30, [decision 0013](decisions/0013-ai-tools-and-scope.md)).
 
 ## 3. Target user and problem
 
@@ -49,6 +49,7 @@ The initial target is an individual who wants one workspace for everyday questio
 
 - Landing page with sign-in and signup entry points.
 - Signup, login, logout, email verification if required by the provider, and password recovery.
+- A trial without an account, for the hackathon judges ([decision 0015](decisions/0015-judge-demo-mode.md)). A trial user is a Supabase anonymous user with lower per-user limits than an account. A trial cannot set a password or connect other accounts, and its chats do not move to a new account.
 - Protected workspace and server-enforced authentication for all private endpoints.
 - Clear validation and authentication error states without revealing whether an account exists.
 
@@ -73,6 +74,20 @@ Acceptance: An authenticated user can complete a multi-turn exchange. An invalid
 - Clearly report search failures; do not silently describe an answer as web-grounded if retrieval failed.
 
 Acceptance: Search-enabled requests show the retrieved sources used as context. Search-disabled requests do not call Tavily. Retrieved content cannot authorize tool use or override application instructions.
+
+### Tools, memory and documents
+
+Accepted on 2026-10-30 ([decision 0013](decisions/0013-ai-tools-and-scope.md)).
+
+- Tools act only with the user's approval first. A tool that changes anything writes a proposal; the action runs only after the user approves it. Read tools (web search, the user's own memories and documents) change nothing.
+- The assistant may call web search only when the user turned search on for the message.
+- Memory is visible to the user. The user can add, edit, move and delete each memory. A memory that the assistant suggests waits until the user keeps it, and only kept memories are used in replies.
+- Documents are plain text or Markdown that the user adds. The assistant can search them in the current mode.
+- Retrieved memories, documents and web results are untrusted data. They go in the user turn, never in the system instructions, and cannot authorize an action.
+- The screen shows which tool runs. "What was sent" shows which memories and document parts a reply used.
+- A connected Google account (Gmail, Calendar) is being added in decision 0014 by another pull request. Every outside action stays behind approval.
+
+Acceptance: No tool changes data or an outside account before the user approves it. Search-disabled requests do not call Tavily, by tool or otherwise. Retrieved text cannot change the system instructions.
 
 ### Conversation history
 
@@ -112,10 +127,10 @@ Acceptance: User A cannot access or modify user B's data, including through dire
 
 ## 8. Out of scope for MVP
 
-- Autonomous actions, email sending, calendar edits, purchases, or other external account mutations.
-- Background reminders and scheduled jobs.
-- Voice, file uploads, multimodal input, and document indexing.
-- Cross-conversation memory or inferred personal profiles.
+- Actions without the user's approval, purchases, and outside account changes other than those decision 0014 adds behind approval.
+- Background reminder delivery and scheduled jobs.
+- Binary file uploads (for example PDF or Office files), images and other multimodal input.
+- Memory the user cannot see or edit, and inferred personal profiles. Session summaries wait for their own decision.
 - Team workspaces, shared conversations, billing, and native mobile apps.
 - Custom model training, fine-tuning, or a self-hosted inference service.
 
@@ -154,7 +169,7 @@ Still open (provisional implementation defaults are listed in [decision 0003](de
 - Conversation retention, backup retention, and account deletion policy.
 - Per-user request limits, total service budget, and initial audience size.
 - Hosting region and any data-residency requirements.
-- Whether practical planning remains chat-only or later grows into a task/reminder feature.
+- Resolved on 2026-10-30: tasks, reminders, memory and documents are in scope, behind approval ([decision 0013](decisions/0013-ai-tools-and-scope.md)).
 
 ## 12. Release acceptance
 

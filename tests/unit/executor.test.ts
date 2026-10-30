@@ -15,6 +15,7 @@ import {
 } from "@/server/assistant/executor";
 import type { TierPlan } from "@/server/assistant/tiers";
 import { ProviderError } from "@/server/providers/errors";
+import type { ToolDefinition } from "@/server/providers/model";
 import { FakeProvider, type FakeBehavior } from "../support/fake-provider";
 
 const A = "model/a";
@@ -79,6 +80,7 @@ async function run(
     breaker?: CircuitBreaker;
     signal?: AbortSignal;
     provider?: FakeProvider;
+    tools?: ToolDefinition[];
     /** Called after this many milliseconds of fake time. */
     at?: { ms: number; action: () => void };
   } = {},
@@ -94,6 +96,7 @@ async function run(
       for await (const chunk of executeRouted({
         plan,
         messages: [{ role: "user", content: "hi" }],
+        tools: options.tools,
         provider,
         budget,
         breaker: options.breaker ?? createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
@@ -428,5 +431,47 @@ describe("executeRouted", () => {
     for (const model of [A, B, C]) breaker.recordFailure(model, Date.now());
     const { report } = await run({ [A]: [{}] }, { breaker });
     expect(report).toMatchObject({ model: A, breakerSkips: 0 });
+  });
+});
+
+describe("tool calls", () => {
+  const tool: ToolDefinition = { name: "web_search", description: "Search.", parameters: { type: "object" } };
+  const call = { id: "c1", name: "web_search", arguments: '{"query":"x"}' };
+
+  it("commits on whole tool calls with no text, and passes the tools to the provider", async () => {
+    const { chunks, error, report, budget, provider } = await run(
+      { [A]: [{ chunks: [], toolCalls: [call] }] },
+      { plan: heavyPlan(), tools: [tool] },
+    );
+
+    expect(error).toBeNull();
+    expect(chunks.map((c) => c.type)).toEqual(["tool_calls", "finish"]);
+    expect(chunks[0]).toEqual({ type: "tool_calls", calls: [call] });
+    expect(report).toMatchObject({ outcome: "ok", model: A, attempts: 1 });
+    expect(provider.calls[0]!.request.tools).toEqual([tool]);
+    budget.expectAllSettledOnce();
+  });
+
+  it("passes tool calls through after text was committed", async () => {
+    const { chunks } = await run({ [A]: [{ chunks: [{ text: "Let me look." }], toolCalls: [call] }] }, { plan: heavyPlan(), tools: [tool] });
+
+    expect(chunks.map((c) => c.type)).toEqual(["text", "tool_calls", "finish"]);
+  });
+
+  it("sends no tools field when none are given", async () => {
+    const { provider } = await run({ [A]: [{}] }, { plan: heavyPlan() });
+
+    expect(provider.calls[0]!.request).not.toHaveProperty("tools");
+  });
+
+  it("moves to the next model before the commit, also when the reply is a tool call", async () => {
+    const { chunks, report, budget } = await run(
+      { [A]: [{ status: 404 }], [B]: [{ chunks: [], toolCalls: [call] }] },
+      { plan: heavyPlan(), tools: [tool] },
+    );
+
+    expect(chunks[0]).toEqual({ type: "tool_calls", calls: [call] });
+    expect(report).toMatchObject({ model: B, fallback: true, attempts: 2 });
+    budget.expectAllSettledOnce();
   });
 });

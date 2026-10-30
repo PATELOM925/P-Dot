@@ -10,8 +10,10 @@ import { RepositoryError } from "./conversations";
  * only after the user approves it. Every method filters by the authenticated
  * user's ID, and RLS enforces the same rule in the database.
  *
- * The database lets the user change only status, result and decided_at, so the
- * stored payload never changes after the proposal is created.
+ * Users cannot update a proposal. Only the database function
+ * `decide_action_proposal` changes one: in one transaction it claims the
+ * proposal, runs the action and stores the outcome, so an action runs at most
+ * once and a stored outcome is always the real one.
  */
 export interface NewActionProposal {
   conversationId: string | null;
@@ -22,31 +24,98 @@ export interface NewActionProposal {
 export interface ActionProposalRepository {
   /** Inserts with status "proposed". Throws when the payload or summary is invalid. */
   createProposal(userId: string, proposal: NewActionProposal): Promise<ActionProposalDTO>;
+  /**
+   * True when the conversation has a proposal in any status created at or
+   * after `from` and, when `before` is set, before it (stored times).
+   */
+  hasProposalBetween(userId: string, conversationId: string, from: string, before: string | null): Promise<boolean>;
   /** Newest first. `status` filters; undefined returns every status. Rows whose payload does not parse are left out. */
   listProposals(userId: string, status: ActionStatus | undefined, limit: number): Promise<ActionProposalDTO[]>;
-  /** Returns null when the proposal is missing, belongs to another user, or its stored payload does not parse. */
-  getProposal(userId: string, proposalId: string): Promise<ActionProposalDTO | null>;
   /**
-   * One conditional update: moves a "proposed" proposal to "approved" or
-   * "rejected". Returns null when it was not "proposed" (already decided, or
-   * not the user's), so a second decision can never run the action again.
+   * Approves or rejects a proposal of the session user (the database reads
+   * the user from the session, not from an argument). An approval runs the
+   * action in the same transaction. `payload` is an edited payload of the
+   * same kind. Throws RepositoryError when the call fails.
    */
-  claimForDecision(
-    userId: string,
-    proposalId: string,
-    status: "approved" | "rejected",
-  ): Promise<ActionProposalDTO | null>;
-  /** Moves an "approved" proposal to "executed" or "failed" and stores the result. Throws when no row matches. */
-  finish(
-    userId: string,
-    proposalId: string,
-    status: "executed" | "failed",
-    result: Record<string, string | number | boolean | null>,
-  ): Promise<ActionProposalDTO>;
+  decide(proposalId: string, decision: "approve" | "reject", payload?: ActionPayload): Promise<DecisionResult>;
+  /** One proposal of the user, or null. */
+  getProposal(userId: string, proposalId: string): Promise<ActionProposalDTO | null>;
+  /** Stores the outcome of an external action, only with the current claim (decision 0014). */
+  finishExternal(proposalId: string, claimId: string, outcome: ExternalOutcome): Promise<DecisionResult>;
+  /** A new claim for a calendar event left executing after the lease, in the same Google account only. */
+  reclaimExternal(proposalId: string, leaseSeconds: number): Promise<DecisionResult>;
+  /** The user's answer for an action whose outcome is unknown. */
+  settleUnknownExternal(proposalId: string, leaseSeconds: number, done: boolean): Promise<DecisionResult>;
 }
 
-const ACTION_STATUSES = ["proposed", "approved", "rejected", "executed", "failed"] as const;
-const ACTION_KINDS = ["create_task", "create_reminder", "save_memory"] as const;
+/** The reasons the database accepts for a failed external action. Each means Google did not act. */
+export type ExternalFailureReason = "not_connected" | "needs_reconnect" | "scope_missing" | "google_rejected" | "account_changed";
+
+export type ExternalOutcome =
+  | { succeeded: true; result: { messageId: string } | { eventId: string } }
+  | { succeeded: false; reason: ExternalFailureReason };
+
+/**
+ * What `decide_action_proposal` answered.
+ * - not_found: no such proposal for this user (another user's proposal gives the same answer).
+ * - already_decided: another decision came first. `proposal` holds the stored outcome.
+ * - invalid: the stored or edited payload, or the decision, is not valid. Nothing changed.
+ * - kind_mismatch: the edited payload has another kind. Nothing changed.
+ * - rejected, executed, failed: the decision was stored. `failed` means the insert failed;
+ *   `result` holds { error: "execution_failed", code } and nothing was created.
+ */
+export type DecisionOutcome =
+  | "not_found"
+  | "already_decided"
+  | "invalid"
+  | "kind_mismatch"
+  | "rejected"
+  | "executed"
+  | "failed"
+  /** External kinds (decision 0014): the claim is this request's, in `claimId`. */
+  | "executing"
+  | "not_connected"
+  | "stale_claim"
+  | "claimed"
+  | "busy"
+  | "outcome_unknown"
+  | "account_changed";
+
+const DECISION_OUTCOMES = [
+  "not_found",
+  "already_decided",
+  "invalid",
+  "kind_mismatch",
+  "rejected",
+  "executed",
+  "failed",
+  "executing",
+  "not_connected",
+  "stale_claim",
+  "claimed",
+  "busy",
+  "outcome_unknown",
+  "account_changed",
+] as const satisfies readonly DecisionOutcome[];
+
+export interface DecisionResult {
+  outcome: DecisionOutcome;
+  /**
+   * The proposal after the decision. Null for not_found, and for an older
+   * row whose stored payload cannot be shown (for example a payload that
+   * names another kind). Such a row is never run, but it can be rejected.
+   */
+  proposal: ActionProposalDTO | null;
+  /** The ID and status of the row the function answered for, even when `proposal` is null. */
+  row: { id: string; status: ActionStatus } | null;
+  /** Only when this call won a claim ("executing" or "claimed"). Never shown to the browser. */
+  claimId?: string;
+  /** For an external action: the Google account (`sub`) the claim is for. */
+  accountSubject?: string | null;
+}
+
+const ACTION_STATUSES = ["proposed", "approved", "executing", "rejected", "executed", "failed"] as const;
+const ACTION_KINDS = ["create_task", "create_reminder", "save_memory", "send_email", "create_calendar_event"] as const;
 
 const proposalRow = z.object({
   id: z.string(),
@@ -58,11 +127,25 @@ const proposalRow = z.object({
   result: z.unknown(),
   created_at: z.string(),
   decided_at: z.string().nullable(),
+  decided_by_function: z.boolean().optional(),
+  execution_started_at: z.string().nullable().optional(),
 });
+
+/** The least a decision answer must have. It does not depend on the payload. */
+const decidedRow = z.object({ id: z.string(), status: z.enum(ACTION_STATUSES) });
+
+const decisionResponse = z.object({
+  outcome: z.enum(DECISION_OUTCOMES),
+  claimId: z.uuid().optional(),
+  proposal: z.unknown(),
+});
+
+const accountSubject = z.object({ execution_account_subject: z.string().nullable().optional() });
 
 const resultValues = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
 
-const PROPOSAL_COLUMNS = "id, conversation_id, kind, payload, summary, status, result, created_at, decided_at";
+const PROPOSAL_COLUMNS =
+  "id, conversation_id, kind, payload, summary, status, result, created_at, decided_at, decided_by_function, execution_started_at";
 
 /**
  * Maps a row to a DTO. Returns null when the row or its stored payload does
@@ -84,6 +167,8 @@ function toProposal(row: unknown): ActionProposalDTO | null {
     result: result.success ? result.data : null,
     createdAt: parsed.data.created_at,
     decidedAt: parsed.data.decided_at,
+    executionStartedAt: parsed.data.execution_started_at ?? null,
+    verified: parsed.data.decided_by_function === true,
   };
 }
 
@@ -95,6 +180,33 @@ function toWrittenProposal(row: unknown, operation: string): ActionProposalDTO {
 }
 
 export function createActionProposalRepository(supabase: SupabaseClient): ActionProposalRepository {
+  /** Every decision function answers { outcome, claimId?, proposal }. */
+  async function callDecision(name: string, args: Record<string, unknown>, operation: string): Promise<DecisionResult> {
+    const { data, error } = await supabase.rpc(name, args);
+    if (error) throw new RepositoryError(operation);
+    const parsed = decisionResponse.safeParse(data);
+    if (!parsed.success) throw new RepositoryError(operation);
+    const { outcome, proposal, claimId } = parsed.data;
+    if (proposal === null || proposal === undefined) {
+      if (outcome !== "not_found") throw new RepositoryError(operation);
+      return { outcome, proposal: null, row: null };
+    }
+    // The decision may already be committed. Never fail because of the
+    // payload: an older row with a payload that cannot be shown still gets
+    // its ID and status back.
+    const row = decidedRow.safeParse(proposal);
+    if (!row.success) throw new RepositoryError(operation);
+    const subject = accountSubject.safeParse(proposal);
+    const claimedFor = subject.success ? subject.data.execution_account_subject : null;
+    return {
+      outcome,
+      proposal: toProposal(proposal),
+      row: row.data,
+      ...(claimId ? { claimId } : {}),
+      ...(claimedFor ? { accountSubject: claimedFor } : {}),
+    };
+  }
+
   return {
     async createProposal(userId, proposal) {
       // Validate before the insert. Throws a ZodError on invalid input.
@@ -116,6 +228,19 @@ export function createActionProposalRepository(supabase: SupabaseClient): Action
       return toWrittenProposal(data, "createActionProposal");
     },
 
+    async hasProposalBetween(userId, conversationId, from, before) {
+      let query = supabase
+        .from("action_proposals")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("conversation_id", conversationId)
+        .gte("created_at", from);
+      if (before !== null) query = query.lt("created_at", before);
+      const { data, error } = await query.limit(1);
+      if (error) throw new RepositoryError("hasProposalBetween");
+      return (data ?? []).length > 0;
+    },
+
     async listProposals(userId, status, limit) {
       let query = supabase.from("action_proposals").select(PROPOSAL_COLUMNS).eq("user_id", userId);
       if (status) query = query.eq("status", status);
@@ -124,41 +249,44 @@ export function createActionProposalRepository(supabase: SupabaseClient): Action
       return (data ?? []).map(toProposal).filter((dto): dto is ActionProposalDTO => dto !== null);
     },
 
+    async decide(proposalId, decision, payload) {
+      return callDecision(
+        "decide_action_proposal",
+        { p_id: proposalId, p_decision: decision, p_payload: payload ?? null },
+        "decideActionProposal",
+      );
+    },
+
     async getProposal(userId, proposalId) {
       const { data, error } = await supabase
         .from("action_proposals")
         .select(PROPOSAL_COLUMNS)
-        .eq("id", proposalId)
         .eq("user_id", userId)
+        .eq("id", proposalId)
         .maybeSingle();
       if (error) throw new RepositoryError("getActionProposal");
       return data ? toProposal(data) : null;
     },
 
-    async claimForDecision(userId, proposalId, status) {
-      const { data, error } = await supabase
-        .from("action_proposals")
-        .update({ status, decided_at: new Date().toISOString() })
-        .eq("id", proposalId)
-        .eq("user_id", userId)
-        .eq("status", "proposed")
-        .select(PROPOSAL_COLUMNS)
-        .maybeSingle();
-      if (error) throw new RepositoryError("claimActionProposal");
-      return data ? toWrittenProposal(data, "claimActionProposal") : null;
+    async finishExternal(proposalId, claimId, outcome) {
+      return callDecision("finish_external_action", {
+        p_id: proposalId,
+        p_claim_id: claimId,
+        p_succeeded: outcome.succeeded,
+        p_result: outcome.succeeded ? outcome.result : { error: "execution_failed", reason: outcome.reason },
+      }, "finishExternalAction");
     },
 
-    async finish(userId, proposalId, status, result) {
-      const { data, error } = await supabase
-        .from("action_proposals")
-        .update({ status, result })
-        .eq("id", proposalId)
-        .eq("user_id", userId)
-        .eq("status", "approved")
-        .select(PROPOSAL_COLUMNS)
-        .maybeSingle();
-      if (error || !data) throw new RepositoryError("finishActionProposal");
-      return toWrittenProposal(data, "finishActionProposal");
+    async reclaimExternal(proposalId, leaseSeconds) {
+      return callDecision("reclaim_external_action", { p_id: proposalId, p_lease_seconds: leaseSeconds }, "reclaimExternalAction");
+    },
+
+    async settleUnknownExternal(proposalId, leaseSeconds, done) {
+      return callDecision(
+        "settle_unknown_external_action",
+        { p_id: proposalId, p_lease_seconds: leaseSeconds, p_done: done },
+        "settleUnknownExternalAction",
+      );
     },
   };
 }

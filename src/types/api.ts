@@ -1,5 +1,6 @@
 // Contracts shared by the browser and the API routes. No secrets or server-only types here.
 import type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
+import type { McpServerId } from "@/lib/connectors";
 
 export type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
 
@@ -7,6 +8,26 @@ export type MessageRole = "user" | "assistant";
 
 /** Which side of life a conversation or task belongs to. */
 export type Mode = "personal" | "work";
+
+/** Tools the assistant can call (src/server/assistant/tools). */
+export type AssistantToolName =
+  | "web_search"
+  | "search_documents"
+  | "search_memories"
+  | "propose_task"
+  | "propose_reminder"
+  | "save_memory"
+  | "gmail_search"
+  | "gmail_read"
+  | "calendar_list_events"
+  | "propose_email"
+  | "propose_calendar_event"
+  | "notion_search"
+  | "notion_fetch"
+  | "linear_search_issues"
+  | "linear_get_issue"
+  | "todoist_list_tasks"
+  | "todoist_find_tasks";
 
 /** Outcome of web search for an assistant reply. */
 export type WebSearchStatus = "off" | "used" | "no_results" | "failed";
@@ -52,11 +73,15 @@ export interface ConversationDetail {
 export type ApiErrorCode =
   | "unauthorized"
   | "forbidden"
+  | "account_required"
+  | "reconnect_required"
   | "invalid_request"
   | "unsupported_media_type"
   | "payload_too_large"
   | "not_found"
   | "conflict"
+  | "busy"
+  | "answered"
   | "rate_limited"
   | "budget_exhausted"
   | "not_configured"
@@ -70,13 +95,26 @@ export interface ApiErrorBody {
     code: ApiErrorCode;
     message: string;
     requestId: string;
+    /** With "busy" and "answered" from POST /api/chat: the conversation of the saved message. */
+    conversationId?: string;
   };
 }
 
 /** Request body for POST /api/chat. */
 export type ChatRequest =
-  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean; effort?: Effort }
-  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort };
+  | {
+      action: "send";
+      conversationId?: string;
+      mode?: Mode;
+      message: string;
+      webSearch: boolean;
+      effort?: Effort;
+      /** Apps to read for this message only (decision 0016). Never together with web search or Google. */
+      connectors?: McpServerId[];
+      /** Gmail and Calendar for this message only (decision 0014). Never together with web search or apps. */
+      useGoogle?: true;
+    }
+  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort; connectors?: McpServerId[]; useGoogle?: true };
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once
@@ -98,8 +136,15 @@ export type ChatStreamEvent =
       sources: SourceRef[];
       message?: string;
     }
+  /**
+   * A tool started. Carries only the tool name and, for a search, the query
+   * the user can see. Never saved, and never carries the model's text.
+   */
+  | { type: "status"; tool: AssistantToolName; query?: string }
   | { type: "delta"; text: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }
+  /** After `done` for a new conversation: the title the model made, already saved. */
+  | { type: "title"; conversationId: string; title: string }
   | { type: "error"; code: ApiErrorCode; message: string; retryable: boolean };
 
 // ---------------------------------------------------------------------------
@@ -136,14 +181,20 @@ export interface DocumentDTO {
   createdAt: string;
 }
 
-/** Actions the assistant may propose. None of them changes an outside account. */
-export type ActionKind = "create_task" | "create_reminder" | "save_memory";
-export type ActionStatus = "proposed" | "approved" | "rejected" | "executed" | "failed";
+/**
+ * Actions the assistant may propose. send_email and create_calendar_event act
+ * in the user's Google account and always ask (decision 0014).
+ */
+export type ActionKind = "create_task" | "create_reminder" | "save_memory" | "send_email" | "create_calendar_event";
+/** "executing": an external action whose Google call has started and has no stored outcome yet (decision 0014). */
+export type ActionStatus = "proposed" | "approved" | "executing" | "rejected" | "executed" | "failed";
 
 export type ActionPayload =
   | { kind: "create_task"; mode: Mode; title: string }
   | { kind: "create_reminder"; mode: Mode; title: string; dueAt: string }
-  | { kind: "save_memory"; mode: Mode; content: string };
+  | { kind: "save_memory"; mode: Mode; content: string }
+  | { kind: "send_email"; mode: Mode; to: string[]; subject: string; body: string }
+  | { kind: "create_calendar_event"; mode: Mode; title: string; start: string; end: string; attendees: string[] };
 
 export interface ActionProposalDTO {
   id: string;
@@ -152,12 +203,27 @@ export interface ActionProposalDTO {
   /** One plain sentence for the approval card, for example "Add task: Pay the invoice". */
   summary: string;
   status: ActionStatus;
-  /** What execution produced, for example { "taskId": "..." }. Null until executed or failed. */
+  /**
+   * What execution produced: the new row's ID, for example { "taskId": "..." },
+   * or { "error": "execution_failed", "code": "<SQLSTATE>" }. Null until
+   * executed or failed. Only the database writes it.
+   */
   result: Record<string, string | number | boolean | null> | null;
   createdAt: string;
   decidedAt: string | null;
+  /** For an external action: when its Google call started. Null for the other kinds. */
+  executionStartedAt?: string | null;
+  /**
+   * True only when the database function decide_action_proposal decided this
+   * proposal, so `status` and `result` are a record of what the database ran.
+   * False for a proposal decided by other writes (older code, or a user
+   * during the expand step) and for older rows: their outcome is only what a
+   * caller wrote. The screens show these as "Marked done".
+   */
+  verified: boolean;
 }
 
+/** Written only by database triggers (decision 0009). Keep in step with the `event` check in the migration. */
 export type ActionLogEvent =
   | "proposed"
   | "approved"
@@ -168,6 +234,8 @@ export type ActionLogEvent =
   | "memory_edited"
   | "memory_deleted"
   | "document_added"
+  | "document_ready"
+  | "document_failed"
   | "document_deleted"
   | "reminder_added"
   | "reminder_changed"
@@ -177,9 +245,15 @@ export interface ActionLogEntryDTO {
   id: string;
   proposalId: string | null;
   event: ActionLogEvent;
-  /** IDs, kinds and counts only. Never message or memory text. */
+  /** IDs, kinds, modes, counts and flags only. Never message or memory text. Strings are at most 64 characters. */
   detail: Record<string, string | number | boolean | null>;
   createdAt: string;
+  /**
+   * True only for a row that the database log triggers wrote; for an action
+   * outcome, only when decide_action_proposal decided it. False for a row an
+   * app or a user inserted, and for older rows. A caller cannot set it.
+   */
+  verified: boolean;
 }
 
 export type ReminderStatus = "scheduled" | "done" | "cancelled";
@@ -195,7 +269,11 @@ export interface ReminderDTO {
   updatedAt: string;
 }
 
-/** "What was sent": the context the model received for one assistant reply. */
+/**
+ * "What was sent" for one assistant reply. The app writes this record with the
+ * user's own session, so it is the user's own record of what the app sent. It
+ * is not proof that a model received that context.
+ */
 export interface ContextRecordDTO {
   messageId: string;
   model: string;

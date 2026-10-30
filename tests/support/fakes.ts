@@ -1,4 +1,5 @@
-import type { ConversationRepository, NewMessage } from "@/server/db/conversations";
+import type { ConversationRepository, NewConversation, NewMessage, ReplyClaim } from "@/server/db/conversations";
+import type { ClientRequest } from "@/server/http/request-key";
 import type { QuotaGate } from "@/server/db/quota";
 import type { SpendCaps, SpendGuard, SpendLimit, SpendProvider, SpendReservation } from "@/server/db/spend";
 import type { AssistantDeps } from "@/server/assistant/service";
@@ -8,14 +9,29 @@ import type { ChatMessage, CompletionChunk, ModelCallRequest, ModelProvider } fr
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import type { ConversationSummary, MessageDTO, Mode, TaskDTO } from "@/types/api";
 import type { TaskRepository } from "@/server/db/tasks";
+import type { ContextRecordRepository, NewContextRecord } from "@/server/db/context-records";
+import { createBudgetedEmbedder, type Embedder } from "@/server/assistant/embed";
+import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
+import { actionPayloadSchema, actionSummarySchema } from "@/lib/schemas";
+import type { OwnDataServices } from "@/server/assistant/tools";
+import type { DocumentChunkMatch, MemoryMatch } from "@/server/db/retrieval";
+import type { NewMemory } from "@/server/db/memories";
+import type { NewActionProposal } from "@/server/db/action-proposals";
+import type { ActionProposalDTO, MemoryDTO } from "@/types/api";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
+  clientRequest?: ClientRequest | null;
 }
 
 interface StoredMessage extends MessageDTO {
   userId: string;
   conversationId: string;
+  clientRequest?: ClientRequest | null;
+  replyTo?: string;
+  replyClaimId?: string | null;
+  /** Milliseconds on the repository clock. */
+  replyClaimedAt?: number | null;
 }
 
 function toDto(message: StoredMessage): MessageDTO {
@@ -25,21 +41,30 @@ function toDto(message: StoredMessage): MessageDTO {
 
 /**
  * In-memory repository that mirrors the database's ownership rules (RLS):
- * every read and write is scoped to the given user ID.
+ * every read and write is scoped to the given user ID. It also has the rules
+ * of decision 0012: one row for each request key and user, one reply for each
+ * user message, and the reply claim with its lease. The claim calls have no
+ * session, so they do not check the user; the routes reach them only through
+ * the user's own conversation.
  */
 export class MemoryRepository implements ConversationRepository {
   conversations: StoredConversation[] = [];
   messages: StoredMessage[] = [];
   private counter = 0;
   failInsertForRole: "user" | "assistant" | null = null;
+  /** The clock of the claim lease. A test moves it forward to end a lease. */
+  now = () => Date.now();
 
   private nextId(): string {
     this.counter += 1;
     return `00000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`;
   }
 
+  /** Rows saved with a server-picked ID still get a later time than the rows before them. */
+  private ticks = 0;
+
   private timestamp(): string {
-    return new Date(Date.UTC(2026, 9, 14, 12, 0, this.counter)).toISOString();
+    return new Date(Date.UTC(2026, 9, 14, 12, 0, this.counter + this.ticks)).toISOString();
   }
 
   async getConversation(userId: string, id: string) {
@@ -55,15 +80,26 @@ export class MemoryRepository implements ConversationRepository {
       .map(({ id, title, mode: m, updatedAt }) => ({ id, title, mode: m, updatedAt }));
   }
 
-  async createConversation(userId: string, title: string, mode: Mode = "personal") {
-    const conversation = { id: this.nextId(), title, mode, updatedAt: this.timestamp(), userId };
+  async createConversation(userId: string, title: string, mode: Mode = "personal", options: NewConversation = {}) {
+    const key = options.clientRequest?.id;
+    if (key && this.conversations.some((c) => c.userId === userId && c.clientRequest?.id === key)) {
+      throw new Error("duplicate key value violates unique constraint conversations_user_client_request_key");
+    }
+    const conversation = {
+      id: options.id ?? this.nextId(),
+      title,
+      mode,
+      updatedAt: this.timestamp(),
+      userId,
+      clientRequest: options.clientRequest ?? null,
+    };
     this.conversations.push(conversation);
     return { id: conversation.id, title, mode, updatedAt: conversation.updatedAt };
   }
 
-  async renameConversation(userId: string, id: string, title: string) {
+  async renameConversation(userId: string, id: string, title: string, ifTitle?: string) {
     const found = this.conversations.find((c) => c.id === id && c.userId === userId);
-    if (!found) return null;
+    if (!found || (ifTitle !== undefined && found.title !== ifTitle)) return null;
     found.title = title;
     return { id: found.id, title: found.title, mode: found.mode, updatedAt: found.updatedAt };
   }
@@ -83,12 +119,55 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
+  /** Set to make the private-source history check fail. */
+  failPrivateSourceCheck = false;
+
+  async hasPrivateSourceReply(userId: string, conversationId: string) {
+    if (this.failPrivateSourceCheck) throw new Error("hasPrivateSourceReply failed");
+    return this.messages.some(
+      (m) =>
+        m.userId === userId &&
+        m.conversationId === conversationId &&
+        m.role === "assistant" &&
+        (m.route?.reason === "google_request" || m.route?.reason === "connector_read"),
+    );
+  }
+
+  async nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }) {
+    return (
+      this.messages
+        .filter(
+          (m) =>
+            m.userId === userId &&
+            m.conversationId === conversationId &&
+            m.role === "user" &&
+            m.id !== message.id &&
+            m.createdAt >= message.createdAt,
+        )
+        .map((m) => m.createdAt)
+        .sort()[0] ?? null
+    );
+  }
+
   async insertMessage(userId: string, message: NewMessage) {
     if (this.failInsertForRole === message.role) throw new Error("insert failed");
     const owner = this.conversations.find((c) => c.id === message.conversationId);
     if (!owner || owner.userId !== userId) throw new Error("RLS: conversation not owned by user");
+    const key = message.clientRequest?.id;
+    if (key && this.messages.some((m) => m.userId === userId && m.clientRequest?.id === key)) {
+      throw new Error("duplicate key value violates unique constraint messages_user_client_request_key");
+    }
+    if (message.replyTo) {
+      if (!this.messages.some((m) => m.id === message.replyTo && m.userId === userId)) {
+        throw new Error("insert violates foreign key constraint messages_reply_to_fkey");
+      }
+      if (this.messages.some((m) => m.replyTo === message.replyTo)) {
+        throw new Error("duplicate key value violates unique constraint messages_reply_to_key");
+      }
+    }
+    if (message.id) this.ticks += 1;
     const stored: StoredMessage = {
-      id: this.nextId(),
+      id: message.id ?? this.nextId(),
       role: message.role,
       content: message.content,
       webSearch: message.webSearch ?? "off",
@@ -97,10 +176,55 @@ export class MemoryRepository implements ConversationRepository {
       createdAt: this.timestamp(),
       userId,
       conversationId: message.conversationId,
+      clientRequest: message.clientRequest ?? null,
+      replyTo: message.replyTo,
+      replyClaimId: message.replyClaimId ?? null,
+      replyClaimedAt: message.replyClaimId ? this.now() : null,
     };
     this.messages.push(stored);
     owner.updatedAt = stored.createdAt;
     return toDto(stored);
+  }
+
+  async getMessage(userId: string, messageId: string) {
+    const found = this.messages.find((m) => m.id === messageId && m.userId === userId);
+    return found ? toDto(found) : null;
+  }
+
+  async findMessageByClientRequest(userId: string, key: string) {
+    const found = this.messages.find((m) => m.userId === userId && m.role === "user" && m.clientRequest?.id === key);
+    return found ? { message: toDto(found), conversationId: found.conversationId, hash: found.clientRequest!.hash } : null;
+  }
+
+  async findConversationByClientRequest(userId: string, key: string) {
+    const found = this.conversations.find((c) => c.userId === userId && c.clientRequest?.id === key);
+    if (!found) return null;
+    const { id, title, mode, updatedAt } = found;
+    return { conversation: { id, title, mode, updatedAt }, hash: found.clientRequest!.hash };
+  }
+
+  async claimReply(messageId: string, leaseSeconds: number): Promise<ReplyClaim> {
+    const message = this.messages.find((m) => m.id === messageId && m.role === "user");
+    if (!message) return { outcome: "not_found" };
+    const reply = this.messages.find((m) => m.replyTo === messageId);
+    if (reply) return { outcome: "answered", replyId: reply.id };
+    if (message.replyClaimId && (message.replyClaimedAt ?? 0) > this.now() - leaseSeconds * 1000) return { outcome: "busy" };
+    message.replyClaimId = `claim-${this.nextId()}`;
+    message.replyClaimedAt = this.now();
+    return { outcome: "claimed", claimId: message.replyClaimId };
+  }
+
+  async releaseReplyClaim(messageId: string, claimId: string) {
+    const message = this.messages.find((m) => m.id === messageId && m.replyClaimId === claimId);
+    if (message) {
+      message.replyClaimId = null;
+      message.replyClaimedAt = null;
+    }
+  }
+
+  /** The claim on a user message, for checks. */
+  claimOf(messageId: string): string | null {
+    return this.messages.find((m) => m.id === messageId)?.replyClaimId ?? null;
   }
 }
 
@@ -188,6 +312,51 @@ export class FakeSpend implements SpendGuard {
   }
 }
 
+/** In-memory "what was sent" records, scoped to the user like RLS. */
+export class FakeContextRecords implements ContextRecordRepository {
+  records: (NewContextRecord & { userId: string })[] = [];
+
+  async insertContextRecord(userId: string, record: NewContextRecord) {
+    this.records.push({ ...record, userId });
+  }
+
+  async getContextRecord(userId: string, messageId: string) {
+    const found = this.records.find((r) => r.userId === userId && r.messageId === messageId);
+    if (!found) return null;
+    const { userId: _userId, memoryIds, documentChunkIds, ...record } = found;
+    void _userId;
+    return {
+      ...record,
+      memories: memoryIds.map((id) => ({ id, content: null })),
+      documentChunks: documentChunkIds.map((id) => ({ id, documentId: null, title: null })),
+      createdAt: "2026-10-14T12:00:00.000Z",
+    };
+  }
+}
+
+/**
+ * A fake embeddings endpoint: one vector for each input, with token usage.
+ * `calls` counts the requests, so a test can prove that no embedding was paid for.
+ */
+export function fakeEmbeddingFetch() {
+  const state = { calls: 0 };
+  const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
+    state.calls += 1;
+    const input = (JSON.parse(String(init?.body)) as { input: string[] }).input;
+    const data = input.map((_text, index) => ({ index, embedding: Array<number>(EMBEDDING_DIMENSIONS).fill(0.5) }));
+    return new Response(JSON.stringify({ data, usage: { prompt_tokens: input.length * 8 } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  return { fetchImpl: fetchImpl as typeof fetch, state };
+}
+
+/** The real budgeted embedder, on a fake endpoint and the given spend guard. */
+export function testEmbedder(spend: SpendGuard, fetchImpl: typeof fetch = fakeEmbeddingFetch().fetchImpl): Embedder {
+  return createBudgetedEmbedder({ settings: { apiKey: "test-key", baseUrl: "https://nebius.test/v1" }, spend, fetchImpl });
+}
+
 export class FakeQuota implements QuotaGate {
   calls = 0;
   constructor(private readonly allow = true) {}
@@ -209,6 +378,98 @@ export function testRouting(model = "nvidia/nemotron-3-super-120b-a12b") {
   });
 }
 
+/**
+ * The user's own data for the chat tools, scoped by user like RLS. Search
+ * returns the stored matches of the asked mode, at most `count`, as the
+ * database functions do. Proposals and memories are checked with the same
+ * schemas as the database limits.
+ */
+export class FakeOwnData {
+  memoryMatches: (MemoryMatch & { userId: string; mode: Mode })[] = [];
+  chunkMatches: (DocumentChunkMatch & { userId: string; mode: Mode })[] = [];
+  memories: (MemoryDTO & { userId: string })[] = [];
+  proposals: (ActionProposalDTO & { userId: string })[] = [];
+  searches: { kind: "memories" | "documents"; mode: Mode; count: number }[] = [];
+  failMatch = false;
+  private counter = 0;
+  /**
+   * `clock` gives the database time of a new row. Pass the conversation
+   * repository's latest message time, so rows sort with the messages.
+   */
+  constructor(
+    readonly userId: string,
+    readonly embedder: OwnDataServices["embedder"],
+    readonly clock: () => string = () => "2026-10-30T12:00:00.000Z",
+  ) {}
+
+  private id(): string {
+    this.counter += 1;
+    return `20000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`;
+  }
+
+  services(): OwnDataServices {
+    return {
+      embedder: this.embedder,
+      retrieval: {
+        matchMemories: async (_vector, mode, count) => {
+          this.searches.push({ kind: "memories", mode, count });
+          if (this.failMatch) throw new Error("match failed");
+          return this.memoryMatches.filter((m) => m.userId === this.userId && m.mode === mode).slice(0, Math.min(count, 20));
+        },
+        matchDocumentChunks: async (_vector, mode, count) => {
+          this.searches.push({ kind: "documents", mode, count });
+          if (this.failMatch) throw new Error("match failed");
+          return this.chunkMatches.filter((m) => m.userId === this.userId && m.mode === mode).slice(0, Math.min(count, 20));
+        },
+      },
+      memories: {
+        createMemory: async (userId: string, memory: NewMemory) => {
+          const row = {
+            id: this.id(),
+            mode: memory.mode,
+            content: memory.content,
+            status: memory.status,
+            source: memory.source,
+            sourceMessageId: memory.sourceMessageId,
+            createdAt: this.clock(),
+            updatedAt: this.clock(),
+            userId,
+          };
+          this.memories.push(row);
+          return row;
+        },
+        hasAssistantMemoryFrom: async (userId: string, messageId: string) =>
+          this.memories.some((m) => m.userId === userId && m.sourceMessageId === messageId && m.source === "assistant"),
+      },
+      proposals: {
+        createProposal: async (userId: string, proposal: NewActionProposal) => {
+          const row = {
+            id: this.id(),
+            conversationId: proposal.conversationId,
+            payload: actionPayloadSchema.parse(proposal.payload),
+            summary: actionSummarySchema.parse(proposal.summary),
+            status: "proposed" as const,
+            result: null,
+            createdAt: this.clock(),
+            decidedAt: null,
+            userId,
+          } as ActionProposalDTO & { userId: string };
+          this.proposals.push(row);
+          return row;
+        },
+        hasProposalBetween: async (userId: string, conversationId: string, from: string, before: string | null) =>
+          this.proposals.some(
+            (p) =>
+              p.userId === userId &&
+              p.conversationId === conversationId &&
+              p.createdAt >= from &&
+              (before === null || p.createdAt < before),
+          ),
+      },
+    };
+  }
+}
+
 export interface FakeDepsOptions {
   repo?: MemoryRepository;
   quota?: FakeQuota;
@@ -220,6 +481,8 @@ export interface FakeDepsOptions {
   /** Replaces the simple reply provider (for routing tests). */
   provider?: ModelProvider;
   routing?: RoutingConfig;
+  contextRecords?: ContextRecordRepository;
+  ownData?: OwnDataServices;
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
@@ -255,6 +518,8 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
         })();
       },
     },
+    ...(options.contextRecords ? { contextRecords: options.contextRecords } : {}),
+    ...(options.ownData ? { ownData: options.ownData } : {}),
     breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
     random: () => 0,
     now: () => new Date(Date.UTC(2026, 9, 14, 12, 30, 0)),

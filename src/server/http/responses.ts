@@ -26,13 +26,17 @@ export function errorResponse(
   message: string,
   requestId: string,
   headers?: Record<string, string>,
+  extra: { conversationId?: string } = {},
 ): Response {
-  const body: ApiErrorBody = { error: { code, message, requestId } };
+  const body: ApiErrorBody = { error: { code, message, requestId, ...extra } };
   return jsonResponse(body, requestId, { status, headers });
 }
 
 export const unauthorized = (requestId: string) =>
   errorResponse(401, "unauthorized", "Sign in to continue.", requestId);
+
+export const accountRequired = (requestId: string) =>
+  errorResponse(403, "account_required", "Create an account to connect other accounts.", requestId);
 
 export const notFound = (requestId: string) =>
   errorResponse(404, "not_found", "Conversation not found.", requestId);

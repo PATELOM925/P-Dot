@@ -6,7 +6,7 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 
 | Where | Address | How it updates |
 | --- | --- | --- |
-| Production | https://pdot.iampatelom.com | A merge to `main` deploys it (after the owner connects Workers Builds, see [One-time setup](#one-time-setup-owner-only)) |
+| Production | https://pdot.iampatelom.com | A merge to `main` deploys it through Workers Builds (connected on 2026-10-19) |
 | Pull request preview | A `*.workers.dev` link that Cloudflare posts on the pull request | Each push to a pull request branch |
 | Your computer, Node.js | http://localhost:3000 | `npm run dev` |
 | Your computer, Workers runtime | The address that `npm run preview` prints | `npm run preview` |
@@ -30,7 +30,41 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 
    Expected: `{"status":"ok","configured":{"auth":true,...}}`. The health check shows which settings exist. It does not call Nebius or Tavily.
 
-Until the owner connects Workers Builds, a merge to `main` does **not** deploy. Only the owner can deploy, with `npm run deploy` from a computer that is logged in to Cloudflare.
+Workers Builds was connected on 2026-10-19. Each push to `main` starts one production build. Each push to another branch starts one preview build. If Workers Builds is down, only the owner can deploy, with [a manual deploy](#manual-deploy-owner-only-fallback).
+
+### Merging several pull requests
+
+When two or more pull requests, or a stack of pull requests, are ready at about the same time, merge them together and aim for one deploy. Each build costs build minutes and CI time, and a build of an in-between state is replaced minutes later. Workers Builds starts a build for every push to `main` ([branch builds](https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/)), so there are these options:
+
+- **One production build, top down (ordinary stacks):** use this when each pull request is based on the branch below it, and the bottom one is based on `main`. Merge the top pull request into the branch below it, then that pull request into the branch below it, and so on. Do not change any base. Only the last merge, the bottom pull request into `main`, pushes to `main`, so only one production build runs. The merges into lower branches can start preview builds, but they do not change production. Each pull request keeps its own base and its own review. Its diff grows with each merge from above, so check it again before its own merge (step 1).
+- **GitHub native stack (group merge):** use this when the pull requests were made as a GitHub native stack. GitHub lands the selected pull request and all lower unmerged pull requests together, so the top-down steps do not apply. When every pull request in the stack has a SHIP verdict for its current head and a passing `Workers Builds: pdot` check, use GitHub's group merge once. It lands the stack on `main` in one operation. See [merging stacked pull requests on GitHub](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-stacked-pull-requests).
+- **Several merges (best effort):** merge one after another and cancel the older builds. An older build can still finish and deploy before you cancel it, so an in-between version can go live for a short time.
+
+1. **Before each merge,** check the pull request again:
+   - its base is `main`, or the branch below it in the stack;
+   - its diff contains only the changes you expect: its own, and any merged into it from above;
+   - its review verdict (SHIP) is for its current head commit;
+   - the `Workers Builds: pdot` check passes on that head.
+
+   With several merges, if the next pull request was based on the merged branch, change its base to `main`. If it was based on a squash merge, rebase it first and review the new diff.
+
+   On the top-down path, each upper merge gives the next pull request a new head and a larger diff. Before you merge that pull request:
+   - inspect the new head and the combined diff;
+   - post a review verdict (SHIP) for that new head on that pull request;
+   - wait for the `Workers Builds: pdot` check to pass on that head.
+
+   The review can check the content that was already reviewed and the result of the merge. Do not skip these checks to save build minutes. Use "Create a merge commit" for the top-down path, so each pull request keeps its history.
+2. **Merge in one sitting,** top down for a stack, or one after another for separate pull requests, as described above. Do not wait for production builds of `main` between merges. Do wait for the checks in step 1 on each new head before you merge it.
+3. **Cancel every older build** of `main` that is still queued or running (Workers & Pages → `pdot` → Deployments → View build history → Cancel build). This is best effort: an older build that already finished has already deployed, and the last build replaces it.
+4. **Wait until every build of `main` has finished or is cancelled, and confirm the last build succeeded.** If it failed, fix it and deploy the final `main` once. Do not deploy the in-between commits by hand.
+5. **Confirm production runs the final `main`:** open the build of the last merge commit in the build history and note the version ID it deployed. It must match the active version in `npx wrangler deployments list --name pdot`. Then check the live site once (`/api/health`, sign-in, one chat).
+
+Other rules:
+
+- A set of pull requests with a database expand or contract step does not merge as one deploy, top down or as a native stack. Each step merges to `main` and deploys on its own, in the order and with the checks in [Expand, then contract](#expand-then-contract).
+- Do not push small follow-up fixes to `main` one by one. Put them in one pull request.
+- Each merge into `main` applies its own migration (Supabase GitHub integration) at once. The matching code goes live only when a build finishes, which is later: minutes later with several merges, or later still if a build fails. During that time the new migrations run with the old code. So every migration must be safe for the code that is live now, and new code must work on the old schema ([lesson 6](PROVIDER-RELIABILITY.md#6-new-code-can-run-before-its-migration)). If the last build fails, this time is longer, so fix it first.
+- These steps are for the owner. Agents still must not merge or deploy (see [Rules for coding agents](#rules-for-coding-agents)).
 
 ## What runs in Workers Builds
 
@@ -57,12 +91,14 @@ If `npm run check` fails, the build stops and nothing is deployed.
 | `SITE_URL` | Runtime variable | `wrangler.jsonc` (`https://pdot.iampatelom.com`) |
 | `NEBIUS_BASE_URL`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`; the model routing settings `NEBIUS_FAST_MODELS`, `NEBIUS_STANDARD_MODELS`, `NEBIUS_HEAVY_MODELS`, `NEBIUS_VISION_MODELS`, `NEBIUS_MAX_OUTPUT_TOKENS`, `NEBIUS_STANDARD_MAX_OUTPUT_TOKENS`, `NEBIUS_HEAVY_MAX_OUTPUT_TOKENS`, `NEBIUS_HEAVY_THINKING_BUDGET`, `NEBIUS_HEDGE_AFTER_MS` ([decision 0007](decisions/0007-model-routing.md)); and the spend caps `NEBIUS_DAILY_CAP_USD`, `NEBIUS_TOTAL_CAP_USD`, `NEBIUS_USER_DAILY_CAP_USD`, `TAVILY_DAILY_CREDITS`, `TAVILY_MONTHLY_CREDITS`, `TAVILY_USER_DAILY_CREDITS` ([decision 0006](decisions/0006-global-spend-guard.md)) | Runtime variables. The code has a default for each. `wrangler.jsonc` sets the routing settings (the same values as the defaults) and each cap. `NEBIUS_MODEL` is no longer read. | `wrangler.jsonc`, in **both** `vars` (production) and `previews.vars` (Previews), changed through a pull request. Previews do not get top-level `vars` or dashboard variables. `tests/unit/wrangler-config.test.ts` fails if the two lists have different names. Dashboard variables (Workers & Pages → `pdot` → Settings → Variables and Secrets) are kept on deploy by `keep_vars: true`, but they apply to production only. |
 | `NEBIUS_API_KEY`, `TAVILY_API_KEY` | Runtime secrets | `npx wrangler secret put NAME` (owner only) |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_TOKEN_ENCRYPTION_KEY` | Runtime secrets, optional. Without all three, Google shows "Not set up". The client ID is public and is on the bundle allow list; the other two are not ([decision 0014](decisions/0014-google-sign-in-and-connection.md)). | `npx wrangler secret put NAME` (owner only); One-time setup, item 7 |
+| `CONNECTOR_TOKEN_ENCRYPTION_KEY` | Runtime secret, optional. 32 bytes, base64 (`openssl rand -base64 32`). It seals the Notion, Linear and Todoist tokens. Without it, those cards show "Not set up" and chat offers no app. Never on the bundle allow list ([decision 0016](decisions/0016-mcp-connectors.md)). | `npx wrangler secret put NAME` (owner only) |
 
 Rules:
 
 - Never commit a secret. Never put a secret in `wrangler.jsonc`, in a build variable, or in a `NEXT_PUBLIC_` variable.
 - Never add the Supabase secret key (service role key), a database password or a connection string to the Worker.
-- **The OpenNext build copies every value from `.env`, `.env.local`, `.env.production` and `.env.production.local` (and the `development` versions) into the Worker bundle** (`.open-next/cloudflare/next-env.mjs`). `npm run deploy` and `npm run upload` run `scripts/check-worker-env.mjs` after the build. It stops the deploy if any variable that is not on its allow list has a value in that file. The allow list is in `scripts/worker-env-rules.mjs`: the two public Supabase values, `SITE_URL`, the Nebius and chat-limit settings, and the spend caps. A unit test fails if a name in `wrangler.jsonc` `vars` is not on it. Keys, passwords and connection strings are never on it. To add a non-secret setting, add its name there through a pull request. Workers Builds has no `.env` file, so this problem does not occur there.
+- **The OpenNext build copies every value from `.env`, `.env.local`, `.env.production` and `.env.production.local` (and the `development` versions) into the Worker bundle** (`.open-next/cloudflare/next-env.mjs`). `npm run deploy` and `npm run upload` run `scripts/check-worker-env.mjs` after the build. It stops the deploy if any variable that is not on its allow list has a value in that file. The allow list is in `scripts/worker-env-rules.mjs`: the two public Supabase values, `SITE_URL`, the Nebius and chat-limit settings, the spend caps and `GOOGLE_OAUTH_CLIENT_ID`. A unit test fails if a name in `wrangler.jsonc` `vars` is not on it. Keys, passwords and connection strings are never on it. To add a non-secret setting, add its name there through a pull request. Workers Builds has no `.env` file, so this problem does not occur there.
 - Previews do not get the production secrets. They use the `previews` block in `wrangler.jsonc` for variables, and the Preview base config for secrets (`npx wrangler preview base-config secret put NAME`, owner only). Until the owner adds them, chat in a preview says "This service is not configured yet."
 
 ## Previews: what to know
@@ -82,11 +118,63 @@ Rules:
 
 Migrations are in `supabase/migrations/`. The hosted Supabase project has the GitHub integration on: a merge to `main` applies new migrations automatically. Agents never apply migrations. Write each migration so that the code which is live now still works after it runs (additive changes only). The new code and the migration go live at about the same time; for a short time the new code can run before its migration, so new database calls must fail closed.
 
+### Expand, then contract
+
+When a change needs a new database function or must remove something that the live code uses (a grant, a policy, a column), the new code cannot go live at the same time as its migration. Ship it in separate pull requests, in this order, and check each step before the next merge:
+
+1. **Database (expand).** A migration that only adds. The code on main must keep working during and after it. The database gate checks main's code against it.
+   - Check: the owner confirms in the Supabase dashboard that the migration is in the migration history and that its new objects exist. Agents never read the hosted database.
+   - Until this check passes, do not use a Preview of the step 2 or step 3 branch. Previews use the production database, so that code would save rows with no log entry and fail on decisions.
+2. **Code.** The code that uses the new objects. Merge it only after check 1.
+   - Check: in the Cloudflare dashboard, the new Worker version serves 100% of traffic, and no Preview of an older branch is in use (Previews use the production database). Then wait a short drain time, for example 5 minutes, so that requests that started on the older version can end.
+3. **Contract.** A later migration that removes the old path. Merge it only after check 2.
+
+Rollback: after step 3, a Worker version older than step 2 no longer works, because it needs what step 3 removed. Roll back only to the step 2 version or a later one. Before step 3, a rollback to the older code is safe. Never undo a migration by hand.
+
+The memory hardening ships this way:
+
+1. PR #18 (branch `om/memory-expand-db`): migration `20261021000000_memory_hardening.sql`. Check 1: `public.decide_action_proposal` exists.
+2. PR #13: the code that calls `decide_action_proposal` and no longer writes the action log. Without step 1, its writes would succeed with no log row. It also adds migration `20261021000500_marker_unset_setting.sql`, which works with any code. Check: `confirm_executed` from decision 0009 works on a new session. Merge it before step 3, because the Supabase integration skips a migration older than the newest one applied.
+3. PR #17: migration `20261021010000_memory_hardening_contract.sql`, which removes the older log insert and proposal update paths.
+
+Between steps 1 and 3, the older code can still write a second log row for a change, and a user can still move a proposal forward with the older update grant. Only a proposal with `decided_by_function = true` is a record of an action that the database ran; any other outcome is what a caller wrote (decision 0009).
+
+The resend fix ([decision 0012](decisions/0012-resend-idempotency.md)) ships in two steps. There is no contract step.
+
+1. Database PR (branch `om/resend-expand-db`): migration `20261021020000_resend_idempotency.sql`. Check 1: in the Supabase dashboard, the migration is in the history, and these exist: `client_request_id` and `client_request_hash` on `conversations`, `messages`, `memories` and `documents`; `reply_to`, `reply_claim_id` and `reply_claimed_at` on `messages`; the five indexes `conversations_user_client_request_key`, `messages_user_client_request_key`, `memories_user_client_request_key`, `documents_user_client_request_key` and `messages_reply_to_key`; the functions `claim_reply`, `release_reply_claim`, `settle_document` and `check_document_chunk`; and the trigger `document_chunks_check` on `document_chunks`.
+2. Code PR (branch `om/resend-idempotency`): the code that sends and reads the request key, claims each reply and settles documents with `settle_document`. Merge it only after check 1. Before the migration, its sends and retries answer 500 and the logs show `schema_missing`. Do not use its Preview before check 1.
+
+A rollback to a version from before step 2 is safe. That version does not claim replies, so it can again save two replies for one message.
+
+Google sign-in and the Google connection ([decision 0014](decisions/0014-google-sign-in-and-connection.md)) ship in two steps. There is no contract step.
+
+1. Database PR G1 (branch `om/google-expand-db`): migration `20261030000000_google_connection.sql`. Check 1: in the Supabase dashboard, the migration is in the history, and these exist:
+   - the table `connected_accounts` (with the column `account_subject`), with RLS on and the four policies `connected_accounts_select_own`, `connected_accounts_insert_own`, `connected_accounts_update_own` and `connected_accounts_delete_own`, and the trigger `connected_accounts_touch_updated_at`;
+   - the columns `execution_claim_id`, `execution_started_at`, `execution_account_subject`, `execution_target`, `execution_attempt` and `execution_outcome_unknown` on `action_proposals`, and its constraints `action_proposals_kind_check` (with `send_email` and `create_calendar_event`), `action_proposals_status_check` (with `executing`) and `action_proposals_execution_claim`;
+   - the new functions `save_connected_account`, `finish_external_action`, `reclaim_external_action`, `settle_unknown_external_action`, `external_action_account_unchanged`, `action_payload_email_list` and `action_payload_time`;
+   - in Database → Roles or the SQL editor, `authenticated` has no SELECT on `action_proposals.execution_claim_id`.
+2. Code PR G2 (branch `om/google-connect`): sign-in with Google, Connect and Disconnect, the Gmail and Calendar modules and the Connectors card. Merge it only after check 1. Before the migration, Connect fails at `save_connected_account` and stores nothing. Do not use its Preview before check 1. Between the two steps, a user who approves a `send_email` or `create_calendar_event` row that they made by hand gets a 500 from the current Worker, and the row stays `executing` until G2 ships; nothing calls Google.
+
+A rollback to a version from before step 2 is safe. That version does not read the new table. It leaves a proposal of a new kind out of its lists, and an approval of one answers 500.
+
+The Notion, Linear and Todoist connectors ([decision 0016](decisions/0016-mcp-connectors.md)) ship in two steps. There is no contract step.
+
+1. Database PR M1 (branch `om/mcp-connectors-db`, PR #29): migration `20261031000000_mcp_connectors.sql`. It adds no table, column, function or grant. Check 1: in the Supabase dashboard, the migration is in the history, and on `connected_accounts`:
+   - `connected_accounts_provider_check` lists `google`, `notion`, `linear` and `todoist`;
+   - the new constraint `connected_accounts_google_email` exists, and `account_email` allows NULL;
+   - `connected_accounts_known_scopes` has a branch for each of the four providers;
+   - `connected_accounts_token_ciphertext_check` allows 12,288 characters for a provider that is not `google`;
+   - the policies `connected_accounts_insert_own` and `connected_accounts_update_own` check `is_anonymous` for a provider that is not `google`.
+2. Code PR M2 (branch `om/mcp-connectors`): the MCP client, Connect, callback and Disconnect, the cards and the chat toggles. Merge it only after check 1. Before the migration, a callback fails at `save_connected_account` and stores nothing, and chat finds no row and offers no app. Do not use its Preview before check 1. After step 2, set `CONNECTOR_TOKEN_ENCRYPTION_KEY`; without it the cards show "Not set up".
+
+A rollback to a version from before step 2 is safe. That version reads only `provider = 'google'` rows.
+
 ## One-time setup (owner only)
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
 
-1. **Connect Workers Builds.** Dashboard → Workers & Pages → `pdot` → Settings → Build → Connect. Choose GitHub, install the Cloudflare app on `PATELOM925/P-Dot` only, then enter the values from [What runs in Workers Builds](#what-runs-in-workers-builds). The Free plan includes 3,000 build minutes each month.
+1. **Connect Workers Builds.** Done on 2026-10-19. Dashboard → Workers & Pages → `pdot` → Settings → Build → Connect. Choose GitHub, install the Cloudflare app on `PATELOM925/P-Dot` only, then enter the values from [What runs in Workers Builds](#what-runs-in-workers-builds) on **both** tabs, Production and Previews Base. The Free plan includes 3,000 build minutes each month.
+   - **Known failure:** if the command fields stay empty, Cloudflare uses `npm run build` and `npx wrangler deploy`. The plain Next.js build does not make `.open-next/worker.js`, so the deploy fails after about 45 seconds. This happened on the first three builds on 2026-10-19. The fix was to enter the commands and the two build variables on both tabs.
 2. **Set provider secrets** when the Nebius and Tavily accounts exist:
 
    ```bash
@@ -94,7 +182,7 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    npx wrangler secret put TAVILY_API_KEY
    ```
 
-   Set a spending limit on both provider accounts first.
+   Set a spending limit on both provider accounts first. Production secrets were set on 2026-10-19. Provider spending limits are not confirmed yet.
 3. **Models and spend caps.** `wrangler.jsonc` sets the model chain for each tier (`NEBIUS_FAST_MODELS` and the others) and the global spend caps in both `vars` and `previews.vars`. To change one, open a pull request. Every model in a chain must have a price in `src/server/providers/nebius/pricing.ts`. If one does not, chat says "This service is not configured yet." and no provider is called. Add the price in the same pull request. See [decision 0006](decisions/0006-global-spend-guard.md) and [decision 0007](decisions/0007-model-routing.md). If `NEBIUS_MODEL` was set in the dashboard, you can delete it there: the code no longer reads it.
 4. **Preview secrets (optional).** To let Previews call Nebius and Tavily, set them in the Preview base config. Use a separate key with a low spending limit if the provider allows it:
 
@@ -104,8 +192,98 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    ```
 
    Changes to base secrets apply only to Previews created after the change.
-5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Use the email templates from the README "Setup" section.
-6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP.
+5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Done on 2026-10-19. The free plan does not allow email template changes without custom SMTP, so the templates from the README "Setup" section are not applied yet.
+6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP. On 2026-10-19 "Confirm email" was turned off for the hackathon, so sign-up works without an email. Password reset emails still reach only team members. Before Google sign-in, turn it on again and do the gate in item 7.8.
+7. **Google sign-in and Google connection** ([decision 0014](decisions/0014-google-sign-in-and-connection.md)). Not done yet. One Google OAuth client serves both: Supabase uses it for sign-in, and P-Dot uses it for Connect.
+   1. **Project.** In the Google Cloud console, create a project (for example `p-dot`) or pick one.
+   2. **APIs.** APIs & Services → Library: enable **Gmail API** and **Google Calendar API**.
+   3. **Consent screen** (Google Auth Platform → Branding and Audience):
+      - User type **External**. Publishing status **Testing**.
+      - App name `P-Dot`, a support email, and the developer contact email.
+      - App home page `https://pdot.iampatelom.com`. Authorized domains: `iampatelom.com` and `supabase.co`.
+   4. **Data access (scopes).** Add exactly these: `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `https://www.googleapis.com/auth/gmail.readonly`, `https://www.googleapis.com/auth/gmail.send` and `https://www.googleapis.com/auth/calendar.events.owned`. The console shows the class of each scope (non-sensitive, sensitive or restricted). Write the calendar scope's class into decision 0014.
+   5. **Test users** (Audience → Test users): add the Google address of each person who will use Connect, the owner first. At most 100. While the app is in Testing, each test user's Google access ends 7 days after consent; P-Dot then shows "Connect again". Google shows an "unverified app" screen; test users select Continue.
+   6. **OAuth client** (Clients → Create client → Web application, name `P-Dot web`). Authorized redirect URIs, all four:
+      - `https://<project-ref>.supabase.co/auth/v1/callback` (sign-in, production database). Copy the exact value from Supabase → Authentication → Sign In / Providers → Google → "Callback URL".
+      - `http://127.0.0.1:54321/auth/v1/callback` (sign-in with the local Supabase stack, `npm run db:start`).
+      - `https://pdot.iampatelom.com/api/connectors/google/callback` (Connect, production).
+      - `http://localhost:3000/api/connectors/google/callback` (Connect, `npm run dev`).
+
+      Authorized JavaScript origins: `https://pdot.iampatelom.com` and `http://localhost:3000`. Save the client ID and the client secret.
+   7. **Supabase Google provider** (Authentication → Sign In / Providers → Google): turn it on, paste the client ID and the client secret, keep "Skip nonce checks" off, keep "Allow users without an email" off. The redirect URLs from item 5 of this list (`https://pdot.iampatelom.com/**`, `http://localhost:3000/**`) already cover `/auth/callback`.
+   8. **Owner gate. Do it before sub-step 7 (the Supabase Google provider), also when only test users will sign in.** While "Confirm email" was off, any person could make a password account with someone else's address, and Supabase marked it confirmed. A later Google sign-in with that address can join that account, and the first person keeps its password (PLAUSIBLE; Supabase documents that it links only to a confirmed email, decision 0014, "Risks").
+      - Authentication → Sign In / Providers → Email: turn "Confirm email" **on**, and keep it on. Do not turn it off again. Without custom SMTP, new sign-ups then reach only Supabase team members (item 6), so the judges use a demo account that the owner makes (Authentication → Users → Add user, "Auto Confirm User", a strong password) or Google sign-in.
+      - [ ] List the accounts made while it was off. In the SQL editor (owner only, read-only): `select id, email, created_at, last_sign_in_at from auth.users where created_at >= '2026-10-19' order by created_at;`
+      - [ ] For each account, choose one:
+        - **Delete it** (Authentication → Users → Delete user), or ban it, if you are not sure who made it. This is the default.
+        - **Keep it** only when all of these are true: you confirmed with the person that they control that mailbox; that person finished a password change (a sent reset email is not enough, because the old password works until the change is done); and you revoked its sessions after the change (Authentication → Users → the user → Sign out of all sessions, or delete and make the account again).
+      - [ ] Your own accounts and the demo account count as kept only after the same check.
+      - [ ] Write in this file the date, the number of accounts deleted or banned, and the number kept. Only then do sub-step 7.
+   9. **Worker secrets** (production). Make the key with `openssl rand -base64 32` and keep a copy in a password manager. If the key is lost, every user must connect Google again.
+
+      ```bash
+      npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID
+      npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
+      npx wrangler secret put GOOGLE_TOKEN_ENCRYPTION_KEY
+      ```
+
+      Without all three, the Connectors page shows Google as "Not set up" and nothing else changes. Sign-in with Google needs only step 7.
+
+      For Google sign-in on the local Supabase stack: in `supabase/config.toml`, set `enabled = true` under `[auth.external.google]` and export `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID` and `SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET` before `npm run db:start`. For `npm run dev`, put the same three names in `.env.local`; only `GOOGLE_OAUTH_CLIENT_ID` is on the bundle allow list, so remove the other two before a manual deploy.
+   10. **Check after G2 deploys:** `/api/health` shows `"google":true`. Sign in with Google on `/login`. On Connectors, connect Google, then disconnect it, then check that P-Dot is gone from https://myaccount.google.com/permissions.
+   11. **Production use beyond 100 test users** needs Google verification. `gmail.readonly` is restricted: it also needs a security assessment by a third-party assessor, again at least every 12 months. Until then, keep the app in Testing.
+
+7. **Trial without an account** ([decision 0015](decisions/0015-judge-demo-mode.md)). Not done yet. Until it is done, "Try P-Dot now, no account" shows "Trying P-Dot without an account is off right now." and nothing else changes.
+   - Turn it on: Supabase dashboard → Authentication → Sign In / Providers → "Allow anonymous sign-ins" → On → Save.
+   - Do not turn on CAPTCHA for Auth while the trial is in use. The trial button sends no CAPTCHA token, so every trial would fail. If you need CAPTCHA, turn the trial off.
+   - Check: open the live site in a private window, click "Try P-Dot now, no account", and send one message. The yellow trial banner shows on each page.
+   - Turn it off after judging with the same switch. Trial users that exist keep working until their session ends.
+
+### Abuse limits for trials
+
+A trial user is a real user in `auth.users` with `is_anonymous = true`. These limits apply:
+
+| Limit | Value | Where |
+| --- | --- | --- |
+| New trials for each public IP address | 30 each hour (Supabase default, configurable) | Supabase → Authentication → Rate Limits → "Anonymous sign-ins". The browser makes the call, so Supabase counts the visitor's IP, not the Worker's. Judges on one venue network share one limit. A person with many IPs gets more. |
+| Chat requests for each trial user | The lower of `CHAT_REQUESTS_PER_WINDOW` and 20 | `src/server/trial-limits.ts` |
+| Nebius spend for each trial user, each UTC day | The lower of `NEBIUS_USER_DAILY_CAP_USD` and $0.15 | `src/server/trial-limits.ts`, [decision 0006](decisions/0006-global-spend-guard.md) |
+| Tavily credits for each trial user, each UTC day | The lower of `TAVILY_USER_DAILY_CREDITS` and 5 | `src/server/trial-limits.ts` |
+| Nebius and Tavily spend for all users together | The global daily and total caps, unchanged | `wrangler.jsonc`, decision 0006 |
+
+The per-user limits are for fair use. They do not stop abuse, because one person can start many trials:
+
+- **Real use through the app.** Many trials can use up the global daily cap ($1.00). Then chat refuses every user until the next UTC day. Over many days they can use up the all-time cap ($20.00). That does not end on its own: add credit and reset the total counter (decision 0006, "How to change the caps").
+- **Direct RPC calls.** Any signed-in user, also a trial user, can call `reserve_provider_spend` with the public key and never settle (decision 0006, "Known limit"). This uses up the counters with no provider call and no charge. Turn the trial off, delete the trial users (below), then reset the counters in the SQL editor.
+
+In both cases the owner's money stays safe, because the global caps hold. The cost is loss of service. If it happens during judging, lower the anonymous sign-in limit, or turn the trial off.
+
+### Clean up old trial users (owner only, by 2027-01-31)
+
+Supabase does not delete anonymous users on its own. Sign-out, or a lost browser cookie, ends access to a trial, but it does not delete the data. After judging, and by 2027-01-31, turn the trial off and delete old trial users in the SQL editor.
+
+1. Choose a cutoff time, for example the end of judging. Count the trial users older than it:
+
+   ```sql
+   select count(*)
+   from auth.users
+   where is_anonymous is true
+     and created_at < '2026-11-15T00:00:00Z';
+   ```
+
+2. If the number looks right, delete them with the same `where`:
+
+   ```sql
+   delete from auth.users
+   where is_anonymous is true
+     and created_at < '2026-11-15T00:00:00Z';
+   ```
+
+- The delete removes each trial user's app rows by cascade (`on delete cascade`): conversations, messages, memories, documents, tasks, reminders, proposals, the action log, context records, usage windows and spend reservations.
+- It does not change `spend_counters`, so the global spend totals stay.
+- It never selects an account: `is_anonymous is true` matches only trials.
+- Backups keep copies until they expire. A copied access token stays valid until it expires (decision 0001).
+- `tests/integration/trial-cleanup.test.ts` runs this SQL on every migration.
 
 ## Manual deploy (owner only, fallback)
 

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { usePopover } from "@/components/ui/usePopover";
 import { APPROVAL_MODES, APPROVAL_MODE_LABELS, MAX_AUTO_ACTIONS_PER_REPLY, type ApprovalMode } from "@/lib/approval-policy";
 import { setApprovalMode, useApprovalMode, useApprovalModeChosen } from "./approval-mode";
 
@@ -29,7 +30,7 @@ function ModeIcon({ mode }: { mode: ApprovalMode }) {
  * The two modes as radio cards with what each does. Used in Settings, in the
  * first-run setup and in the composer menu. `onPicked` runs after a choice.
  */
-export function ApprovalModeOptions({ onPicked, autoFocusChecked = false }: { onPicked?: () => void; autoFocusChecked?: boolean }) {
+export function ApprovalModeOptions({ onPicked }: { onPicked?: () => void }) {
   const mode = useApprovalMode();
   const name = useId();
   return (
@@ -41,7 +42,6 @@ export function ApprovalModeOptions({ onPicked, autoFocusChecked = false }: { on
             name={name}
             value={value}
             checked={mode === value}
-            autoFocus={autoFocusChecked && mode === value}
             onChange={() => {
               setApprovalMode(value);
               onPicked?.();
@@ -63,20 +63,38 @@ export function ApprovalModeOptions({ onPicked, autoFocusChecked = false }: { on
  * Next to the message box: one button that always shows the current mode and
  * opens a small menu to change it. Works the same with touch, mouse and keyboard.
  */
-export function ApprovalModeMenu() {
+export function ApprovalModeMenu({
+  open: openProp,
+  onOpenChange,
+  disabled = false,
+}: {
+  /** Controlled by the composer, so only one of its menus is open at a time. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  disabled?: boolean;
+}) {
   const mode = useApprovalMode();
-  const [open, setOpen] = useState(false);
+  const [openState, setOpenState] = useState(false);
+  const open = openProp ?? openState;
+  const setOpen = useCallback(
+    (next: boolean) => {
+      if (onOpenChange) onOpenChange(next);
+      else setOpenState(next);
+    },
+    [onOpenChange],
+  );
   const menuId = useId();
-  const anchorRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const dismiss = useCallback(() => setOpen(false), [setOpen]);
+  usePopover({ open, menuRef, triggerRef: buttonRef, onClose: dismiss });
 
+  // Focus goes into the menu when it opens: to the chosen mode.
   useEffect(() => {
     if (!open) return;
-    const onPointer = (event: PointerEvent) => {
-      if (!anchorRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointer);
-    return () => document.removeEventListener("pointerdown", onPointer);
+    const radios = menuRef.current?.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    const checked = Array.from(radios ?? []).find((radio) => radio.checked) ?? radios?.[0];
+    checked?.focus();
   }, [open]);
 
   const close = () => {
@@ -85,22 +103,11 @@ export function ApprovalModeMenu() {
   };
 
   return (
-    <div className="tools-anchor approval-anchor" ref={anchorRef}>
+    <div className="tools-anchor approval-anchor">
       {open && (
-        <div
-          id={menuId}
-          role="dialog"
-          aria-label="When P-Dot acts"
-          className="tools-menu approval-menu"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              close();
-            }
-          }}
-        >
+        <div id={menuId} ref={menuRef} role="dialog" aria-label="When P-Dot acts" className="tools-menu approval-menu">
           <p className="approval-menu-title">When P-Dot acts</p>
-          <ApprovalModeOptions onPicked={close} autoFocusChecked />
+          <ApprovalModeOptions onPicked={close} />
           <Link href="/settings#approvals" className="small" onClick={() => setOpen(false)}>
             What always asks
           </Link>
@@ -116,7 +123,8 @@ export function ApprovalModeMenu() {
         aria-controls={open ? menuId : undefined}
         aria-label={`Approvals: ${APPROVAL_MODE_LABELS[mode]}. Change`}
         title="Choose whether P-Dot asks before every action"
-        onClick={() => setOpen((value) => !value)}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
       >
         <ModeIcon mode={mode} />
         <span>{APPROVAL_MODE_LABELS[mode]}</span>
@@ -132,19 +140,18 @@ export function ApprovalModeMenu() {
  * Shown once in chat on a device where no mode was chosen yet. Choosing either
  * mode, or keeping the default, hides it for good on this device.
  */
-export function ApprovalModeSetup() {
+export function ApprovalModeSetup({ onChoose }: { onChoose: () => void }) {
   const chosen = useApprovalModeChosen();
   if (chosen) return null;
   return (
-    <section className="approval-setup" aria-labelledby="approval-setup-heading">
-      <div className="panel-heading">
-        <h2 id="approval-setup-heading">How should P-Dot act?</h2>
-        <button type="button" className="link-button small" onClick={() => setApprovalMode("manual")}>
-          Keep Ask first
-        </button>
-      </div>
-      <ApprovalModeOptions />
-      <p className="hint">You can change this any time with the button next to the message box, or in Settings.</p>
-    </section>
+    <p className="approval-setup-line">
+      <span>P-Dot asks before it acts. You can let it add tasks and reminders on its own.</span>
+      <button type="button" className="link-button small" onClick={onChoose}>
+        Choose
+      </button>
+      <button type="button" className="link-button small" onClick={() => setApprovalMode("manual")}>
+        Keep Ask first
+      </button>
+    </p>
   );
 }

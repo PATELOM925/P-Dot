@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_ASSISTANT_CHARS } from "@/lib/limits";
+import { HISTORY_CHAR_BUDGET, HISTORY_MESSAGE_LIMIT, MAX_ASSISTANT_CHARS } from "@/lib/limits";
+import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import {
@@ -7,12 +8,15 @@ import {
   MAX_NEBIUS_HOLD_MICRO_USD,
   nebiusHoldMicroUsd,
   nebiusSettleMicroUsd,
+  NebiusHoldTooLargeError,
   SEARCH_BUDGET_MESSAGE,
 } from "@/server/assistant/spend";
+import { buildRoutingConfig, ULTRA } from "@/server/assistant/tiers";
 import { toNdjsonStream } from "@/server/http/ndjson";
 import { ProviderError } from "@/server/providers/errors";
 import { streamChatCompletion } from "@/server/providers/nebius/client";
 import { costMicroUsd, priceForModel } from "@/server/providers/nebius/pricing";
+import { searchWeb } from "@/server/providers/tavily/client";
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
 import { FakeQuota, FakeSpend, MemoryRepository, fakeDeps } from "../support/fakes";
 import { collect, deltaChunk, sseEvent, streamFrom } from "../support/streams";
@@ -41,9 +45,12 @@ describe("spend math", () => {
     expect(() => nebiusHoldMicroUsd("moonshotai/Kimi-K3", messages, 1024)).toThrow(ConfigError);
   });
 
-  it("never holds more than the database accepts", () => {
-    const huge = [{ role: "user" as const, content: "x".repeat(400_000) }];
-    expect(nebiusHoldMicroUsd("nvidia/Nemotron-3-Ultra-550b-a55b", huge, 8192)).toBe(MAX_NEBIUS_HOLD_MICRO_USD);
+  it("refuses a hold one micro-dollar above the ceiling and allows a hold exactly at it", () => {
+    // Ultra costs 1 micro-dollar per input token: 249,920 bytes + 16 + 64 = 250,000 tokens.
+    const at = [{ role: "user" as const, content: "x".repeat(249_920) }];
+    const over = [{ role: "user" as const, content: "x".repeat(249_921) }];
+    expect(nebiusHoldMicroUsd(ULTRA, at, 0)).toBe(MAX_NEBIUS_HOLD_MICRO_USD);
+    expect(() => nebiusHoldMicroUsd(ULTRA, over, 0)).toThrow(NebiusHoldTooLargeError);
   });
 
   it("settles the real cost with usage, and the full hold without it", () => {
@@ -76,6 +83,87 @@ describe("spend math", () => {
       code: "budget_exhausted",
       message: "P-Dot has reached its total usage limit. Try again later.",
     });
+  });
+});
+
+function ultraRouting(maxOutputTokens: number) {
+  return buildRoutingConfig({
+    chains: { fast: [ULTRA], standard: [ULTRA], heavy: [ULTRA], vision: [ULTRA] },
+    maxOutputTokens,
+    standardMaxOutputTokens: maxOutputTokens,
+    heavyMaxOutputTokens: maxOutputTokens,
+    heavyThinkingBudgetTokens: 0,
+    hedgeAfterMs: 0,
+  });
+}
+
+async function prepareUltra(message: string, maxOutputTokens: number) {
+  const spend = new FakeSpend();
+  const { deps } = fakeDeps({ spend, routing: ultraRouting(maxOutputTokens) });
+  const prepared = await prepareChatTurn(deps, {
+    userId: ALICE,
+    requestId: "req-1",
+    request: { action: "send", message, webSearch: false },
+  });
+  return { prepared, spend };
+}
+
+describe("chat hold ceiling", () => {
+  it("refuses a turn one micro-dollar over the ceiling with no reserve call, and allows one exactly at it", async () => {
+    // Ultra: 1 micro-dollar per input token, 3 per output token.
+    const probe = await prepareUltra("x".repeat(1000), 0);
+    const inputTokens = probe.spend.reservations[0]!.held;
+    const pad = (MAX_NEBIUS_HOLD_MICRO_USD - inputTokens) % 3;
+    const outputTokens = (MAX_NEBIUS_HOLD_MICRO_USD - inputTokens - pad) / 3;
+
+    const at = await prepareUltra("x".repeat(1000 + pad), outputTokens);
+    expect(at.prepared.ok).toBe(true);
+    expect(at.spend.reservations.map((r) => r.held)).toEqual([MAX_NEBIUS_HOLD_MICRO_USD]);
+
+    const over = await prepareUltra("x".repeat(1001 + pad), outputTokens);
+    expect(over.prepared).toMatchObject({ ok: false, status: 413, code: "payload_too_large" });
+    expect(over.spend.reservations).toHaveLength(0);
+  });
+
+  it("holds at least the final prompt's cost for the largest turn with worst-case search results", async () => {
+    // Work mode, 40 history messages and a new message that fill the history budget with 3-byte characters.
+    const repo = new MemoryRepository();
+    const conversation = await repo.createConversation(ALICE, "Long", "work");
+    for (let i = 0; i < HISTORY_MESSAGE_LIMIT; i += 1) {
+      const role = i % 2 === 0 ? ("user" as const) : ("assistant" as const);
+      await repo.insertMessage(ALICE, { conversationId: conversation.id, role, content: "中".repeat(585) });
+    }
+    const message = "中".repeat(HISTORY_CHAR_BUDGET - HISTORY_MESSAGE_LIMIT * 585);
+
+    // Real Tavily adapter. Each kept URL is 2,048 bytes after normalization: raw 3-byte
+    // characters (9 bytes each when encoded) or input that is already percent-encoded.
+    // The first URL is 2,048 characters before normalization and 18,312 after, so it is dropped.
+    const fill = (host: string, middle: string) => `https://${host}.com/${middle.repeat(225)}aaaaaaaa`;
+    const items = [
+      { url: `https://e9.com/${"中".repeat(2_033)}`, title: "dropped", content: "dropped" },
+      ...[0, 1, 2].map((i) => ({ url: fill(`e${i}`, "中"), title: "題".repeat(200), content: "文".repeat(2_000) })),
+      ...[3, 4].map((i) => ({ url: fill(`e${i}`, "%E4%B8%AD"), title: "題".repeat(200), content: "文".repeat(2_000) })),
+    ];
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ results: items }), { status: 200 }));
+
+    const spend = new FakeSpend();
+    const { deps, prompts } = fakeDeps({
+      repo,
+      spend,
+      routing: ultraRouting(8192),
+      search: (query, signal) => searchWeb({ apiKey: "test-key" }, query, { signal, fetchImpl: fetchImpl as typeof fetch }),
+    });
+    const { events } = await runTurn(deps, { action: "send", conversationId: conversation.id, message, webSearch: true });
+    expect(events.at(-1)?.type).toBe("done");
+
+    const final = prompts[0]!;
+    expect(final).toHaveLength(HISTORY_MESSAGE_LIMIT + 2);
+    const sourceUrls = [...final.at(-1)!.content.matchAll(/^URL: (.*)$/gm)].map((m) => m[1]!);
+    expect(sourceUrls.map((url) => url.length)).toEqual(Array(5).fill(MAX_SAFE_URL_CHARS));
+
+    const held = spend.reservations.find((r) => r.provider === "nebius")!.held;
+    expect(held).toBeGreaterThanOrEqual(nebiusHoldMicroUsd(ULTRA, final, 8192));
+    expect(held).toBeLessThan(150_000);
   });
 });
 
@@ -175,7 +263,10 @@ describe("chat flow with the spend guard", () => {
     release();
     await cancelled;
     expect(spend.reservations[0]!.settled).toBe(spend.reservations[0]!.held);
-    expect(waited).toHaveLength(1);
+    // The settle, and the end of the reply claim: both run under waitUntil.
+    expect(waited).toHaveLength(2);
+    const repo = deps.repo as MemoryRepository;
+    expect(repo.claimOf(prepared.turn.userMessage.id)).toBeNull();
   });
 
   it("does not fail the reply when the settle fails", async () => {

@@ -29,9 +29,9 @@ export default async function MemoryPage() {
         </p>
       </div>
 
-      <p className="alert alert-warning" role="status">
-        P-Dot does not use these memories or documents in its replies yet; that step is still being built. When it does,
-        the &ldquo;What was sent&rdquo; link under each reply will list the ones it used.
+      <p className="muted" role="status">
+        P-Dot uses your kept memories in this mode when it replies. It can search your documents when you ask about
+        your notes, documents or files. A memory it suggests is not used until you keep it. The &ldquo;What was sent&rdquo; link under each reply lists the ones it used.
       </p>
 
       <MemoryList key={mode} mode={mode} initialMemories={memories} />

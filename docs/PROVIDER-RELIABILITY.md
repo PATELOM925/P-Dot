@@ -8,7 +8,7 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 
 1. Every paid call reserves budget before it starts and settles after it ends. No exceptions, including retries, backup models and hedged requests.
 2. A model without a known price is refused. Never guess a price.
-3. Keep the full hold unless valid usage arrived. Invalid usage counts as missing usage.
+3. Keep the full hold unless valid usage arrived. Invalid usage counts as missing usage. Never reduce a hold to fit the ceiling: refuse the call.
 4. Retry only before the first visible token. After that, never switch models.
 5. Keep retry state per model, as an absolute "not before" time. Never share one mutable wait between parallel attempts.
 6. Classify provider errors by HTTP status and by error label. A quota or billing error stops all models, even when the status is 429.
@@ -98,6 +98,22 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - **If it happens:** turn email confirmation back on or add a CAPTCHA, delete the accounts, then reset the counters.
 - **Sources:** [decision 0006](decisions/0006-global-spend-guard.md); [PR #2 review, round 1](https://github.com/PATELOM925/P-Dot/pull/2#issuecomment-6257586511).
 
+### 11. A hold was reduced to fit the ceiling
+
+- **What happened:** One Nebius hold can be at most $0.25. The chat hold used `Math.min(cost, ceiling)`, so a call above $0.25 would hold less than it could cost. The embedder copied this clamp in PR #6 (0dce68a). Two earlier defects had the same effect (lessons 2 and 3).
+- **Fix:** `src/server/assistant/spend.ts` is the one owner of the worst-case hold. Above the ceiling it throws `NebiusHoldTooLargeError` before any reserve call. Chat answers 413 and the documents route answers 413. `tests/unit/spend-hold-owner.test.ts` fails when another file uses the ceiling or `costMicroUsd`. `pricing.ts` may only declare `costMicroUsd`.
+- **Rule:** Never reduce a required hold. If the hold is too large, refuse the call. Compute holds only through the owner functions.
+- **Second defect (review of PR #14):** the source URL limit was checked before normalization. A 2,048-character URL with 3-byte characters became 18,312 bytes, so the search bytes bound was false and the first hold could be below the cost of the final prompt. `toSafeHttpUrl` now also refuses a normalized URL above 2,048 characters.
+- **Numbers (2026-10-20):** the largest valid chat turn (Work mode, 41 messages of 3-byte characters that fill the 24,000-character history budget, search on, Ultra, 8,192 output tokens) holds 138,233 micro-dollars. With worst-case search results its final prompt needs 130,279. A test through the real Tavily adapter checks both and keeps the hold under 150,000.
+- **Sources:** PR #2 commit 1945dda and fix eab3260; PR #6 commit 0dce68a; [PR #14](https://github.com/PATELOM925/P-Dot/pull/14).
+
+### 12. A stream cancelled before its first read kept its hold
+
+- **What happened:** `prepareChatTurn` reserves the Nebius hold before the response exists. The hold was given back in the `finally` of the stream generator. If the client cancels the response before the first read, `toNdjsonStream` calls `events.return()` on a generator that never started, so its body and its `finally` never run, and the hold stays counted. A review of decision 0012 found this with `toNdjsonStream(...).cancel()` on main.
+- **Fix:** the prepared turn owns its holds (`TurnHolds`): the Nebius hold, the Tavily credit and the reply claim. `releaseTurn` gives back each part that no use took, once, under `waitUntil`. The generator's `finally` calls it, and the chat route passes it to `toNdjsonStream` as `onCancel`. A part leaves the holds when its use starts (an attempt takes the hold, the search starts), so a hold whose provider use is unknown is never given back.
+- **Rule:** cleanup that must always run cannot live only in a generator's `finally`. Give it an owner that exists before the stream starts, and test a cancel before the first read.
+- **Sources:** [decision 0012](decisions/0012-resend-idempotency.md), review round 1; `tests/unit/api-routes.test.ts` ("cancelled before its first read").
+
 ## Checklists
 
 **Add or change a model**
@@ -121,6 +137,8 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 
 ## Not verified yet
 
+- Tool calls on Super, Ultra and Lightning, and a final pass with no `tools` field after earlier tool messages (decision 0013). The adapter tests use the OpenAI-compatible wire shape, not a recorded Nebius stream.
+- The token allowance for the chat template's tool text (1,024, plus 128 for each tool and 64 for each tool call and result). It is an estimate. If real usage is above a hold, the settle counts only the hold.
 - Real Nebius error shapes for quota, rate limit and model-not-found inside a stream.
 - A real disconnect in the deployed Worker and the `waitUntil` settle.
 - Many requests at the same time against the live database.

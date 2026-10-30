@@ -1,14 +1,18 @@
 import "server-only";
 import { ConfigError } from "@/lib/supabase-config";
+import { hasAccount } from "@/lib/auth-identity";
 import { getAuthContext, type AuthContext } from "@/server/auth/session";
+import { SchemaMissingError } from "@/server/db/conversations";
 import { logEvent } from "@/server/log";
 import { isSameOrigin } from "./request";
-import { errorResponse, newRequestId, notConfigured, unauthorized } from "./responses";
+import { accountRequired, errorResponse, newRequestId, notConfigured, unauthorized } from "./responses";
 
 interface RouteOptions {
   route: string;
   /** Reject browser requests from other origins (use for state-changing methods). */
   sameOrigin?: boolean;
+  /** Refuse trial users. For actions that need a permanent account, such as connecting another account. */
+  requireAccount?: boolean;
 }
 
 /**
@@ -39,11 +43,15 @@ export async function withAuthenticatedRoute(
     }
     const auth = await getAuthContext();
     if (!auth) return finish(unauthorized(requestId));
+    if (options.requireAccount && !hasAccount(auth)) return finish(accountRequired(requestId));
     return finish(await handler({ auth, requestId }));
   } catch (error) {
     if (error instanceof ConfigError) {
       logEvent("error", "config_missing", { requestId, route: options.route, missing: error.missing.join(",") });
       return finish(notConfigured(requestId));
+    }
+    if (error instanceof SchemaMissingError) {
+      logEvent("error", "schema_missing", { requestId, route: options.route });
     }
     logEvent("error", "unhandled_route_error", {
       requestId,

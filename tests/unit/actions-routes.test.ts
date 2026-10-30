@@ -3,16 +3,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuthContext } from "@/server/auth/session";
 import type { Embedder } from "@/server/assistant/embed";
+import { actionPayloadSchema } from "@/lib/schemas";
+import { RepositoryError } from "@/server/db/conversations";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
-import { executeAction } from "@/server/actions/execute";
-import type { ActionPayload } from "@/types/api";
 import { ProviderError } from "@/server/providers/errors";
 import { EMBEDDING_MODEL } from "@/server/providers/nebius/embeddings";
-import { TEST_SPEND_CAPS, testRouting } from "../support/fakes";
+import { FakeSpend, TEST_SPEND_CAPS, testEmbedder, testRouting } from "../support/fakes";
+import { WriteFaults, describeCase, sweepWriteFaults, type SweepCase } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/server/config", () => ({ getAssistantConfig: vi.fn(), getSiteUrl: () => "http://localhost:3000" }));
-vi.mock("@/server/assistant/deps", () => ({ createEmbedderForRequest: vi.fn() }));
+/** Work passed to waitUntil. Tests await it, as the Workers runtime would keep it alive. */
+const { pendingWork } = vi.hoisted(() => ({ pendingWork: [] as Promise<unknown>[] }));
+vi.mock("@/server/assistant/deps", () => ({
+  createEmbedderForRequest: vi.fn(),
+  waitUntil: (work: Promise<unknown>) => {
+    pendingWork.push(work);
+  },
+}));
 
 const { getAuthContext } = await import("@/server/auth/session");
 const { getAssistantConfig } = await import("@/server/config");
@@ -32,9 +40,14 @@ const SECRET_MEMORY = "Lives in Leeds with a dog";
 // ---------------------------------------------------------------------------
 // A small in-memory stand-in for the Supabase query builder. It runs the real
 // repositories and applies `eq`, `order`, `limit`, `select` (only the listed
-// columns, like PostgREST), `single` and `maybeSingle`. Tests can make inserts
-// fail for one table, and can run code just before an update (to simulate a
-// second request that wins a race).
+// columns, like PostgREST), `single` and `maybeSingle`.
+//
+// `rpc("decide_action_proposal")` follows the contract of the database
+// function in the migration: the same outcomes, the same claim on "proposed"
+// rows of the session user, and "failed" with a code when the insert fails.
+// The SQL itself is tested against a real Postgres (decision 0009). Tests can
+// make an insert fail for one table, make the call itself fail, and run code
+// just before the claim (to simulate a second request that wins a race).
 // ---------------------------------------------------------------------------
 
 type Row = Record<string, unknown>;
@@ -47,10 +60,15 @@ class FakeDb {
     reminders: [],
     memories: [],
   };
-  /** When set, every insert into this table returns an error. */
+  /** When set, every insert into this table fails (also inside the decision function). */
   failInsertInto: string | null = null;
-  /** Runs once, just before the next update on any table. */
+  /** Runs once, just before the next update on any table or the next claim. */
   beforeNextUpdate: (() => void) | null = null;
+  /** When set, the next rpc call returns this error (for example a lost connection). */
+  failRpc: { message: string } | null = null;
+  /** The session user, as auth.uid() in the database. */
+  uid: string | null = null;
+  rpcCalls: { name: string; args: Row }[] = [];
   private seq = 0;
 
   nextTimestamp(): string {
@@ -60,6 +78,80 @@ class FakeDb {
 
   from(table: string): FakeQuery {
     return new FakeQuery(this, table);
+  }
+
+  /** Every insert and update goes through here, so a test can make one fail. */
+  async write(_table: string, run: () => FakeResult): Promise<FakeResult> {
+    return run();
+  }
+
+  async rpc(name: string, args: Row): Promise<FakeResult> {
+    this.rpcCalls.push({ name, args });
+    if (this.failRpc) return { data: null, error: this.failRpc };
+    if (name !== "decide_action_proposal") return { data: null, error: { message: "unknown function" } };
+    return { data: this.decide(args.p_id as string, args.p_decision as string, args.p_payload as Row | null), error: null };
+  }
+
+  private decide(id: string, decision: string, payload: Row | null): Row {
+    const answer = (outcome: string, row: Row | null) => {
+      if (!row) return { outcome, proposal: null };
+      const proposal = { ...row };
+      delete proposal.user_id;
+      return { outcome, proposal };
+    };
+    const row = this.tables.action_proposals!.find((r) => r.id === id && r.user_id === this.uid) ?? null;
+    if (!row) return answer("not_found", null);
+    if (row.status !== "proposed") return answer("already_decided", row);
+    if (!["approve", "reject"].includes(decision) || (decision === "reject" && payload)) return answer("invalid", row);
+
+    const claim = (): boolean => {
+      const hook = this.beforeNextUpdate;
+      this.beforeNextUpdate = null;
+      hook?.();
+      return row.status === "proposed";
+    };
+
+    if (decision === "reject") {
+      if (!claim()) return answer("already_decided", row);
+      Object.assign(row, { status: "rejected", decided_at: this.nextTimestamp(), decided_by_function: true });
+      return answer("rejected", row);
+    }
+
+    if (payload && payload.kind !== row.kind) return answer("kind_mismatch", row);
+    const parsed = actionPayloadSchema.safeParse(payload ?? row.payload);
+    if (!parsed.success || parsed.data.kind !== row.kind) return answer("invalid", row);
+    if (!claim()) return answer("already_decided", row);
+    Object.assign(row, { status: "approved", decided_at: this.nextTimestamp(), payload: parsed.data, decided_by_function: true });
+
+    const action = parsed.data;
+    const table = action.kind === "create_task" ? "tasks" : action.kind === "create_reminder" ? "reminders" : "memories";
+    if (this.failInsertInto === table) {
+      Object.assign(row, { status: "failed", result: { error: "execution_failed", code: "23514" } });
+      return answer("failed", row);
+    }
+    const newId = randomUUID();
+    const base = { id: newId, user_id: this.uid, mode: action.mode, created_at: this.nextTimestamp() };
+    if (action.kind === "create_task") {
+      this.tables.tasks!.push({ ...base, title: action.title, done: false });
+      row.result = { taskId: newId };
+    } else if (action.kind === "create_reminder") {
+      this.tables.reminders!.push({ ...base, title: action.title, due_at: action.dueAt, status: "scheduled", proposal_id: id });
+      row.result = { reminderId: newId };
+    } else if (action.kind === "save_memory") {
+      this.tables.memories!.push({
+        ...base,
+        content: action.content,
+        status: "active",
+        source: "assistant",
+        source_message_id: null,
+        embedding: null,
+        embedding_model: null,
+        updated_at: base.created_at,
+      });
+      row.result = { memoryId: newId };
+    }
+    row.status = "executed";
+    return answer("executed", row);
   }
 }
 
@@ -122,7 +214,8 @@ class FakeQuery implements PromiseLike<FakeResult> {
     onFulfilled?: ((value: FakeResult) => T1 | PromiseLike<T1>) | null,
     onRejected?: ((reason: unknown) => T2 | PromiseLike<T2>) | null,
   ): Promise<T1 | T2> {
-    return Promise.resolve(this.execute()).then(onFulfilled, onRejected);
+    const result = this.op === "select" ? Promise.resolve(this.execute()) : this.db.write(this.table, () => this.execute());
+    return result.then(onFulfilled, onRejected);
   }
 
   private project(row: Row): Row {
@@ -194,6 +287,7 @@ let embed: ReturnType<typeof vi.fn<(texts: string[], signal?: AbortSignal) => Pr
 let consoleLines: string[];
 
 function signInAs(userId: string | null) {
+  db.uid = userId;
   vi.mocked(getAuthContext).mockResolvedValue(
     userId ? ({ userId, email: `${userId}@example.com`, supabase: db as unknown as SupabaseClient } satisfies AuthContext) : null,
   );
@@ -213,8 +307,15 @@ function plainRequest(url: string, method = "GET", headers: Record<string, strin
 
 const params = (id: string) => ({ params: Promise.resolve({ id }) });
 
-const decide = (id: string, body: unknown, headers: Record<string, string> = {}) =>
-  decisionRoute.POST(jsonRequest(`http://localhost/api/actions/${id}/decision`, "POST", body, headers), params(id));
+/** Sends a decision, then waits for any work the route passed to waitUntil. */
+async function decide(id: string, body: unknown, headers: Record<string, string> = {}) {
+  const response = await decisionRoute.POST(
+    jsonRequest(`http://localhost/api/actions/${id}/decision`, "POST", body, headers),
+    params(id),
+  );
+  await Promise.all(pendingWork.splice(0));
+  return response;
+}
 
 const taskPayload = (title = "Pay the invoice") => ({ kind: "create_task" as const, mode: "personal" as const, title });
 const reminderPayload = () => ({ kind: "create_reminder" as const, mode: "work" as const, title: "Call the supplier", dueAt: DUE });
@@ -251,6 +352,7 @@ function logEvents(): Row[] {
 }
 
 beforeEach(() => {
+  pendingWork.length = 0;
   db = new FakeDb();
   consoleLines = [];
   for (const level of ["info", "warn", "error"] as const) {
@@ -396,6 +498,7 @@ describe("POST /api/actions/:id/decision: ownership and stored payloads", () => 
   });
 });
 
+
 describe("POST /api/actions/:id/decision: approve", () => {
   it("creates a task once and returns the executed proposal with the task ID", async () => {
     signInAs(ALICE);
@@ -408,7 +511,18 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(rowsOf("tasks")).toHaveLength(1);
     expect(task).toMatchObject({ mode: "personal", title: "Pay the invoice", done: false });
     expect(body).toMatchObject({ id: row.id, status: "executed", result: { taskId: task.id }, decidedAt: expect.any(String) });
+    expect(body).not.toHaveProperty("user_id");
+    expect(body.verified).toBe(true);
     expect(storedProposal(row.id as string)).toMatchObject({ status: "executed", result: { taskId: task.id } });
+  });
+
+  it("sends one call to the database function, with no user ID", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, taskPayload());
+    await decide(row.id as string, { decision: "approve" });
+    expect(db.rpcCalls).toEqual([
+      { name: "decide_action_proposal", args: { p_id: row.id, p_decision: "approve", p_payload: null } },
+    ]);
   });
 
   it("creates a reminder once, linked to the proposal", async () => {
@@ -423,7 +537,7 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect((await response.json()).result).toEqual({ reminderId: reminder.id });
   });
 
-  it("saves a memory as active from the assistant, with its vector", async () => {
+  it("saves a memory as active from the assistant, then adds its vector", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, memoryPayload());
     const response = await decide(row.id as string, { decision: "approve" });
@@ -443,7 +557,7 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect((await response.json()).result).toEqual({ memoryId: memory.id });
   });
 
-  it("saves the memory without a vector when the provider fails, and still counts it as executed", async () => {
+  it("keeps the memory without a vector when the provider fails, and still counts it as executed", async () => {
     signInAs(ALICE);
     embed.mockRejectedValueOnce(new ProviderError("nebius", "unavailable"));
     const row = seedProposal(ALICE, memoryPayload());
@@ -454,6 +568,64 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(storedProposal(row.id as string)?.status).toBe("executed");
   });
 
+  it("still answers 200 when the embedding settings are missing, because the memory is already saved", async () => {
+    signInAs(ALICE);
+    vi.mocked(getAssistantConfig).mockImplementationOnce(() => {
+      throw new Error("missing settings");
+    });
+    const row = seedProposal(ALICE, memoryPayload(SECRET_MEMORY));
+    const response = await decide(row.id as string, { decision: "approve" });
+    expect(response.status).toBe(200);
+    expect(rowsOf("memories")).toHaveLength(1);
+    const warning = consoleLines.find((l) => l.includes('"event":"action_embedding_failed"'));
+    expect(warning).toContain(row.id as string);
+    expect(consoleLines.join("\n")).not.toContain(SECRET_MEMORY);
+  });
+
+  it("answers before the vector is written, and hands the work to waitUntil", async () => {
+    signInAs(ALICE);
+    let release: () => void = () => {};
+    embed.mockImplementationOnce(
+      (texts: string[]) => new Promise((resolve) => (release = () => resolve(texts.map(() => VECTOR)))),
+    );
+    const row = seedProposal(ALICE, memoryPayload());
+    const response = await decisionRoute.POST(
+      jsonRequest(`http://localhost/api/actions/${row.id}/decision`, "POST", { decision: "approve" }),
+      params(row.id as string),
+    );
+    expect(response.status).toBe(200);
+    expect(pendingWork).toHaveLength(1);
+    expect(rowsOf("memories")[0]).toMatchObject({ embedding: null });
+
+    release();
+    await Promise.all(pendingWork.splice(0));
+    expect(rowsOf("memories")[0]).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL });
+  });
+
+  it("does not let a late vector replace the vector of text the user changed meanwhile", async () => {
+    signInAs(ALICE);
+    let release: () => void = () => {};
+    embed.mockImplementationOnce(
+      (texts: string[]) => new Promise((resolve) => (release = () => resolve(texts.map(() => VECTOR)))),
+    );
+    const row = seedProposal(ALICE, memoryPayload("Prefers tea"));
+    const response = await decisionRoute.POST(
+      jsonRequest(`http://localhost/api/actions/${row.id}/decision`, "POST", { decision: "approve" }),
+      params(row.id as string),
+    );
+    expect(response.status).toBe(200);
+
+    // The user edits the memory before the first vector arrives. The edit stores its own vector.
+    const memory = rowsOf("memories", ALICE)[0] as Row;
+    Object.assign(memory, { content: "Prefers coffee", embedding: "[0.9]", embedding_model: EMBEDDING_MODEL });
+
+    release();
+    await Promise.all(pendingWork.splice(0));
+    expect(rowsOf("memories", ALICE)[0]).toMatchObject({ content: "Prefers coffee", embedding: "[0.9]" });
+    expect(consoleLines.some((l) => l.includes('"event":"action_embedding_skipped"'))).toBe(true);
+    expect(consoleLines.join("\n")).not.toContain("Prefers");
+  });
+
   it("does not read the embedding settings for a task", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
@@ -462,16 +634,17 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(embed).not.toHaveBeenCalled();
   });
 
-  it("uses the edited values when the user changes the payload before approving", async () => {
+  it("sends the edited values and stores them as the proposal payload", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload("Pay the invoice"));
     const response = await decide(row.id as string, {
       decision: "approve",
-      payload: taskPayload("Pay the invoice today"),
+      payload: taskPayload("  Pay the invoice today  "),
     });
     expect(response.status).toBe(200);
+    expect(db.rpcCalls[0]?.args.p_payload).toEqual(taskPayload("Pay the invoice today"));
     expect(rowsOf("tasks", ALICE)[0]).toMatchObject({ title: "Pay the invoice today" });
-    expect(logEvents().find((e) => e.event === "executed")?.detail).toMatchObject({ edited: true, kind: "create_task" });
+    expect((await response.json()).payload).toEqual(taskPayload("Pay the invoice today"));
   });
 
   it("runs an action once, and a second approval gets 409 without running it again", async () => {
@@ -485,10 +658,9 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(rowsOf("tasks")).toHaveLength(1);
   });
 
-  it("runs nothing when the conditional update finds the proposal already decided", async () => {
+  it("runs nothing when another decision claims the proposal first", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
-    // Another request decides the proposal after this one has read it.
     db.beforeNextUpdate = () => {
       row.status = "rejected";
     };
@@ -496,7 +668,6 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(response.status).toBe(409);
     expect(storedProposal(row.id as string)?.status).toBe("rejected");
     expect(rowsOf("tasks")).toHaveLength(0);
-    expect(logEvents().some((e) => e.event === "approved" || e.event === "executed")).toBe(false);
   });
 });
 
@@ -511,7 +682,6 @@ describe("POST /api/actions/:id/decision: reject", () => {
     expect(rowsOf("tasks")).toHaveLength(0);
     expect(rowsOf("reminders")).toHaveLength(0);
     expect(rowsOf("memories")).toHaveLength(0);
-    expect(logEvents().map((e) => e.event)).toEqual(["rejected"]);
   });
 
   it("answers 409 for a second decision after a reject, and does not approve it", async () => {
@@ -525,65 +695,157 @@ describe("POST /api/actions/:id/decision: reject", () => {
   });
 });
 
+describe("POST /api/actions/:id/decision: an older row with a payload that cannot be shown", () => {
+  it("answers 200 with the ID and status after a reject, not 500", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, { kind: "save_memory", mode: "personal", content: "x" }, { kind: "create_task" });
+    const response = await decide(row.id as string, { decision: "reject" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: row.id, status: "rejected" });
+    expect(storedProposal(row.id as string)?.status).toBe("rejected");
+  });
+
+  it("never runs it: an approval answers 404 and changes nothing", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, { kind: "save_memory", mode: "personal", content: "x" }, { kind: "create_task" });
+    expect((await decide(row.id as string, { decision: "approve" })).status).toBe(404);
+    expect(storedProposal(row.id as string)?.status).toBe("proposed");
+    expect(rowsOf("tasks")).toHaveLength(0);
+  });
+});
+
 describe("POST /api/actions/:id/decision: failures", () => {
-  it("marks the proposal failed and answers 502 when the action cannot run", async () => {
+  it("answers 502 when the database records the action as failed", async () => {
     signInAs(ALICE);
     db.failInsertInto = "tasks";
-    const row = seedProposal(ALICE, taskPayload());
+    const row = seedProposal(ALICE, taskPayload(SECRET_TITLE));
     const response = await decide(row.id as string, { decision: "approve" });
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({
       error: { code: "internal_error", message: "The action could not be completed." },
     });
 
-    expect(storedProposal(row.id as string)).toMatchObject({ status: "failed", result: { error: "execution_failed" } });
-    expect(logEvents().map((e) => e.event)).toEqual(["approved", "failed"]);
-    expect(consoleLines.some((l) => l.includes('"event":"action_execution_failed"'))).toBe(true);
+    expect(storedProposal(row.id as string)).toMatchObject({
+      status: "failed",
+      result: { error: "execution_failed", code: "23514" },
+    });
+    const line = consoleLines.find((l) => l.includes('"event":"action_execution_failed"'));
+    expect(line).toContain('"kind":"create_task"');
+    expect(line).toContain('"code":"23514"');
+    expect(consoleLines.join("\n")).not.toContain(SECRET_TITLE);
+    expect((await decide(row.id as string, { decision: "approve" })).status).toBe(409);
   });
 
-  it("still returns success when the action-log write fails, and warns without the event text", async () => {
+  it("answers 500 and changes nothing when the database call fails", async () => {
     signInAs(ALICE);
-    db.failInsertInto = "action_log";
+    db.failRpc = { message: "connection lost" };
     const row = seedProposal(ALICE, taskPayload());
     const response = await decide(row.id as string, { decision: "approve" });
-    expect(response.status).toBe(200);
-    expect(storedProposal(row.id as string)?.status).toBe("executed");
-    expect(rowsOf("tasks")).toHaveLength(1);
-
-    const warnings = consoleLines.filter((l) => l.includes('"event":"action_log_failed"'));
-    expect(warnings).toHaveLength(2);
-    expect(warnings.some((l) => l.includes('"actionEvent":"executed"'))).toBe(true);
-    expect(warnings.some((l) => l.includes('"actionEvent":"approved"'))).toBe(true);
+    expect(response.status).toBe(500);
+    expect(storedProposal(row.id as string)?.status).toBe("proposed");
+    expect(rowsOf("tasks")).toHaveLength(0);
   });
 });
 
-describe("action log content", () => {
-  it("never writes task, reminder or memory text to the log or to the logger", async () => {
+describe("POST /api/actions/:id/decision when one write fails", () => {
+  const kinds = [
+    ["create_task", taskPayload, "tasks"],
+    ["create_reminder", reminderPayload, "reminders"],
+    ["save_memory", () => memoryPayload(), "memories"],
+  ] as const;
+
+  let spend: FakeSpend;
+
+  /** Fresh fakes with the real budgeted embedder for a saved memory. Every database and spend write is counted. */
+  function arm(faults: WriteFaults) {
+    db = new FakeDb();
+    spend = new FakeSpend();
+    signInAs(ALICE);
+    faults.wrap(db, ["rpc", "write"], {
+      label: "db",
+      detail: (_method, args) => String(args[0]),
+      failWith: (error) => ({ data: null, error: { message: error.message } }),
+    });
+    faults.wrap(spend, ["reserve", "settle"]);
+    vi.mocked(createEmbedderForRequest).mockReturnValue(testEmbedder(spend));
+  }
+
+  /** Approve once, then approve again after an error, as the user would. `decide` waits for the work after the response. */
+  async function approveScenario(payload: Row, table: string, faults: WriteFaults, sweepCase: SweepCase) {
+    const at = describeCase(sweepCase);
+    arm(faults);
+    const id = seedProposal(ALICE, payload).id as string;
+
+    const first = await decide(id, { decision: "approve" });
+    faults.disarm();
+    const afterFirst = storedProposal(id)!.status;
+    expect(afterFirst, `${at}: no in-between status`).not.toBe("approved");
+    expect(rowsOf(table), `${at}: the stored outcome matches the effect`).toHaveLength(afterFirst === "executed" ? 1 : 0);
+    const spendFaults = faults.fired.filter((f) => f.label.startsWith("FakeSpend")).length;
+    expect(spend.reservations.filter((r) => r.settled === null).length, `${at}: open holds`).toBeLessThanOrEqual(spendFaults);
+    if (first.status === 200) {
+      expect(afterFirst, at).toBe("executed");
+      return;
+    }
+    expect([500, 502], at).toContain(first.status);
+
+    const retry = await decide(id, { decision: "approve" });
+    expect(retry.status, `${at}: retry`).toBe(afterFirst === "proposed" ? 200 : 409);
+    expect(storedProposal(id)!.status, at).toBe(afterFirst === "proposed" ? "executed" : afterFirst);
+    expect(rowsOf(table), `${at}: no duplicate on retry`).toHaveLength(afterFirst === "failed" ? 0 : 1);
+  }
+
+  it.each(kinds)("%s: never leaves a proposal approved or a false outcome, for every write, up to two faults", async (kind, payload, table) => {
+    const cases = await sweepWriteFaults((faults, sweepCase) => approveScenario(payload(), table, faults, sweepCase));
+    const labels = new Set(cases.map((c) => c.at(-1)!.label));
+    expect(labels).toContain("db.rpc:decide_action_proposal");
+    if (kind === "save_memory") {
+      for (const label of ["FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]) expect(labels).toContain(label);
+    }
+  });
+
+  it("PR #12 case: the result write is lost after the task was created, and a retry runs nothing", async () => {
+    const faults = new WriteFaults().fail("lost", 1);
+    await approveScenario(taskPayload(), "tasks", faults, [{ step: 1, fault: "lost", label: "db.rpc:decide_action_proposal" }]);
+    expect(faults.fired.map((f) => f.label)).toEqual(["db.rpc:decide_action_proposal"]);
+  });
+
+  it("a saved memory keeps its executed result when the vector write fails after the response", async () => {
+    const faults = new WriteFaults().fail("refused", 4);
+    arm(faults);
+    const id = seedProposal(ALICE, memoryPayload()).id as string;
+
+    expect((await decide(id, { decision: "approve" })).status).toBe(200);
+    expect(faults.calls).toEqual(["db.rpc:decide_action_proposal", "FakeSpend.reserve", "FakeSpend.settle", "db.write:memories"]);
+    expect(faults.fired.map((f) => f.label)).toEqual(["db.write:memories"]);
+    expect(storedProposal(id)!.status).toBe("executed");
+    expect(rowsOf("memories")).toEqual([expect.objectContaining({ status: "active", embedding: null })]);
+    expect(consoleLines.some((l) => l.includes('"event":"action_embedding_failed"'))).toBe(true);
+  });
+});
+
+describe("privacy", () => {
+  it("never writes task, reminder or memory text to the logger", async () => {
     signInAs(ALICE);
     const task = seedProposal(ALICE, taskPayload(SECRET_TITLE));
     const memory = seedProposal(ALICE, memoryPayload(SECRET_MEMORY));
+    embed.mockRejectedValueOnce(new ProviderError("nebius", "unavailable"));
     await decide(task.id as string, { decision: "approve" });
     await decide(memory.id as string, { decision: "approve" });
 
-    const logText = JSON.stringify(logEvents());
-    expect(logText).not.toContain(SECRET_TITLE);
-    expect(logText).not.toContain(SECRET_MEMORY);
     expect(consoleLines.join("\n")).not.toContain(SECRET_TITLE);
     expect(consoleLines.join("\n")).not.toContain(SECRET_MEMORY);
   });
 
-  it("logs IDs, the kind and booleans on executed", async () => {
+  it("writes no action-log rows: the database writes them from triggers", async () => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
     await decide(row.id as string, { decision: "approve" });
-    const executed = logEvents().find((e) => e.event === "executed");
-    expect(executed).toMatchObject({ user_id: ALICE, proposal_id: row.id });
-    expect(executed?.detail).toMatchObject({ proposalId: row.id, kind: "create_task", edited: false });
-    expect(executed?.detail).toHaveProperty("taskId", rowsOf("tasks")[0]?.id);
+    expect(logEvents()).toHaveLength(0);
   });
 });
 
-describe("createProposal and finish", () => {
+describe("the proposal repository", () => {
   const repo = () => createActionProposalRepository(db as unknown as SupabaseClient);
 
   it("stores a valid proposal as proposed", async () => {
@@ -606,25 +868,34 @@ describe("createProposal and finish", () => {
     expect(db.tables.action_proposals).toHaveLength(0);
   });
 
-  it("finish refuses a proposal that is not approved", async () => {
-    const row = seedProposal(ALICE, taskPayload());
-    await expect(repo().finish(ALICE, row.id as string, "executed", { taskId: "x" })).rejects.toThrow();
-    expect(storedProposal(row.id as string)?.status).toBe("proposed");
+  it("returns the stored outcome when another decision came first", async () => {
+    db.uid = ALICE;
+    const row = seedProposal(ALICE, taskPayload(), {
+      status: "executed",
+      result: { taskId: MISSING_ID },
+      decided_at: "2026-10-19T10:00:00.000Z",
+    });
+    const answer = await repo().decide(row.id as string, "approve");
+    expect(answer.outcome).toBe("already_decided");
+    expect(answer.proposal).toMatchObject({ id: row.id, status: "executed", result: { taskId: MISSING_ID } });
   });
-});
 
-describe("executeAction", () => {
-  it("throws for a kind outside the three approved kinds, and changes nothing", async () => {
-    const createTask = vi.fn();
-    const createReminder = vi.fn();
-    const createMemory = vi.fn();
-    const outsideKind = { kind: "send_email", mode: "work", to: "someone@example.com" } as unknown as ActionPayload;
+  it("gives the same answer for another user's proposal and a missing one", async () => {
+    db.uid = ALICE;
+    const bobs = seedProposal(BOB, taskPayload());
+    expect(await repo().decide(bobs.id as string, "approve")).toEqual({ outcome: "not_found", proposal: null, row: null });
+    expect(await repo().decide(MISSING_ID, "approve")).toEqual({ outcome: "not_found", proposal: null, row: null });
+  });
 
-    await expect(
-      executeAction(ALICE, randomUUID(), outsideKind, { tasks: { createTask }, reminders: { createReminder }, memories: { createMemory } }),
-    ).rejects.toThrow("This kind of action is not supported.");
-    expect(createTask).not.toHaveBeenCalled();
-    expect(createReminder).not.toHaveBeenCalled();
-    expect(createMemory).not.toHaveBeenCalled();
+  it.each([
+    ["an error", { data: null, error: { message: "boom" } }],
+    ["an unknown outcome", { data: { outcome: "maybe", proposal: null }, error: null }],
+    ["no data", { data: null, error: null }],
+    ["an executed row that does not parse", { data: { outcome: "executed", proposal: { id: "x" } }, error: null }],
+  ])("throws RepositoryError for %s", async (_label, reply) => {
+    const client = { rpc: async () => reply } as unknown as SupabaseClient;
+    await expect(createActionProposalRepository(client).decide(MISSING_ID, "approve")).rejects.toThrow(
+      new RepositoryError("decideActionProposal"),
+    );
   });
 });

@@ -13,5 +13,7 @@ export default defineConfig({
     environment: "node",
     include: ["tests/unit/**/*.test.ts", "tests/integration/**/*.test.ts"],
     restoreMocks: true,
+    // The database gate starts PGlite and applies every migration in a hook; with test files in parallel this can take more than 10 s.
+    hookTimeout: 60_000,
   },
 });

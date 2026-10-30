@@ -1,15 +1,9 @@
 import type { ChatStreamEvent } from "@/types/api";
 
-const EVENT_TYPES = new Set(["start", "search", "delta", "done", "error"]);
+const EVENT_TYPES = new Set(["start", "search", "status", "delta", "done", "title", "error"]);
 
-function isChatStreamEvent(value: unknown): value is ChatStreamEvent {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    typeof value.type === "string" &&
-    EVENT_TYPES.has(value.type)
-  );
+function hasType(value: unknown): value is { type: string } {
+  return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
 }
 
 export class StreamFormatError extends Error {
@@ -34,8 +28,9 @@ export async function* readChatStream(body: ReadableStream<Uint8Array>): AsyncGe
     } catch {
       throw new StreamFormatError();
     }
-    if (!isChatStreamEvent(value)) throw new StreamFormatError();
-    return value;
+    if (!hasType(value)) throw new StreamFormatError();
+    // A newer server can send event types this page does not know yet. Skip them.
+    return EVENT_TYPES.has(value.type) ? (value as ChatStreamEvent) : null;
   };
 
   try {

@@ -5,12 +5,15 @@ import { useState } from "react";
 import { LocalTime, useIsClient } from "@/components/ui/LocalTime";
 import { ApiError, errorMessage } from "@/lib/api-client";
 import { MAX_DOCUMENT_CHARS, MAX_DOCUMENT_TITLE_CHARS } from "@/lib/limits";
+import { RequestKey } from "@/lib/request-key";
 import { MODE_LABELS } from "@/lib/mode";
 import type { DocumentDTO, DocumentMediaType, DocumentStatus, Mode } from "@/types/api";
 import { deleteDocument, fetchDocuments, uploadDocument } from "./api";
 import { DOCUMENT_ACCEPT, MEDIA_TYPE_LABELS, describeFile, fileSizeProblem, textProblem } from "./file";
 
 interface PendingUpload {
+  /** One ID for each file choice, so choosing a file again starts a new action. */
+  choice: string;
   fileName: string;
   title: string;
   mediaType: DocumentMediaType;
@@ -54,6 +57,8 @@ export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initial
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  // One key for the document being added, so a resend after an error cannot add it twice.
+  const [requestKey] = useState(() => new RequestKey());
 
   /** Shows the error, or sends the user to sign in. Returns true when the session is gone. */
   function fail(err: unknown, fallback: string): boolean {
@@ -84,7 +89,9 @@ export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initial
       const text = await file.text();
       const textError = textProblem(text);
       if (textError) setError(textError);
-      else setPending({ fileName: file.name, title: described.title, mediaType: described.mediaType, text });
+      else {
+        setPending({ choice: crypto.randomUUID(), fileName: file.name, title: described.title, mediaType: described.mediaType, text });
+      }
     } catch {
       setError("Could not read this file.");
     } finally {
@@ -111,11 +118,16 @@ export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initial
     setUploading(true);
     setError(null);
     try {
-      const added = await uploadDocument({ mode, title, mediaType: pending.mediaType, text: pending.text });
+      const added = await uploadDocument(
+        { mode, title, mediaType: pending.mediaType, text: pending.text },
+        requestKey.keyFor(JSON.stringify([pending.choice, mode, title])),
+      );
+      requestKey.clear();
       setDocuments((list) => [added, ...list.filter((d) => d.id !== added.id)]);
       setPending(null);
       setStatus(`Added “${added.title}”.`);
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) requestKey.clear();
       if (!fail(err, "Could not add the document.") && mayHaveSaved(err)) void reload();
     } finally {
       setUploading(false);

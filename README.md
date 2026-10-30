@@ -2,7 +2,51 @@
 
 A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, browser dictation, approval cards, a Memory page for memories and documents, "What was sent" under each reply, an action log, reminders, and an installable app for Android. The assistant does not propose actions or use memories in replies yet, and nothing can be connected, automated or paired yet (those parts of Workflows, Connectors and Devices are previews). Unit tests use mocked providers; the database rules were tested against a local Supabase. A few small real Nebius calls checked the token usage and reasoning format (see [decision 0006](docs/decisions/0006-global-spend-guard.md)); a full chat through the live app has not been tested yet. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key is set. A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
+**Status: MVP implementation in progress.** Working: accounts with email or Google sign-in, a no-account trial ("Try P-Dot now"), a streaming chat with opt-in web search, Markdown replies with citation chips, a sources row and place, table, checklist and step cards, conversation history with rename and delete, model-written chat titles, Personal and Work modes, a to-do list, browser dictation, a Memory page for memories and documents, memory and document search in replies, task, reminder and memory proposals as approval cards, "What was sent" under each reply, an action log, reminders, a Google connection (Gmail and Calendar) with a per-message "Use Google" switch to search mail and calendars and propose emails and events, which run once after approval, read-only Notion, Linear and Todoist connectors, phone navigation, and an installable app for Android. Workflows and device pairing are still previews. Unit tests use mocked providers, and the database rules run in an in-memory Postgres gate. On 2026-10-30 the owner's local check script (not in this repo) signed in to the live app, sent a message and got a real reply. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19). A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
+
+
+## Hackathon: Nebius x NVIDIA
+
+P-Dot is entered in the Nebius x NVIDIA Global AI Hackathon, **Personal AI Track**. The project started on 2026-10-09, inside the submission period.
+
+- Live app: https://pdot.iampatelom.com
+- License: Apache 2.0 ([LICENSE](LICENSE))
+
+### How P-Dot uses NVIDIA Nemotron through Nebius Token Factory
+
+Every chat reply is a runtime call to the Token Factory chat completions API (`https://api.tokenfactory.nebius.com/v1`, OpenAI-compatible, streamed). A router picks a model tier for each message without a model call ([`src/server/assistant/router.ts`](src/server/assistant/router.ts)). Each tier tries its models in order ([`src/server/assistant/tiers.ts`](src/server/assistant/tiers.ts), [decision 0007](docs/decisions/0007-model-routing.md)).
+
+| Tier | Models, in order | Used for | Reasoning | Max output tokens |
+| --- | --- | --- | --- | --- |
+| fast | `nvidia/Nemotron-3_5-Lightning`, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/nemotron-3-super-120b-a12b` | Everyday messages | Off | 1,024 |
+| standard | `nvidia/nemotron-3-super-120b-a12b`, `nvidia/Nemotron-3_5-Lightning` | One reasoning signal (planning, analysis, math, code), long messages, long conversations, web search results | Off | 2,048 |
+| heavy | `nvidia/Nemotron-3-Ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b` | Multi-step requests, one reasoning signal in a long message, and "Think harder" | On, 1,024-token budget | 4,096 |
+| vision | `nvidia/Nemotron-3.5-Super-VL` | Image input (router and tier ready; the chat API does not take images yet) | Off | 1,024 |
+
+The executor ([`src/server/assistant/executor.ts`](src/server/assistant/executor.ts)) adds retries with backoff, a move to the next model on 404, a first-token timeout per tier, one deadline per reply, a hedge on the fast tier after 1.5 s, and a circuit breaker. It never switches models after the first visible token. Under each reply, the chat shows the model and the reason (for example "Nemotron 3 Super · multi-step request"), and "What was sent" shows the model ID, the context size, memories, documents, web search use and tokens.
+
+Embeddings for memories and documents use `Qwen/Qwen3-Embedding-8B` on the same Token Factory key (1,024 dimensions), stored in Supabase with pgvector.
+
+Tool calls ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22), [decision 0013](docs/decisions/0013-ai-tools-and-scope.md)): a tool-calling loop runs on the standard tier or above, with `web_search` as the first tool. It runs at most 2 tool steps and a final answer step, and holds spend for each step. Live since [PR #24](https://github.com/PATELOM925/P-Dot/pull/24): `search_documents`, `search_memories`, and the `propose_task`, `propose_reminder` and `save_memory` tools, which become approval cards, and chat titles written by Nemotron. The own-data tools are offered only when the message asks for them, so everyday messages stay on the fast tier. Web search, "Use Google" (Gmail and Calendar, [PR #30](https://github.com/PATELOM925/P-Dot/pull/30)) and the app connectors are per-message switches, and only one of the three can be on for a message.
+
+### Where Token Factory sped up the work
+
+- **One OpenAI-compatible API.** The chat adapter is plain `fetch` with no SDK ([`src/server/providers/nebius/client.ts`](src/server/providers/nebius/client.ts)), so it runs on Cloudflare Workers as is.
+- **One key for the whole family.** Five Nemotron models and an embedding model use the same key and base URL. A fallback chain is a list of model IDs in config, with no new code.
+- **Public prices.** The model catalog with prices let us build the spend guard's price table ([`src/server/providers/nebius/pricing.ts`](src/server/providers/nebius/pricing.ts)) and refuse any model without a price.
+- **Reasoning control per request.** `chat_template_kwargs.enable_thinking` and `thinking_token_budget` let each tier choose reasoning on or off without a different model.
+- **Fast first tokens.** Measured through the executor on 2026-10-19 (small sample): 431 to 467 ms on Lightning, 502 to 530 ms on Super, 559 to 869 ms on Ultra with reasoning (a 200-token reasoning budget for the test).
+
+### Tavily
+
+When the user turns on web search (the "+" menu in chat), the server calls the Tavily Search API ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts)) with basic depth and up to 5 results. Excerpts are cut to 1,200 characters and unsafe URLs are dropped. Results go to Nemotron inside a delimited `<web_search_results>` block marked as untrusted, and the reply lists the sources with links. A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. Tavily credits have their own caps in the spend guard ([decision 0006](docs/decisions/0006-global-spend-guard.md)). Since [PR #22](https://github.com/PATELOM925/P-Dot/pull/22), with the toggle on, Nemotron calls `web_search` as a tool and picks the query itself.
+
+### Other Nebius tools
+
+P-Dot uses Nebius Token Factory only. It does not use Nebius AI Cloud, Serverless Endpoints or Serverless Jobs. The app runs on Cloudflare Workers, with Supabase for auth and Postgres.
+
+To run it yourself, see [Setup](#setup) and [Local development and testing (Docker)](#local-development-and-testing-docker).
+
 
 ## What works today
 
@@ -22,7 +66,7 @@ A personal assistant with a web interface, a Cloudflare Workers backend, Nebius 
 | **What was sent** under each reply | Works for replies saved since context records began; older replies say they have none |
 | **Action log** page | Works: approvals, cancellations, runs and changes to memories, documents and reminders, without their text |
 | **Workflows**: reminders | Works (add, done, reopen, delete); P-Dot does not notify you when one is due yet. Routines are previews |
-| **Connectors** | Built-in tools (to-do list, reminders, memory, documents) show live counts; account connectors are previews |
+| **Connectors** | Built-in tools (to-do list, reminders, memory, documents) show live counts. Google (Gmail and Calendar), Notion, Linear and Todoist connect with one click; the app connectors are read only |
 | **Installable app** (PWA): manifest, service worker, install prompt, notification permission | Works in Chrome on Android and desktop; iPhone users add it to the Home Screen. No push messages are sent yet ([decision 0010](docs/decisions/0010-pwa-and-device-pairing.md)) |
 | **Devices** page | Shows what this browser supports; device pairing is a preview |
 | Daily brief | Preview only |
@@ -48,7 +92,7 @@ Requires Node.js 22.12 or newer.
    npm install
    ```
 
-2. **Create a Supabase project** and apply the schema in [`supabase/migrations/20261014000000_initial_schema.sql`](supabase/migrations/20261014000000_initial_schema.sql), either by pasting it into the Supabase SQL editor or with the Supabase CLI (`supabase link`, then `supabase db push`).
+2. **Create a Supabase project** and apply every migration in [`supabase/migrations/`](supabase/migrations/) in file name order with the Supabase CLI (`supabase link`, then `supabase db push`).
 
 3. **Configure Supabase Auth** (Authentication → URL Configuration and Email Templates):
    - Site URL: your production URL (or `http://localhost:3000` for local work).
@@ -59,7 +103,7 @@ Requires Node.js 22.12 or newer.
 
      The default `{{ .ConfirmationURL }}` templates also work, but only when the link is opened in the same browser that started the flow.
 
-4. **Set environment variables**: copy `.env.example` to `.env.local` and fill it in. You need the Supabase URL and publishable key, a Nebius API key, and a Nebius chat model ID (list available models with `GET https://api.tokenfactory.nebius.com/v1/models`). `TAVILY_API_KEY` is optional. Never use the Supabase secret/service-role key in this app.
+4. **Set environment variables**: copy `.env.example` to `.env.local` and fill it in. You need the Supabase URL and publishable key, a Nebius API key, and a Nebius chat model ID (list available models with `GET https://api.tokenfactory.nebius.com/v1/models`). `TAVILY_API_KEY` is optional. The three `GOOGLE_*` values are optional; see "One-time setup", item 7, in `docs/DEPLOYMENT.md`. Never use the Supabase secret/service-role key in this app.
 
 5. **Run the app**
 
@@ -138,7 +182,7 @@ Open `http://localhost:3000` (not `127.0.0.1`, so cookies and email links share 
 | Hover a conversation: pencil, then Enter | Renamed in the sidebar; the new name is stored |
 | **Today** → add a task, tick it, delete it | Persists after a reload; Work and Personal lists are separate |
 | Microphone button, allow the browser prompt, speak | "Listening…" with the words being heard, then English text in the message box (Chrome/Edge/Safari; button is disabled elsewhere). Esc or the button stops; Send stops it too |
-| **Workflows** and **Connectors** pages | Reminders work on Workflows; Connectors shows live counts for the built-in tools; routines and account Connect buttons are disabled previews |
+| **Workflows** and **Connectors** pages | Reminders work on Workflows; routines are disabled previews. Connectors shows live counts for the built-in tools and Connect and Disconnect for Google, Notion, Linear and Todoist |
 | Insert a row into `action_proposals` for your user (Studio → SQL Editor, `status = 'proposed'`, with a `conversation_id`), then open that conversation | An approval card appears under the reply of the latest turn before the row was made, and the Today tab shows the count. Approve, Edit then approve, and Cancel each change its status; approved tasks and reminders appear on Today and Workflows; each decision appears on **Action log**; after a reload, decided ones show as short lines |
 | Insert a row into `memories` with `status = 'proposed'`, `source = 'assistant'` and `source_message_id` set to a message in that conversation | A "Remember this?" card appears under that turn's reply. Keep moves it to Remembered on the Memory page; Don't keep deletes it |
 | **Memory** → add, keep, edit, move to the other mode, delete | Persists after a reload. Without a Nebius key, adding or changing text says the embedding service is not configured |
@@ -173,6 +217,8 @@ npm test
 
 The 10 tests in `tests/integration/rls.test.ts` should then run instead of being skipped. One checks the model route columns on messages. They also reserve and give back a few micro-dollars through the spend guard functions.
 
+`npm test` also runs the database gate (`tests/integration/sql-gate.test.ts`) without any setup. It applies every migration to an in-memory Postgres (PGlite with pgvector) that has stand-ins for the Supabase roles, `auth.uid()` and the Supabase default grants, then checks grants and RLS as `anon` and as two signed-in users, and reads stored rows through the app's own parsers. `tests/integration/frozen-migrations.test.ts` fails if a migration is not listed in `tests/integration/frozen-migrations.sha256` or no longer matches its hash. The pull request that adds a migration adds its hash. After merge, never edit the file: add a new migration.
+
 ### Housekeeping
 
 | Command | Effect |
@@ -191,9 +237,9 @@ The 10 tests in `tests/integration/rls.test.ts` should then run instead of being
 | `npm run deploy` | Owner only. Build for Cloudflare, check that no secret is in the bundle, and deploy (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)) |
 | `npm run upload` | Owner only. Same as deploy, but uploads a new version without sending traffic to it |
 | `npm run check:worker-env` | Check the last OpenNext build for secret values copied from `.env` files |
-| `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules) |
+| `npm run lint` | ESLint (Next.js core-web-vitals + TypeScript rules), then `scripts/check-changelog.mjs` on the Unreleased entries |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Vitest unit tests; the live RLS integration test is skipped unless configured |
+| `npm test` | Vitest unit tests and the database gate (in-memory Postgres, no setup); the live RLS integration test is skipped unless configured |
 | `npm run check` | Lint, type-check, and tests |
 
 To run the row-level security test against a **test** Supabase project, set the `SUPABASE_TEST_*` variables listed at the top of [`tests/integration/rls.test.ts`](tests/integration/rls.test.ts).
@@ -216,7 +262,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `GET /api/memories?mode=&status=`, `POST /api/memories`, `PATCH`/`DELETE /api/memories/:id` | Memories the user can see, edit and delete ([decision 0009](docs/decisions/0009-memory-documents-actions.md)) |
 | `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | Plain text and Markdown documents, split and embedded on upload |
 | `GET /api/actions?status=`, `POST /api/actions/:id/decision` | Action proposals; `{ decision: "approve" \| "reject", payload? }` runs an approved action once |
-| `GET /api/action-log` | The append-only action log (IDs, kinds and counts only) |
+| `GET /api/action-log` | The action log, written only by the database (IDs, kinds, modes, counts and flags only) |
 | `GET /api/reminders?mode=`, `POST /api/reminders`, `PATCH`/`DELETE /api/reminders/:id` | Reminders (no delivery yet) |
 | `GET /api/messages/:id/context` | "What was sent" for one assistant reply (404 when it has no record) |
 | `GET /api/health` | Liveness and configured integrations (booleans only) |
@@ -235,10 +281,10 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `src/server/` | Server-only code: config, auth session, Supabase repositories, assistant orchestration, Nebius/Tavily adapters, HTTP helpers |
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
 | `supabase/migrations/` | Database schema, RLS policies, the quota function, the modes/rename/tasks migration, and the global spend guard |
-| `tests/` | Unit tests (`unit/`), live Supabase RLS test (`integration/`), shared fakes (`support/`) |
+| `tests/` | Unit tests (`unit/`), the database gate and the live Supabase RLS test (`integration/`), shared fakes (`support/`) |
 | `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
 | `CHANGELOG.md` | What changed, the problem, and how it was resolved, for each pull request |
-| `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle |
+| `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle. `check-changelog.mjs` and `changelog-rules.mjs`: changelog entry check |
 | `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the indigo-to-violet accent); the app icons in `public/icons/` use the same mark |
 
 ## Deploying to Cloudflare
@@ -259,6 +305,8 @@ Done and passing locally: lint, type-check, the unit tests (request validation, 
 
 Deployed and checked on 2026-10-19: `/api/health` (auth configured, inference not configured), `/`, `/login`, `/signup` return 200, `/chat` redirects to `/login` when signed out, and `POST /api/chat` without a session returns 401. No CPU-limit or runtime errors in the Worker logs.
 
+Checked on 2026-10-30: `/api/health` reports auth, inference and web search configured.
+
 Spend guard SQL (2026-10-19): the migration was run on an in-memory Postgres (PGlite) with stand-ins for the Supabase roles and `auth.uid()`. Checked: hold and settle, settle once, no settle by another user, no negative or above-hold settle, parameter bounds, day, total and per-user caps, no direct table access for `anon` or `authenticated`. Not checked there: many requests at the same time (row locks).
 
 Real provider checks (2026-10-19): 4 small Nebius calls to `nvidia/nemotron-3-super-120b-a12b` (`max_tokens` at most 300) and the free Tavily usage endpoint. No Tavily search was made. For model routing, about 28 more small calls (`max_tokens` at most 400, under $0.01 in total): the reasoning budget (`thinking_token_budget`) on Super, Ultra and Nano, each tier through the executor, and a 404 for an unknown model ID that moved to the next model. Numbers are in [decision 0007](docs/decisions/0007-model-routing.md).
@@ -267,11 +315,11 @@ Model routing was tested with a fake streaming provider and fake timers: router 
 
 Signed-in walkthrough of the hub screens (2026-10-19, local): in the Claude desktop app's built-in browser (Chromium) against `npm run dev` and a local Supabase with every migration, with a new test account and fixture rows inserted with SQL for what the app cannot create yet (proposals, and a saved reply with its context record). Checked: chat shows only that conversation's approval cards; Approve, Edit then approve (title and due time) and Cancel; a failed run (approving a memory without a Nebius key) shows one clear error; Today's approvals panel, its other-mode hint and the to-do list refreshing after an approval; "What was sent" for a reply with a record, an old reply without one, and a new reply whose record arrives a moment later ("Check again"); memory keep, move and delete, and the "not configured" messages for adding and editing text; the document list, delete, file checks (a PDF and an empty file refused, a `.md` without a MIME type accepted) and the upload error; the action log; reminders (add, done, overdue flag); Connectors counts; the manifest, service worker and offline page; the install button with a stand-in install event; phone width (375 px, no sideways scrolling) and dark mode. The database rows matched each action. Then, for suggestions in chat: cards under the right reply in a two-turn conversation (including one made before its reply was saved), earlier decisions as short lines, "Remember this?" keep, edit (the "not configured" message) and don't keep, and the Today count after decisions in chat and on Today, after a conversation switch and when the tab comes back into view. Dictation: the pages now send `microphone=(self)` and the browser reports the microphone as allowed; a blocked microphone shows the right message; with a stand-in recognizer, the words being heard show while speaking, finished phrases land in the message box within the length limit, Esc stops, Send and switching conversations stop it and drop any later words, and Android listens one phrase per tap. Real speech was not tried (the built-in browser blocks microphone capture). Not checked: a reply from a real model, a successful document upload or memory save (both need the Nebius key), installing on a real Android phone, and granting notification permission.
 
-Not yet done: a real Tavily search, a full chat through the live app, a signed-in browser walkthrough in production, dictation in real browsers, end-to-end tests, Workers Builds (automatic deploys and previews), and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
+Checked on 2026-10-30: a signed-in chat through the live app (demo account) returned a real Nemotron reply, run by the owner's local check script, which is not in this repo. A real-user browser test on 2026-10-30 ran several real Tavily web searches through the live app. Not yet done: a full browser walkthrough of every page in production, dictation in real browsers, end-to-end tests, and production Supabase email setup. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) → One-time setup. After pulling these changes, apply the new migration with `npm run db:start` (new stack) or `npx supabase migration up` (running stack). Provisional limits and behaviors that need review are listed in [decision 0003](docs/decisions/0003-provisional-defaults.md).
 
 ## Usage limits
 
 Two kinds of limit protect the owner's paid credit:
 
 - **Per user:** 30 chat requests each hour (`CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`).
-- **All users together (global spend guard):** Nebius $1.00 each UTC day and $20.00 in total; Tavily 40 credits each UTC day and 800 each month. One user can use at most $0.25 of Nebius and 10 Tavily credits each day. The settings are `NEBIUS_DAILY_CAP_USD`, `NEBIUS_TOTAL_CAP_USD`, `NEBIUS_USER_DAILY_CAP_USD`, `TAVILY_DAILY_CREDITS`, `TAVILY_MONTHLY_CREDITS` and `TAVILY_USER_DAILY_CREDITS`. When the Nebius budget is used up, chat says "P-Dot has reached its daily usage limit. Try again tomorrow." When only the Tavily budget is used up, replies come without web search and say so. Details, and how to change or reset the caps: [decision 0006](docs/decisions/0006-global-spend-guard.md).
+- **All users together (global spend guard):** Nebius $10.00 each UTC day and $25.00 in total (set for the hackathon judging period, inside the free Nebius credits); Tavily 40 credits each UTC day and 800 each month. One user can use at most $0.50 of Nebius and 10 Tavily credits each day. The settings are `NEBIUS_DAILY_CAP_USD`, `NEBIUS_TOTAL_CAP_USD`, `NEBIUS_USER_DAILY_CAP_USD`, `TAVILY_DAILY_CREDITS`, `TAVILY_MONTHLY_CREDITS` and `TAVILY_USER_DAILY_CREDITS`. When the Nebius budget is used up, chat says "P-Dot has reached its daily usage limit. Try again tomorrow." When only the Tavily budget is used up, replies come without web search and say so. Details, and how to change or reset the caps: [decision 0006](docs/decisions/0006-global-spend-guard.md).

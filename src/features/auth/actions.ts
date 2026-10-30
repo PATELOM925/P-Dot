@@ -1,21 +1,20 @@
 "use server";
 
-import { isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { readIdentity } from "@/lib/auth-identity";
 import { emailSchema, newPasswordSchema } from "@/lib/schemas";
 import { ConfigError } from "@/lib/supabase-config";
 import { safeNextPath } from "@/lib/safe-url";
 import { getSiteUrl } from "@/server/config";
 import { createSupabaseServerClient } from "@/server/db/supabase";
 import { logEvent } from "@/server/log";
+import { isOutage, isRateLimit, UNAVAILABLE_MESSAGE } from "./errors";
 import type { AuthFormState } from "./types";
 
 // Auth messages never reveal whether an account exists for an email address.
 
-const UNAVAILABLE: AuthFormState = {
-  error: "The account service is unavailable right now. Please try again later.",
-};
+const UNAVAILABLE: AuthFormState = { error: UNAVAILABLE_MESSAGE };
 const RATE_LIMITED: AuthFormState = { error: "Too many attempts. Please wait a few minutes and try again." };
 
 function field(formData: FormData, name: string): string {
@@ -25,15 +24,6 @@ function field(formData: FormData, name: string): string {
 
 function firstError(error: z.ZodError): string {
   return error.issues[0]?.message ?? "Check the form and try again.";
-}
-
-function isRateLimit(error: { code?: string; status?: number }): boolean {
-  return error.status === 429 || (error.code?.startsWith("over_") ?? false);
-}
-
-/** Network failures and Auth server errors are outages, not bad credentials. */
-function isOutage(error: { status?: number }): boolean {
-  return isAuthRetryableFetchError(error) || !error.status || error.status >= 500;
 }
 
 async function supabaseOrNull() {
@@ -134,9 +124,11 @@ export async function updatePasswordAction(_prev: AuthFormState, formData: FormD
   if (!supabase) return UNAVAILABLE;
 
   const { data: claims } = await supabase.auth.getClaims();
-  if (!claims?.claims?.sub) {
+  const identity = readIdentity(claims?.claims);
+  if (!identity) {
     return { error: "Your reset link has expired. Request a new one from the forgot-password page." };
   }
+  if (identity.isAnonymous) return { error: "A trial has no password. Create an account first." };
 
   const { error } = await supabase.auth.updateUser({ password: parsed.data.password });
   if (error) {
@@ -149,6 +141,26 @@ export async function updatePasswordAction(_prev: AuthFormState, formData: FormD
     return { error: "We could not update your password. Please try again." };
   }
   redirect("/chat");
+}
+
+/**
+ * "Continue with Google" (decision 0014). Supabase stores the PKCE verifier in
+ * a cookie and gives the Google URL; /auth/callback finishes the sign-in. Any
+ * failure gives one message that does not say whether an account exists.
+ */
+export async function signInWithGoogleAction(formData: FormData): Promise<void> {
+  const next = safeNextPath(field(formData, "next"));
+  const supabase = await supabaseOrNull();
+  let url: string | null = null;
+  if (supabase) {
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${getSiteUrl()}/auth/callback?next=${encodeURIComponent(next)}`, skipBrowserRedirect: true },
+    });
+    if (!error && data.url && new URL(data.url).protocol === "https:") url = data.url;
+    else logEvent("warn", "google_sign_in_start_failed", { route: "auth.google" });
+  }
+  redirect(url ?? "/login?error=oauth");
 }
 
 export async function signOutAction(): Promise<void> {

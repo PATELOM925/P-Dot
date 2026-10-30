@@ -22,15 +22,16 @@ function messageColumns(files: string[]): string[] {
       }
     }
     for (const block of sql.matchAll(/alter table public\.messages([\s\S]*?);/g)) {
-      for (const match of block[1]!.matchAll(/add column ([a-z_]+)/g)) columns.push(match[1]!);
+      for (const match of block[1]!.matchAll(/add column (?:if not exists )?([a-z_]+)/g)) columns.push(match[1]!);
     }
   }
   return columns;
 }
 
 const MIGRATIONS = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
-const OLD_COLUMNS = messageColumns(MIGRATIONS.filter((f) => !f.includes("message_routing")));
-const NEW_COLUMNS = messageColumns(MIGRATIONS);
+const ROUTING_MIGRATION = MIGRATIONS.findIndex((f) => f.includes("message_routing"));
+const OLD_COLUMNS = messageColumns(MIGRATIONS.slice(0, ROUTING_MIGRATION));
+const NEW_COLUMNS = messageColumns(MIGRATIONS.slice(0, ROUTING_MIGRATION + 1));
 const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CONVERSATION = "11111111-1111-4111-8111-111111111111";
 
@@ -139,6 +140,9 @@ describe("messages before and after the routing migration", () => {
     );
     expect(NEW_COLUMNS.filter((c) => !OLD_COLUMNS.includes(c)).sort()).toEqual(
       ["model", "model_fallback", "model_tier", "route_reason"].sort(),
+    );
+    expect(messageColumns(MIGRATIONS).filter((c) => !NEW_COLUMNS.includes(c)).sort()).toEqual(
+      ["client_request_hash", "client_request_id", "reply_claim_id", "reply_claimed_at", "reply_to"].sort(),
     );
   });
 

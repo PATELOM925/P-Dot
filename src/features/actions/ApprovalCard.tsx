@@ -8,7 +8,18 @@ import { MAX_MEMORY_CHARS, MAX_REMINDER_TITLE_CHARS, MAX_TASK_CHARS } from "@/li
 import { MODE_LABELS } from "@/lib/mode";
 import type { ActionPayload, ActionProposalDTO, Mode } from "@/types/api";
 import { decideAction } from "./api";
-import { KIND_LABELS, KIND_RESULT_LINKS, fromLocalInputValue, payloadDetails, toLocalInputValue } from "./format";
+import { ExternalActionStatus } from "./ExternalActionStatus";
+import {
+  KIND_LABELS,
+  KIND_RESULT_LINKS,
+  UNCONFIRMED_HINT,
+  failureText,
+  fromLocalInputValue,
+  isExternalKind,
+  isUnconfirmedDone,
+  payloadDetails,
+  toLocalInputValue,
+} from "./format";
 
 interface Draft {
   mode: Mode;
@@ -21,7 +32,7 @@ interface Draft {
 function draftFrom(payload: ActionPayload): Draft {
   return {
     mode: payload.mode,
-    text: payload.kind === "save_memory" ? payload.content : payload.title,
+    text: payload.kind === "save_memory" ? payload.content : payload.kind === "send_email" ? payload.subject : payload.title,
     due: payload.kind === "create_reminder" ? toLocalInputValue(payload.dueAt) : "",
   };
 }
@@ -38,6 +49,9 @@ function payloadFrom(kind: ActionPayload["kind"], draft: Draft): ActionPayload |
       const dueAt = fromLocalInputValue(draft.due);
       return dueAt ? { kind, mode: draft.mode, title: text, dueAt } : "Choose a date and time.";
     }
+    case "send_email":
+    case "create_calendar_event":
+      return "To change this, cancel it and ask P-Dot again.";
   }
 }
 
@@ -45,12 +59,16 @@ const TEXT_LIMITS: Record<ActionPayload["kind"], number> = {
   create_task: MAX_TASK_CHARS,
   create_reminder: MAX_REMINDER_TITLE_CHARS,
   save_memory: MAX_MEMORY_CHARS,
+  send_email: 0,
+  create_calendar_event: 0,
 };
 
 const TEXT_LABELS: Record<ActionPayload["kind"], string> = {
   create_task: "Task",
   create_reminder: "Reminder",
   save_memory: "What to remember",
+  send_email: "Subject",
+  create_calendar_event: "Event",
 };
 
 /**
@@ -82,6 +100,7 @@ export function ApprovalCard({
   // The stored proposal never changes, so an edited approval is remembered here to show what actually ran.
   const [approvedEdit, setApprovedEdit] = useState<ActionPayload | null>(null);
   const waiting = proposal.status === "proposed";
+  const external = isExternalKind(kind);
   const shownPayload = approvedEdit ?? proposal.payload;
 
   async function decide(decision: "approve" | "reject", payload?: ActionPayload) {
@@ -98,7 +117,7 @@ export function ApprovalCard({
         return;
       }
       if (err instanceof ApiError && err.status === 409) {
-        setError("This action was already decided, perhaps in another tab.");
+        setError(external ? errorMessage(err, "This action was already decided.") : "This action was already decided, perhaps in another tab.");
         onStale?.();
       } else if (err instanceof ApiError && err.status === 404) {
         setError("This action no longer exists.");
@@ -124,26 +143,41 @@ export function ApprovalCard({
     void decide("approve", payload);
   }
 
-  const statusLabel = {
-    proposed: "Needs your OK",
-    approved: "Running…",
-    rejected: "Cancelled",
-    executed: "Done",
-    failed: "Failed",
-  }[proposal.status];
-  const detailsLabel = waiting ? "What will happen" : proposal.status === "executed" ? "What was done" : "What was proposed";
+  const unconfirmed = isUnconfirmedDone(proposal);
+  const statusLabel = unconfirmed
+    ? "Marked done"
+    : {
+        proposed: "Needs your OK",
+        approved: "Running…",
+        executing: "In progress",
+        rejected: "Cancelled",
+        executed: "Done",
+        failed: "Failed",
+      }[proposal.status];
+  const pillClass = unconfirmed ? "status-unconfirmed" : `status-${proposal.status}`;
+  const detailsLabel = waiting
+    ? "What will happen"
+    : proposal.status === "executed" && !unconfirmed
+      ? "What was done"
+      : "What was proposed";
 
   return (
     <article className={`approval-card approval-${proposal.status}`} aria-labelledby={`${id}-title`}>
       <div className="approval-head">
         <span className="approval-kind">{KIND_LABELS[kind]}</span>
-        <span className={`status-pill status-${proposal.status}`}>{statusLabel}</span>
+        <span className={`status-pill ${pillClass}`}>{statusLabel}</span>
       </div>
       <p id={`${id}-title`} className="approval-summary">
         {proposal.summary}
       </p>
       {approvedEdit && (
         <p className="hint">P-Dot&apos;s suggestion. You changed it before approving; the details below are what was done.</p>
+      )}
+      {waiting && external && (
+        <p className="hint">
+          Check every field below. After you approve, P-Dot does exactly this in your Google account. To change it,
+          cancel it and ask P-Dot again.
+        </p>
       )}
       {waiting && askReason && (
         <p className="approval-ask-reason small">
@@ -243,9 +277,11 @@ export function ApprovalCard({
           >
             {busy === "approve" ? "Approving…" : "Approve"}
           </button>
-          <button type="button" className="button button-small" disabled={busy !== null} onClick={() => setEditing(true)}>
-            Edit
-          </button>
+          {!external && (
+            <button type="button" className="button button-small" disabled={busy !== null} onClick={() => setEditing(true)}>
+              Edit
+            </button>
+          )}
           <button
             type="button"
             className="button button-small"
@@ -258,16 +294,24 @@ export function ApprovalCard({
         </div>
       )}
 
-      {proposal.status === "executed" && (
+      {unconfirmed && <p className="approval-outcome small muted">Marked done. {UNCONFIRMED_HINT}</p>}
+      {proposal.status === "executed" && !unconfirmed && (
         <p className="approval-outcome small">
           {approvedEdit ? "Done, with your changes. " : "Done. "}
           <Link href={KIND_RESULT_LINKS[kind].href}>{KIND_RESULT_LINKS[kind].label}</Link>
         </p>
       )}
       {proposal.status === "rejected" && <p className="approval-outcome small muted">Cancelled. Nothing was changed.</p>}
+      {proposal.status === "executing" && (kind === "send_email" || kind === "create_calendar_event") && (
+        <ExternalActionStatus
+          proposal={{ ...proposal, payload: proposal.payload as Extract<ActionPayload, { kind: typeof kind }> }}
+          onUpdated={onDecided}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
       {proposal.status === "failed" && (
         <p className="alert alert-error small" role="alert">
-          This action could not be completed. Nothing else was changed.
+          {external ? failureText(proposal) : "This action could not be completed. Nothing else was changed."}
         </p>
       )}
       {/* A failed run is already explained above; other errors (a lost connection, a decision made elsewhere) are not. */}

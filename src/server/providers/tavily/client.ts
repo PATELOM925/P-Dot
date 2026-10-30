@@ -7,6 +7,7 @@ import { createAbortScope, discardBody, kindFromStatus, ProviderError } from "..
 // https://docs.tavily.com/documentation/api-reference/endpoint/search
 
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
+export const TAVILY_TIMEOUT_MS = 10_000;
 
 export interface WebSearchResult {
   title: string;
@@ -44,7 +45,7 @@ export async function searchWeb(
 ): Promise<WebSearchResult[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const maxResults = Math.min(options.maxResults ?? SEARCH_MAX_RESULTS, SEARCH_MAX_RESULTS);
-  const scope = createAbortScope({ totalMs: options.timeoutMs ?? 10_000, parent: options.signal });
+  const scope = createAbortScope({ totalMs: options.timeoutMs ?? TAVILY_TIMEOUT_MS, parent: options.signal });
 
   try {
     let response: Response;

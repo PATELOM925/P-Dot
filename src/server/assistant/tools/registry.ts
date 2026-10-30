@@ -1,0 +1,186 @@
+import "server-only";
+import { z } from "zod";
+import type { AssistantToolName, Mode } from "@/types/api";
+import type { ActionProposalRepository } from "@/server/db/action-proposals";
+import type { MemoryRepository } from "@/server/db/memories";
+import type { RetrievalRepository } from "@/server/db/retrieval";
+import type { SpendGuard } from "@/server/db/spend";
+import type { Logger } from "@/server/log";
+import type { ToolCall, ToolDefinition } from "@/server/providers/model";
+import type { WebSearchResult } from "@/server/providers/tavily/client";
+import type { ConnectorTools, ConnectorTurn } from "@/server/mcp/connector-turn";
+import type { Embedder } from "../embed";
+import type { GoogleServices, GoogleTurn } from "./google";
+
+// The one place that defines the assistant's tools. A tool is a ToolSpec in
+// TOOLS. The set offered for a request is chosen from request flags only
+// (`offered`), so the hold made before the stream can price the same tools.
+// See docs/ARCHITECTURE.md ("Tools") and docs/decisions/0013-ai-tools-and-scope.md.
+
+/** What a request allows. Each flag comes from the request and server config, never from the model. */
+export interface ToolFlags {
+  /** The user turned on web search for this message, search is configured, and the search budget allowed it. */
+  webSearch: boolean;
+  /** The server can read and write the user's own P-Dot data (memories, documents, proposals). */
+  ownData: boolean;
+  /**
+   * The model may write its own web search query. False in a turn that offers
+   * Google tools or app reads, and in a conversation that ever had a reply that
+   * used Google or an app (decision 0014, decision 10). The first search with
+   * the user's message is apart.
+   */
+  webSearchTool: boolean;
+  /** Set only when the user turned on "Use Google" for this message and the connection allows it. */
+  google: GoogleToolFlags | null;
+  /**
+   * The apps the user turned on for this message, with their pinned tools
+   * (decision 0016). Only for a signed-up user whose app is connected.
+   */
+  connectors?: ConnectorTools;
+}
+
+/** What the Google connection allows, from its granted scopes. */
+export interface GoogleToolFlags {
+  read: boolean;
+  send: boolean;
+  calendar: boolean;
+}
+
+/**
+ * - read: reads data and changes nothing (web search, the user's own P-Dot data).
+ * - propose: writes a proposal that waits for the user's approval; it never acts.
+ */
+export type ToolKind = "read" | "propose";
+
+/** Outside sources: web search, Google, or connected apps. */
+export type ToolSource = "web" | "google" | "connector";
+
+/** The user's own P-Dot data. Every call runs with the user's session, so RLS applies. */
+export interface OwnDataServices {
+  /** Holds spend for each batch (createBudgetedEmbedder). */
+  embedder: Embedder;
+  retrieval: RetrievalRepository;
+  memories: Pick<MemoryRepository, "createMemory" | "hasAssistantMemoryFrom">;
+  proposals: Pick<ActionProposalRepository, "createProposal" | "hasProposalBetween">;
+}
+
+/** Server services a tool may use. AssistantDeps has all of them. */
+export interface ToolServices {
+  spend: SpendGuard;
+  search: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
+  log: Logger;
+  /** Keeps cleanup (a spend settle) running after the client disconnects. */
+  waitUntil: (work: Promise<unknown>) => void;
+  /** Null or missing when the server has no data services for this request. */
+  ownData?: OwnDataServices | null;
+  /** Null or missing when Google is not set up or the session is anonymous. */
+  google?: GoogleServices | null;
+}
+
+export interface ToolContext {
+  services: ToolServices;
+  requestId: string;
+  userId: string;
+  mode: Mode;
+  conversationId: string;
+  userMessageId: string;
+  /**
+   * True when an earlier attempt of this turn already wrote a proposal or a
+   * suggested memory. Then the propose tools write nothing (decision 0013).
+   * Always false for a fresh turn. Read once per turn.
+   */
+  earlierAttemptWrote: () => Promise<boolean>;
+  signal: AbortSignal;
+  /** Web sources the turn already has, in citation order. A tool adds only new URLs. */
+  sources: readonly WebSearchResult[];
+  /** Shared by the Google tools of this turn. Missing when the turn offers none. */
+  google?: GoogleTurn | null;
+  /** The reads of connected apps for this turn. Null when no app is on. */
+  connectors?: ConnectorTurn | null;
+}
+
+export interface ToolOutcome {
+  /** The tool message for the model. Retrieved text in it is delimited as untrusted. */
+  content: string;
+  /** New web sources, numbered after `ToolContext.sources`. */
+  sources?: WebSearchResult[];
+  /** IDs of memories and document chunks sent to the model, for the context record. */
+  memoryIds?: string[];
+  documentChunkIds?: string[];
+}
+
+export interface ToolSpec<Args = unknown> {
+  name: AssistantToolName;
+  /** Sent to the model. Plain words; no instructions that widen what the tool may do. */
+  description: string;
+  /** Validates the model's arguments. The JSON schema sent to the model is made from it. */
+  args: z.ZodType<Args>;
+  kind: ToolKind;
+  /**
+   * The outside source the tool reads, if any. At most one source runs in a
+   * turn (decisions 0014 and 0016): `checkToolCall` refuses a source tool in a
+   * turn whose offered tools span more than one source.
+   */
+  source?: ToolSource;
+  /** One line for the system prompt when the tool is offered. */
+  guidance: string;
+  /** Calls allowed in one turn. Later calls get a refusal as their result. */
+  maxCallsPerTurn: number;
+  offered(flags: ToolFlags): boolean;
+  /** What the status event shows: the tool name, and the query when the user should see it. */
+  statusQuery(args: Args): string | undefined;
+  run(args: Args, context: ToolContext): Promise<ToolOutcome>;
+}
+
+/** Tool hops in one turn. After them comes one final pass with tools off. */
+export const MAX_TOOL_HOPS = 2;
+/** Tool calls run from one model response. Later calls in the same response get a refusal. */
+export const MAX_TOOL_CALLS_PER_HOP = 3;
+
+/** JSON schema for the model, from the zod schema. */
+export function toToolDefinition(spec: ToolSpec): ToolDefinition {
+  const { $schema: _schema, ...parameters } = z.toJSONSchema(spec.args) as Record<string, unknown>;
+  void _schema;
+  return { name: spec.name, description: spec.description, parameters };
+}
+
+/** The tools offered for a request, in the order of `all`. */
+export function selectTools(all: readonly ToolSpec[], flags: ToolFlags): ToolSpec[] {
+  return all.filter((spec) => spec.offered(flags));
+}
+
+export type ToolCallResult =
+  | { status: "ran"; spec: ToolSpec; query: string | undefined; outcome: ToolOutcome }
+  | { status: "refused"; content: string };
+
+/**
+ * Checks one call before it runs: an offered tool, under its limit, with
+ * arguments that parse as JSON and pass the zod schema. Returns the parsed
+ * arguments or the refusal the model gets as the tool result.
+ */
+export function checkToolCall(
+  offered: readonly ToolSpec[],
+  call: ToolCall,
+  callsSoFar: ReadonlyMap<string, number>,
+): { ok: true; spec: ToolSpec; args: unknown } | { ok: false; content: string } {
+  const spec = offered.find((candidate) => candidate.name === call.name);
+  if (!spec) return { ok: false, content: "This tool is not available in this request. Nothing was done." };
+  if (spec.source && new Set(offered.map((candidate) => candidate.source).filter(Boolean)).size > 1) {
+    return { ok: false, content: "This request mixes outside sources, which is not allowed. Nothing was done." };
+  }
+  if ((callsSoFar.get(spec.name) ?? 0) >= spec.maxCallsPerTurn) {
+    return { ok: false, content: `The limit for ${spec.name} in this turn is reached. Nothing was done. Answer with what you have.` };
+  }
+  let raw: unknown;
+  try {
+    raw = call.arguments.trim() === "" ? {} : JSON.parse(call.arguments);
+  } catch {
+    return { ok: false, content: "The arguments were not valid JSON. Nothing was done." };
+  }
+  const parsed = spec.args.safeParse(raw);
+  if (!parsed.success) {
+    const fields = [...new Set(parsed.error.issues.map((issue) => issue.path.join(".") || "(arguments)"))].join(", ");
+    return { ok: false, content: `The arguments were not valid (${fields}). Nothing was done.` };
+  }
+  return { ok: true, spec, args: parsed.data };
+}

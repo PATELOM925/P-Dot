@@ -3,13 +3,15 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import type { DocumentDTO, DocumentMediaType, DocumentStatus, Mode } from "@/types/api";
 import { EMBEDDING_MODEL, toPgVector } from "@/server/providers/nebius/embeddings";
-import { RepositoryError } from "./conversations";
+import type { ClientRequest } from "@/server/http/request-key";
+import { RepositoryError, repositoryError } from "./conversations";
 
 export interface NewDocument {
   mode: Mode;
   title: string;
   mediaType: DocumentMediaType;
   charCount: number;
+  clientRequest?: ClientRequest | null;
 }
 
 export interface NewChunk {
@@ -28,8 +30,24 @@ export interface DocumentRepository {
   listDocuments(userId: string, mode: Mode, limit: number): Promise<DocumentDTO[]>;
   /** Creates the document with status "processing". */
   createDocument(userId: string, document: NewDocument): Promise<DocumentDTO>;
+  /** The database refuses chunks for a document that is not "processing". */
   insertChunks(userId: string, documentId: string, chunks: NewChunk[]): Promise<void>;
-  setStatus(userId: string, documentId: string, status: DocumentStatus): Promise<void>;
+  /**
+   * settle_document: a "processing" document with chunks that all have an
+   * embedding becomes "ready", any other "processing" one "failed". Another
+   * status does not change. Returns the status after the call, or null when no
+   * such document belongs to the user. It locks the row, so it cannot pass a
+   * chunk insert. No embedding call is made.
+   */
+  settleDocument(documentId: string): Promise<DocumentStatus | null>;
+  /**
+   * Settles at most `limit` of the user's documents that are still "processing"
+   * and were created before `createdBefore`, with `settleDocument`. Returns the
+   * number of documents settled.
+   */
+  settleStaleDocuments(userId: string, createdBefore: Date, limit: number): Promise<number>;
+  /** The document that is not "failed" with this request key, and the fingerprint of that request. */
+  findDocumentByClientRequest(userId: string, key: string): Promise<{ document: DocumentDTO; hash: string } | null>;
   /** Returns false when no document with that ID belongs to the user. Chunks go with it. */
   deleteDocument(userId: string, documentId: string): Promise<boolean>;
 }
@@ -61,6 +79,14 @@ function toDocument(row: unknown): DocumentDTO {
 }
 
 export function createDocumentRepository(supabase: SupabaseClient): DocumentRepository {
+  const settleDocument = async (documentId: string): Promise<DocumentStatus | null> => {
+    const { data, error } = await supabase.rpc("settle_document", { p_document_id: documentId });
+    if (error) throw repositoryError("settleDocument", error);
+    const status = z.enum(["processing", "ready", "failed"]).nullable().safeParse(data);
+    if (!status.success) throw new RepositoryError("settleDocument");
+    return status.data;
+  };
+
   return {
     async listDocuments(userId, mode, limit) {
       const { data, error } = await supabase
@@ -84,10 +110,13 @@ export function createDocumentRepository(supabase: SupabaseClient): DocumentRepo
           media_type: document.mediaType,
           char_count: document.charCount,
           status: "processing",
+          ...(document.clientRequest
+            ? { client_request_id: document.clientRequest.id, client_request_hash: document.clientRequest.hash }
+            : {}),
         })
         .select(DOCUMENT_COLUMNS)
         .single();
-      if (error || !data) throw new RepositoryError("createDocument");
+      if (error || !data) throw repositoryError("createDocument", error);
       return toDocument(data);
     },
 
@@ -106,13 +135,39 @@ export function createDocumentRepository(supabase: SupabaseClient): DocumentRepo
       if (error) throw new RepositoryError("insertChunks");
     },
 
-    async setStatus(userId, documentId, status) {
-      const { error } = await supabase
+    settleDocument,
+
+    async settleStaleDocuments(userId, createdBefore, limit) {
+      const { data, error } = await supabase
         .from("documents")
-        .update({ status })
-        .eq("id", documentId)
-        .eq("user_id", userId);
-      if (error) throw new RepositoryError("setDocumentStatus");
+        .select("id")
+        .eq("user_id", userId)
+        .eq("status", "processing")
+        .lt("created_at", createdBefore.toISOString())
+        .order("created_at", { ascending: true })
+        .limit(limit);
+      if (error) throw new RepositoryError("findStaleDocuments");
+      const ids = z.array(z.object({ id: z.string() })).parse(data ?? []).map((row) => row.id);
+
+      let settled = 0;
+      for (const id of ids) {
+        const status = await settleDocument(id);
+        if (status === "ready" || status === "failed") settled += 1;
+      }
+      return settled;
+    },
+
+    async findDocumentByClientRequest(userId, key) {
+      const { data, error } = await supabase
+        .from("documents")
+        .select(`${DOCUMENT_COLUMNS}, client_request_hash`)
+        .eq("user_id", userId)
+        .eq("client_request_id", key);
+      if (error) throw repositoryError("findDocumentByClientRequest", error);
+      // The unique index allows many failed rows for a key, but only one other.
+      const row = (data ?? []).find((candidate) => (candidate as { status?: string }).status !== "failed");
+      if (!row) return null;
+      return { document: toDocument(row), hash: z.object({ client_request_hash: z.string() }).parse(row).client_request_hash };
     },
 
     async deleteDocument(userId, documentId) {

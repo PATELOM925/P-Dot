@@ -33,10 +33,14 @@ export async function fetchContextRecord(messageId: string, signal?: AbortSignal
 }
 
 /** Starts a chat request and returns the NDJSON response body. */
-export async function postChat(body: ChatRequest, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+export async function postChat(
+  body: ChatRequest,
+  signal: AbortSignal,
+  headers: Record<string, string> = {},
+): Promise<ReadableStream<Uint8Array>> {
   const response = await request("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
     signal,
   });

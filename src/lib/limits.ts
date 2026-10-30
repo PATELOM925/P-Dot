@@ -48,11 +48,49 @@ export const DOCUMENT_LIST_LIMIT = 100;
 export const DOCUMENT_CHUNK_CHARS = 2_000;
 export const DOCUMENT_CHUNK_OVERLAP_CHARS = 200;
 export const MAX_DOCUMENT_CHUNKS = 100;
+/**
+ * A document still "processing" after this time is stale: the upload stopped
+ * before its final status write. An upload takes at most a few minutes
+ * (4 embedding batches with a 20 s timeout each).
+ */
+export const DOCUMENT_PROCESSING_STALE_MS = 10 * 60 * 1000;
+/** Most stale documents one list request settles. Later requests settle the rest. */
+export const STALE_DOCUMENT_SETTLE_LIMIT = 5;
+/**
+ * How long a claim to write a reply lasts (decision 0012). It must be longer
+ * than the longest chat turn: the heavy tier deadline, which all tool hops
+ * and tool runs share, plus the first search and the memory embedding.
+ */
+export const REPLY_CLAIM_LEASE_SECONDS = 300;
 export const MAX_REMINDER_TITLE_CHARS = 200;
+
+/** External actions (decision 0014). The same limits as normalize_action_payload in the migration. */
+export const MAX_EMAIL_RECIPIENTS = 10;
+export const MAX_EMAIL_ADDRESS_CHARS = 254;
+/** All recipients together, so a proposal stays readable on its card. */
+export const MAX_EMAIL_RECIPIENTS_TOTAL_CHARS = 2000;
+export const MAX_EMAIL_SUBJECT_CHARS = 200;
+export const MAX_EMAIL_BODY_CHARS = 4000;
+export const MAX_EVENT_TITLE_CHARS = 200;
+export const MAX_EVENT_ATTENDEES = 20;
+export const MAX_EVENT_DAYS = 31;
+/**
+ * A claimed external action that has no outcome after this long can be
+ * recovered. Much more than a token refresh (10 s) plus the Google call (15 s).
+ */
+export const EXTERNAL_ACTION_LEASE_SECONDS = 120;
+
+/** Google chat tools (decision 0014, section 3). All Google text that reaches the model in one turn. */
+export const GOOGLE_TOOL_TEXT_MAX_CHARS = 12_000;
+export const GMAIL_TOOL_SEARCH_MAX = 5;
+export const GMAIL_TOOL_READ_MAX_CHARS = 4_000;
+export const GOOGLE_TOOL_QUERY_MAX_CHARS = 200;
 export const REMINDER_LIST_LIMIT = 200;
 export const MAX_ACTION_SUMMARY_CHARS = 300;
 export const ACTION_LIST_LIMIT = 100;
 export const ACTION_LOG_LIMIT = 200;
+/** Active memories put in each chat turn (decision 0013). */
+export const MEMORY_CONTEXT_COUNT = 4;
 /** Matches returned by similarity search (the database caps it at 20). */
 export const RETRIEVAL_MATCH_COUNT = 5;
 /** Embedding size. Must match vector(1024) in the database. */

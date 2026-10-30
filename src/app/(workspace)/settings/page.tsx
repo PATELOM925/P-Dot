@@ -24,19 +24,40 @@ export default async function SettingsPage() {
 
       <section className="card stack" aria-labelledby="account-heading">
         <h2 id="account-heading">Account</h2>
-        <p>
-          Signed in as <strong>{auth.email ?? "your account"}</strong>
-        </p>
-        <div className="actions">
-          <Link className="button" href="/reset-password">
-            Change password
-          </Link>
-          <form action={signOutAction}>
-            <button type="submit" className="button">
-              Sign out
-            </button>
-          </form>
-        </div>
+        {auth.isAnonymous ? (
+          <>
+            <p>
+              You are trying P-Dot without an account. A trial has no email and no password. When you end the trial,
+              you cannot open its chats again.
+            </p>
+            <div className="actions">
+              <Link className="button button-primary" href="/signup">
+                Create an account
+              </Link>
+              <form action={signOutAction}>
+                <button type="submit" className="button">
+                  End trial
+                </button>
+              </form>
+            </div>
+          </>
+        ) : (
+          <>
+            <p>
+              Signed in as <strong>{auth.email ?? "your account"}</strong>
+            </p>
+            <div className="actions">
+              <Link className="button" href="/reset-password">
+                Change password
+              </Link>
+              <form action={signOutAction}>
+                <button type="submit" className="button">
+                  Sign out
+                </button>
+              </form>
+            </div>
+          </>
+        )}
       </section>
 
       <section id="approvals" className="card stack" aria-labelledby="approvals-heading">
@@ -57,8 +78,8 @@ export default async function SettingsPage() {
           </ul>
         </div>
         <p className="hint">
-          Your choice is saved on this device. P-Dot does not propose actions in chat yet, so neither mode has anything
-          to do until that step is built. Every action, either way, appears in the <Link href="/action-log">action log</Link>.
+          Your choice is saved on this device. Every action, either way, appears in the{" "}
+          <Link href="/action-log">action log</Link>.
         </p>
       </section>
 
@@ -95,12 +116,12 @@ export default async function SettingsPage() {
           </li>
           <li>
             <strong>Memory:</strong> when you save or edit a memory, its text is sent to Nebius once to make it
-            searchable (an embedding). Memories are not used in replies yet. You can see, change and delete all of them
+            searchable (an embedding). The text of kept memories that match your message is sent with it. You can see, change and delete all of them
             on the <Link href="/memory">Memory</Link> page.
           </li>
           <li>
             <strong>Documents:</strong> when you add a text or Markdown file, its text is sent to Nebius once, in
-            parts, to make it searchable. Documents are not used in replies yet. They are listed, and can be deleted,
+            parts, to make it searchable. When P-Dot searches your documents for a reply, the matching parts are sent with it. They are listed, and can be deleted,
             on the <Link href="/memory#documents">Memory</Link> page.
           </li>
           <li>
