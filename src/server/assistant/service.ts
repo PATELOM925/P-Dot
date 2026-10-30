@@ -579,6 +579,9 @@ async function* runChatTurn(
     route: turn.route,
   };
 
+  // Memory retrieval runs while the web search runs, so the reply does not wait for the two in turn.
+  const memoryLookup = retrieveMemories(deps, turn, signal);
+
   // 1. Optional web retrieval. Search is never called unless requested.
   let webSearch: WebSearchStatus = "off";
   let results: WebSearchResult[] = [];
@@ -624,22 +627,10 @@ async function* runChatTurn(
     }
   }
 
-  // Active memories of this mode, top MEMORY_CONTEXT_COUNT. A failure means a reply without memories.
-  let memories: MemoryMatch[] = [];
-  if (deps.ownData) {
-    try {
-      const [vector] = await deps.ownData.embedder.embed([turn.userMessage.content], signal);
-      if (vector) {
-        const found = await deps.ownData.retrieval.matchMemories(vector, turn.conversation.mode, MEMORY_CONTEXT_COUNT);
-        memories = found.slice(0, MEMORY_CONTEXT_COUNT);
-      }
-    } catch (error) {
-      if (signal.aborted) {
-        deps.log("info", "chat_client_aborted", { ...logBase, stage: "memories" });
-        return;
-      }
-      deps.log("warn", "memory_retrieval_failed", { ...logBase, kind: error instanceof Error ? error.name : "unknown" });
-    }
+  const memories = await memoryLookup;
+  if (memories === "aborted") {
+    deps.log("info", "chat_client_aborted", { ...logBase, stage: "memories" });
+    return;
   }
   const memoryIds = new Set(memories.map((memory) => memory.id));
   const documentChunkIds = new Set<string>();
@@ -972,6 +963,32 @@ async function* runChatTurn(
   // 4. A title made by the model for a new conversation, after the reply (decision 0013).
   if (deps.titles && turn.history.length === 1 && turn.conversation.title === titleFromMessage(turn.userMessage.content)) {
     yield* makeTitle(deps, turn, signal, settle);
+  }
+}
+
+/** A message this short ("hi", "thanks!", "ok cool") gets no memory lookup: it costs an embedding call before the reply. */
+const MEMORY_LOOKUP_MIN_CHARS = 12;
+
+/**
+ * Active memories of the mode, top MEMORY_CONTEXT_COUNT. Never throws: a failure
+ * means a reply without memories, and a Stop gives "aborted".
+ */
+async function retrieveMemories(deps: AssistantDeps, turn: PreparedTurn, signal: AbortSignal): Promise<MemoryMatch[] | "aborted"> {
+  const text = turn.userMessage.content.trim();
+  if (!deps.ownData || (text.length < MEMORY_LOOKUP_MIN_CHARS && text.split(/\s+/).length <= 2)) return [];
+  try {
+    const [vector] = await deps.ownData.embedder.embed([text], signal);
+    if (!vector) return [];
+    const found = await deps.ownData.retrieval.matchMemories(vector, turn.conversation.mode, MEMORY_CONTEXT_COUNT);
+    return found.slice(0, MEMORY_CONTEXT_COUNT);
+  } catch (error) {
+    if (signal.aborted) return "aborted";
+    deps.log("warn", "memory_retrieval_failed", {
+      requestId: turn.requestId,
+      route: "chat",
+      kind: error instanceof Error ? error.name : "unknown",
+    });
+    return [];
   }
 }
 
