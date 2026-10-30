@@ -28,7 +28,7 @@ export class OAuthError extends Error {
 async function oauthRequest<T>(fetchImpl: FetchLike, url: string, init: RequestInit, timeoutMs: number, schema: z.ZodType<T>): Promise<T> {
   let response: Response;
   try {
-    response = await fetchImpl(url, { ...init, redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
+    response = await fetchImpl(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
     throw new OAuthError(name === "TimeoutError" || name === "AbortError" ? "timeout" : "unavailable");
