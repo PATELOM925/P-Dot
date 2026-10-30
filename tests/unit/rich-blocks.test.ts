@@ -109,6 +109,22 @@ describe("rich block rendering", () => {
     expect(out).toContain("P-Dot could not show this as a card.");
   });
 
+  it("renders attack strings in card fields as text, and builds only Maps links", () => {
+    const attack = {
+      items: [
+        { name: '<img src=x onerror=alert(1)>', kind: "<script>alert(1)</script>", note: "[x](javascript:alert(1))", cite: [1] },
+        { name: '"><svg onload=alert(1)>', area: "javascript:alert(1)" },
+      ],
+    };
+    const out = render(fence("pdot-places", attack));
+    expect(out).not.toMatch(/<script|<img|<svg|<iframe/i);
+    expect(out).not.toMatch(/<[a-z]+(?:\s+[\w-]+(?:="[^"]*")?)*\s+on\w+=/i);
+    const card = out.slice(out.indexOf('<section class="rich-card"'), out.indexOf("</section>"));
+    for (const match of card.matchAll(/href="([^"]*)"/g)) {
+      expect(match[1]).toMatch(/^(https:\/\/www\.google\.com\/maps\/search\/\?api=1&amp;query=|#src-m1-\d)/);
+    }
+  });
+
   it("renders table, checklist and steps cards", () => {
     const table = fence("pdot-table", { title: "Compare", columns: ["Bar", "Price"], rows: [{ cells: ["Walrus", 12], cite: [1] }, { cells: ["Clockwork", null] }] });
     const out = render(

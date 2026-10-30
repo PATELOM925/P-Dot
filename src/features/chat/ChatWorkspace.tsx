@@ -83,9 +83,9 @@ function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-const EMPTY_HINTS: Record<Mode, string> = {
-  personal: "Ask about meals, gifts, family plans, errands or everyday choices.",
-  work: "Ask about meetings, email, code, tasks, deadlines or work writing.",
+const EMPTY_TITLES: Record<Mode, string> = {
+  personal: "Ask, plan, or set a reminder.",
+  work: "Draft, plan, or track a deadline.",
 };
 
 export function ChatWorkspace({
@@ -580,6 +580,7 @@ export function ChatWorkspace({
   const autoRunning = new Set(auto.running.map((p) => p.id));
   const placedProposals = placeByTime(messages, conversationProposals);
   const placedSuggestions = placeBySource(messages, memorySuggestions.items);
+  const hasOpenCard = conversationProposals.some((p) => p.status === "proposed" && !autoRunning.has(p.id));
   // "Waiting for you" on a reply with a card to decide; "Done" on the last reply otherwise.
   const turnStates = new Map<string, TurnState>();
   const lastReply = [...messages].reverse().find((m) => m.role === "assistant");
@@ -764,8 +765,8 @@ export function ChatWorkspace({
           {loadingMessages && <p className="muted">Loading conversation…</p>}
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
-              <p>{EMPTY_HINTS[mode]}</p>
-              <p className="muted small">Start with an example, or ask anything.</p>
+              <p>{EMPTY_TITLES[mode]}</p>
+              <p className="muted small">P-Dot asks before it adds a task, a reminder or a memory. You can say no.</p>
               <StarterPrompts mode={mode} onPick={pickStarter} />
               <p className="disclaimer">P-Dot can make mistakes. Check important facts.</p>
             </div>
@@ -850,8 +851,8 @@ export function ChatWorkspace({
           )}
         </div>
 
-        {/* Once per device: choose Ask first or Auto. Outside the form, so Enter on an option cannot send. */}
-        <ApprovalModeSetup />
+        {/* Once per device, and only when the first card waits: choose Ask first or Auto. Outside the form, so Enter cannot send. */}
+        {hasOpenCard && <ApprovalModeSetup onChoose={() => setOpenMenu("approval")} />}
 
         <form
           className="composer"

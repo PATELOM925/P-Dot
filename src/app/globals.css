@@ -2617,11 +2617,46 @@ label.button[aria-disabled="true"] {
 }
 
 .starter-prompt-label {
-  color: var(--accent);
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.approval-setup-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  width: 100%;
+  max-width: 52.5rem;
+  margin: 0 auto 0.5rem;
+  padding: 0.5rem 1.75rem 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+/* Touch screens: every small control gets a 44 px target (WCAG 2.5.5). */
+@media (pointer: coarse) {
+  .button-small,
+  .icon-button,
+  .mode-option,
+  .nav-link,
+  .md-copy,
+  .sources-toggle,
+  .sent-toggle,
+  .link-button {
+    min-height: 2.75rem;
+  }
+
+  .icon-button {
+    min-width: 2.75rem;
+  }
+
+  .cite::before {
+    content: "";
+    position: absolute;
+    inset: -0.875rem -0.5rem;
+  }
 }
 
 /* Phone navigation: bottom tabs, the More sheet and the conversation drawer. Desktop keeps the top nav. */
@@ -2958,6 +2993,17 @@ label.button[aria-disabled="true"] {
   margin: 0 0 0.5rem;
   font-size: 0.875rem;
   font-weight: 700;
+}
+
+.md .rich-places,
+.md .rich-checklist {
+  margin: 0;
+  padding: 0;
+}
+
+.md .rich-steps {
+  margin: 0;
+  padding-left: 1rem;
 }
 
 .rich-places {

@@ -157,7 +157,8 @@ describe("no HTML injection in chat code", () => {
   }
 
   it("no chat file sets HTML from a string", () => {
-    for (const file of files(join(process.cwd(), "src/features/chat"))) {
+    const extra = ["src/lib/rich-blocks.ts", "src/lib/maps-url.ts"].map((path) => join(process.cwd(), path));
+    for (const file of [...files(join(process.cwd(), "src/features/chat")), ...extra]) {
       const source = readFileSync(file, "utf8");
       expect(source, file).not.toMatch(/dangerouslySetInnerHTML|innerHTML|outerHTML|insertAdjacentHTML/);
     }
