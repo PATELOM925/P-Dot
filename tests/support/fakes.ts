@@ -119,9 +119,17 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
-  async usedGoogle(userId: string, conversationId: string) {
+  /** Set to make the private-source history check fail. */
+  failPrivateSourceCheck = false;
+
+  async hasPrivateSourceReply(userId: string, conversationId: string) {
+    if (this.failPrivateSourceCheck) throw new Error("hasPrivateSourceReply failed");
     return this.messages.some(
-      (m) => m.userId === userId && m.conversationId === conversationId && m.role === "assistant" && m.route?.reason === "google_request",
+      (m) =>
+        m.userId === userId &&
+        m.conversationId === conversationId &&
+        m.role === "assistant" &&
+        (m.route?.reason === "google_request" || m.route?.reason === "connector_read"),
     );
   }
 

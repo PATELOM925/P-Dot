@@ -9,6 +9,7 @@ import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
+import { MCP_SERVER_NAMES, type McpServerId } from "@/lib/connectors";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type {
   ActionProposalDTO,
@@ -81,10 +82,13 @@ export function ChatWorkspace({
   initialConversationId,
   mode,
   google = null,
+  connectedApps,
 }: {
   initialConversationId: string | null;
   mode: Mode;
   google?: GoogleChatState;
+  /** Apps the user connected that chat can read. Read on the server. */
+  connectedApps: McpServerId[];
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
@@ -93,8 +97,11 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
-  // One message only; it turns off after the message is saved. Google and web search never run together.
+  // One message only; it turns off after the message is saved. Only one source at a time:
+  // web search, Google or apps (decisions 0014 and 0016); turning one on turns the others off.
   const [useGoogle, setUseGoogle] = useState(false);
+  // Apps to read for the next message only.
+  const [apps, setApps] = useState<McpServerId[]>([]);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
@@ -254,6 +261,8 @@ export function ChatWorkspace({
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
+    const sentApps = apps;
+    const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
     const body: ChatRequest =
       action === "send"
         ? {
@@ -261,10 +270,11 @@ export function ChatWorkspace({
             message: text,
             webSearch,
             effort,
+            ...connectors,
             ...(useGoogle ? { useGoogle: true as const } : {}),
             ...(activeId ? { conversationId: activeId } : { mode }),
           }
-        : { action, conversationId: activeId!, webSearch, effort, ...(useGoogle ? { useGoogle: true as const } : {}) };
+        : { action, conversationId: activeId!, webSearch, effort, ...connectors, ...(useGoogle ? { useGoogle: true as const } : {}) };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
@@ -316,6 +326,8 @@ export function ChatWorkspace({
             if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
+            // One message only. An app the user turned on after Send stays on for the next message.
+            if (sentApps.length > 0) setApps((current) => current.filter((app) => !sentApps.includes(app)));
             setActiveId(event.conversation.id);
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
@@ -327,7 +339,7 @@ export function ChatWorkspace({
               search: current?.search ?? null,
               tier: event.route.tier,
             }));
-            setStatus(webSearch ? "Searching the web…" : "P-Dot is replying…");
+            setStatus(sentApps.length > 0 ? "Reading your apps…" : webSearch ? "Searching the web…" : "P-Dot is replying…");
             break;
           case "search":
             setStreaming((current) => ({
@@ -407,6 +419,10 @@ export function ChatWorkspace({
   function pickStarter(prompt: StarterPrompt) {
     setDraft(prompt.text);
     setWebSearch(prompt.webSearch);
+    if (prompt.webSearch) {
+      setUseGoogle(false);
+      setApps([]);
+    }
     effortVersion.current += 1;
     setEffort(prompt.effort);
     inputRef.current?.focus();
@@ -729,7 +745,10 @@ export function ChatWorkspace({
                         checked={webSearch}
                         onChange={(event) => {
                           setWebSearch(event.target.checked);
-                          if (event.target.checked) setUseGoogle(false);
+                          if (event.target.checked) {
+                            setApps([]);
+                            setUseGoogle(false);
+                          }
                         }}
                       />
                       <span>
@@ -750,14 +769,17 @@ export function ChatWorkspace({
                           aria-describedby="use-google-help"
                           onChange={(event) => {
                             setUseGoogle(event.target.checked);
-                            if (event.target.checked) setWebSearch(false);
+                            if (event.target.checked) {
+                              setWebSearch(false);
+                              setApps([]);
+                            }
                           }}
                         />
                         <span>
                           <strong>Use Google</strong>
                           <span className="hint" id="use-google-help">
                             {google === "connected" ? (
-                              "P-Dot can read your Gmail and calendar for this message. It asks before it sends or adds anything. Web search is off for this message."
+                              "P-Dot can read your Gmail and calendar for this message. It asks before it sends or adds anything. Web search and apps are off for this message."
                             ) : google === "trial" ? (
                               "Create an account to use Google."
                             ) : (
@@ -769,6 +791,26 @@ export function ChatWorkspace({
                         </span>
                       </label>
                     )}
+                    {connectedApps.map((app) => (
+                      <label key={app} className="tool-option">
+                        <input
+                          type="checkbox"
+                          checked={apps.includes(app)}
+                          onChange={(event) => {
+                            const on = event.target.checked;
+                            setApps((current) => (on ? [...current.filter((a) => a !== app), app] : current.filter((a) => a !== app)));
+                            if (on) {
+                              setWebSearch(false);
+                              setUseGoogle(false);
+                            }
+                          }}
+                        />
+                        <span>
+                          <strong>Use {MCP_SERVER_NAMES[app]}</strong>
+                          <span className="hint">Read only, for this message</span>
+                        </span>
+                      </label>
+                    ))}
                   </div>
                 )}
                 <button
@@ -813,6 +855,17 @@ export function ChatWorkspace({
                   Web search · Tavily ×
                 </button>
               )}
+              {apps.map((app) => (
+                <button
+                  key={app}
+                  type="button"
+                  className="chip chip-button"
+                  onClick={() => setApps((current) => current.filter((a) => a !== app))}
+                  aria-label={`${MCP_SERVER_NAMES[app]} is on for this message. Turn off.`}
+                >
+                  {MCP_SERVER_NAMES[app]} ×
+                </button>
+              ))}
               <span id="composer-hint" className="hint composer-hint">
                 {draft.length > MAX_MESSAGE_CHARS * 0.9
                   ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`

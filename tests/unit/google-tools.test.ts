@@ -325,7 +325,8 @@ describe("no web search where Google text can leak (decision 10)", () => {
     expect(spend.reservations.filter((r) => r.provider === "tavily")).toHaveLength(0);
     expect(requests[0]!.tools?.map((t) => t.name)).not.toContain("web_search");
     expect(toolResults(requests).filter((c) => c.includes("not available in this request"))).toHaveLength(2);
-    expect(events.find((e) => e.type === "search")).toMatchObject({ status: "failed", message: "Web search was off for this message, because it uses Google." });
+    // Past the schema (which refuses this pair with 400), the server still runs no search and saves no search result.
+    expect(events.filter((e) => e.type === "search")).toEqual([]);
   });
 
   it("a later turn in that conversation offers no model-written search; a clean conversation keeps it", async () => {
@@ -360,7 +361,7 @@ describe("no web search where Google text can leak (decision 10)", () => {
     expect(later.spend.reservations.filter((r) => r.provider === "tavily")).toHaveLength(1);
 
     const failing = await setup([{ text: "Ok." }], { repo });
-    vi.spyOn(repo, "usedGoogle").mockRejectedValueOnce(new Error("read failed"));
+    vi.spyOn(repo, "hasPrivateSourceReply").mockRejectedValueOnce(new Error("read failed"));
     await runTurn(failing.deps, { action: "send", conversationId, message: "news", webSearch: true });
     expect(failing.requests[0]!.tools?.map((t) => t.name) ?? []).not.toContain("web_search");
   });

@@ -20,6 +20,7 @@ export const webSearchTool: ToolSpec<z.infer<typeof args>> = {
   description: "Search the web for current information. Use it only when the results already given do not answer the question.",
   args,
   kind: "read",
+  source: "web",
   guidance:
     "web_search: the user turned on web search for this message, and results for the message are already attached. Call web_search only when you need one more search with a different query. You can call it once.",
   maxCallsPerTurn: 1,

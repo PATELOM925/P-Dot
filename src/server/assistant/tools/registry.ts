@@ -8,6 +8,7 @@ import type { SpendGuard } from "@/server/db/spend";
 import type { Logger } from "@/server/log";
 import type { ToolCall, ToolDefinition } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
+import type { ConnectorTools, ConnectorTurn } from "@/server/mcp/connector-turn";
 import type { Embedder } from "../embed";
 import type { GoogleServices, GoogleTurn } from "./google";
 
@@ -24,12 +25,18 @@ export interface ToolFlags {
   ownData: boolean;
   /**
    * The model may write its own web search query. False in a turn that offers
-   * Google tools, and in a conversation that ever had a Google reply
-   * (decision 0014, decision 10). The first search with the user's message is apart.
+   * Google tools or app reads, and in a conversation that ever had a reply that
+   * used Google or an app (decision 0014, decision 10). The first search with
+   * the user's message is apart.
    */
   webSearchTool: boolean;
   /** Set only when the user turned on "Use Google" for this message and the connection allows it. */
   google: GoogleToolFlags | null;
+  /**
+   * The apps the user turned on for this message, with their pinned tools
+   * (decision 0016). Only for a signed-up user whose app is connected.
+   */
+  connectors?: ConnectorTools;
 }
 
 /** What the Google connection allows, from its granted scopes. */
@@ -44,6 +51,9 @@ export interface GoogleToolFlags {
  * - propose: writes a proposal that waits for the user's approval; it never acts.
  */
 export type ToolKind = "read" | "propose";
+
+/** Outside sources: web search, Google, or connected apps. */
+export type ToolSource = "web" | "google" | "connector";
 
 /** The user's own P-Dot data. Every call runs with the user's session, so RLS applies. */
 export interface OwnDataServices {
@@ -85,6 +95,8 @@ export interface ToolContext {
   sources: readonly WebSearchResult[];
   /** Shared by the Google tools of this turn. Missing when the turn offers none. */
   google?: GoogleTurn | null;
+  /** The reads of connected apps for this turn. Null when no app is on. */
+  connectors?: ConnectorTurn | null;
 }
 
 export interface ToolOutcome {
@@ -104,6 +116,12 @@ export interface ToolSpec<Args = unknown> {
   /** Validates the model's arguments. The JSON schema sent to the model is made from it. */
   args: z.ZodType<Args>;
   kind: ToolKind;
+  /**
+   * The outside source the tool reads, if any. At most one source runs in a
+   * turn (decisions 0014 and 0016): `checkToolCall` refuses a source tool in a
+   * turn whose offered tools span more than one source.
+   */
+  source?: ToolSource;
   /** One line for the system prompt when the tool is offered. */
   guidance: string;
   /** Calls allowed in one turn. Later calls get a refusal as their result. */
@@ -147,6 +165,9 @@ export function checkToolCall(
 ): { ok: true; spec: ToolSpec; args: unknown } | { ok: false; content: string } {
   const spec = offered.find((candidate) => candidate.name === call.name);
   if (!spec) return { ok: false, content: "This tool is not available in this request. Nothing was done." };
+  if (spec.source && new Set(offered.map((candidate) => candidate.source).filter(Boolean)).size > 1) {
+    return { ok: false, content: "This request mixes outside sources, which is not allowed. Nothing was done." };
+  }
   if ((callsSoFar.get(spec.name) ?? 0) >= spec.maxCallsPerTurn) {
     return { ok: false, content: `The limit for ${spec.name} in this turn is reached. Nothing was done. Answer with what you have.` };
   }

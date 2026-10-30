@@ -52,7 +52,7 @@ function kindFor(status: number): GoogleErrorKind {
   return "rejected";
 }
 
-async function readBounded(response: Response, maxBytes: number): Promise<string | null> {
+export async function readBounded(response: Response, maxBytes: number): Promise<string | null> {
   if (!response.body) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];

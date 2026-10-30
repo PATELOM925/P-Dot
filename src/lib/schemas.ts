@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MCP_SERVER_IDS } from "./connectors";
 import {
   MAX_ACTION_SUMMARY_CHARS,
   MAX_DOCUMENT_CHARS,
@@ -27,6 +28,20 @@ export const modeSchema = z.enum(["personal", "work"]);
 /** "auto" lets the router choose; "deep" asks for the heavy tier. */
 const effortSchema = z.enum(EFFORTS).optional();
 
+/** Apps to read for one message (decision 0016): unique, at most all three. */
+const connectorsSchema = z
+  .array(z.enum(MCP_SERVER_IDS))
+  .max(MCP_SERVER_IDS.length)
+  .refine((ids) => new Set(ids).size === ids.length, "Each app can be listed once.")
+  .optional();
+/**
+ * At most one source for each message: web search, Google or connected apps
+ * (decisions 0014 and 0016). Several apps together are one source.
+ */
+const oneSource = (value: { webSearch: boolean; connectors?: unknown[]; useGoogle?: true }) =>
+  [value.webSearch, (value.connectors?.length ?? 0) > 0, value.useGoogle === true].filter(Boolean).length <= 1;
+const mixedSources = { message: "Use only one of web search, Google or connected apps for a message.", path: ["webSearch"] };
+
 // `.strict()` rejects unknown keys, so a client cannot smuggle in fields such
 // as a user ID. Identity always comes from the verified session.
 const sendSchema = z
@@ -43,8 +58,10 @@ const sendSchema = z
     effort: effortSchema,
     // Only sent when the "Use Google" toggle is on (decision 0014), so an older server still accepts a send without it.
     useGoogle: z.literal(true).optional(),
+    connectors: connectorsSchema,
   })
-  .strict();
+  .strict()
+  .refine(oneSource, mixedSources);
 
 const retrySchema = z
   .object({
@@ -53,8 +70,10 @@ const retrySchema = z
     webSearch: z.boolean(),
     effort: effortSchema,
     useGoogle: z.literal(true).optional(),
+    connectors: connectorsSchema,
   })
-  .strict();
+  .strict()
+  .refine(oneSource, mixedSources);
 
 export const chatRequestSchema: z.ZodType<ChatRequest> = z.discriminatedUnion("action", [
   sendSchema,

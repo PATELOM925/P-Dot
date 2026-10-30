@@ -102,11 +102,6 @@ export interface ConversationRepository {
    * returned as is: the caller cannot tell which of the two came first.
    */
   nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }): Promise<string | null>;
-  /**
-   * True when the conversation has any reply that used Google (route reason
-   * `google_request`), with no history window (decision 0014, decision 10).
-   */
-  usedGoogle(userId: string, conversationId: string): Promise<boolean>;
   findMessageByClientRequest(userId: string, key: string): Promise<KeyedMessage | null>;
   findConversationByClientRequest(
     userId: string,
@@ -115,7 +110,16 @@ export interface ConversationRepository {
   /** The right to write the reply to a user message, for the session user (claim_reply). */
   claimReply(messageId: string, leaseSeconds: number): Promise<ReplyClaim>;
   releaseReplyClaim(messageId: string, claimId: string): Promise<void>;
+  /**
+   * True when the conversation has any reply that read a private source:
+   * Google (`google_request`) or a connected app (`connector_read`). No history
+   * window (decision 0014, decision 10; decision 0016).
+   */
+  hasPrivateSourceReply(userId: string, conversationId: string): Promise<boolean>;
 }
+
+/** Route reasons of a reply that read a private source. After one, no model-written web search in that conversation. */
+export const PRIVATE_SOURCE_REASONS = ["google_request", "connector_read"] as const;
 
 const conversationRow = z.object({
   id: z.string(),
@@ -365,6 +369,19 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
       return data ? toMessage(data) : null;
     },
 
+    async hasPrivateSourceReply(userId, conversationId) {
+      const { data, error } = await supabase
+        .from("messages")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("conversation_id", conversationId)
+        .eq("role", "assistant")
+        .in("route_reason", [...PRIVATE_SOURCE_REASONS])
+        .limit(1);
+      if (error) throw repositoryError("hasPrivateSourceReply", error);
+      return Array.isArray(data) && data.length > 0;
+    },
+
     async nextUserMessageAt(userId, conversationId, message) {
       const { data, error } = await supabase
         .from("messages")
@@ -379,19 +396,6 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
         .maybeSingle();
       if (error) throw repositoryError("nextUserMessageAt", error);
       return data ? createdAtRow.parse(data).created_at : null;
-    },
-
-    async usedGoogle(userId, conversationId) {
-      const { data, error } = await supabase
-        .from("messages")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("conversation_id", conversationId)
-        .eq("role", "assistant")
-        .eq("route_reason", "google_request")
-        .limit(1);
-      if (error) throw repositoryError("usedGoogle", error);
-      return Array.isArray(data) && data.length > 0;
     },
 
     async findMessageByClientRequest(userId, key) {
