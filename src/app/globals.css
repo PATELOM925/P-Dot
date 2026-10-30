@@ -3210,6 +3210,15 @@ label.button[aria-disabled="true"] {
   gap: 0.375rem 0.5rem;
 }
 
+/* On Today the title sits in a .page-title row and shrinks to its text, so the (i) note anchors on the full row. */
+.page-title {
+  position: relative;
+}
+
+.page-title > .page-head {
+  position: static;
+}
+
 .page-head-actions {
   margin-left: auto;
   display: flex;
