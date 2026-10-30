@@ -229,12 +229,20 @@ function joinToolDelta(
   return started;
 }
 
-/** Whole calls in index order. A call without an ID gets one; a call without a name is dropped. */
+/**
+ * Whole calls in index order. A call without a name is dropped. Every call
+ * gets a unique ID: a missing or repeated ID is replaced, so each tool result
+ * answers exactly one call.
+ */
 function finishToolCalls(calls: Map<number, PartialToolCall>): ToolCall[] {
-  return [...calls.entries()]
-    .sort(([a], [b]) => a - b)
-    .filter(([, call]) => call.name.length > 0)
-    .map(([index, call]) => ({ id: call.id || `call_${index}`, name: call.name, arguments: call.arguments }));
+  const named = [...calls.entries()].sort(([a], [b]) => a - b).filter(([, call]) => call.name.length > 0);
+  const used = new Set<string>();
+  return named.map(([index, call]) => {
+    let id = call.id;
+    for (let n = 0; !id || used.has(id); n += 1) id = n === 0 ? `call_${index}` : `call_${index}_${n}`;
+    used.add(id);
+    return { id, name: call.name, arguments: call.arguments };
+  });
 }
 
 /** `Retry-After` in milliseconds (seconds or an HTTP date), or undefined. */
