@@ -21,6 +21,10 @@ describe("detectToolIntent", () => {
     ["don't forget that I work from home on Mondays", "memory_request"],
     ["yaad rakhna ki main chai peeta hoon", "memory_request"],
     ["Remember, I like tea", "memory_request"],
+    ["Write down that my flight is at 7", "memory_request"],
+    ["write this down: the wifi password is on the router", "memory_request"],
+    ["Save a note: the plumber is Ravi", "memory_request"],
+    ["remind me when I get home to call mom", "task_request"],
     ["What did I write in my notes about the trip?", "own_data"],
     ["Search my documents for the lease end date", "own_data"],
     ["what's in the file I uploaded?", "own_data"],
@@ -48,6 +52,9 @@ describe("detectToolIntent", () => {
     "What time is it in Tokyo?",
     "Do you know a good shopping list app?",
     "How do I add numbers in a list in Python?",
+    "remind me what the capital is",
+    "Remind me who won the 2011 World Cup",
+    "Write down the steps to make tea",
   ])("finds no intent in %j", (message) => {
     expect(detectToolIntent(message)).toBeNull();
   });

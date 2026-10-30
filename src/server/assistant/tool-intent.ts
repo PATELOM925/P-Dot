@@ -12,7 +12,7 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
     intent: "task_request",
     pattern: new RegExp(
       [
-        String.raw`\bremind(?:er|ers)?\b`,
+        String.raw`\bremind(?!\s+me\s+(?:what|who|whom|whose|which|where|why|how)\b)(?:er|ers)?\b`,
         String.raw`\bschedule\b`,
         String.raw`\bto-?dos?\b`,
         String.raw`\b(?:add|create|make|set|put)\b[^.?!]{0,30}\b(?:task|tasks|to-?do|reminder|alarm)\b`,
@@ -30,6 +30,9 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
         String.raw`^\s*remember\s*,`,
         String.raw`\b(?:save|note)\s+(?:this|that|it)\b`,
         String.raw`\bnote\s+(?:this|that|it)\s+down\b`,
+        String.raw`\bwrite\s+down\s+that\b`,
+        String.raw`\bwrite\s+(?:this|that|it)\s+down\b`,
+        String.raw`\bsave\s+(?:a\s+)?note\b`,
         String.raw`\bkeep\s+(?:this|that|it\s+)?in\s+mind\b`,
         String.raw`\bdon'?t\s+forget\s+(?:that|my|i)\b`,
         String.raw`\byaad\s+(?:rakh|rakhna|rakho|rakhiye|rakh\s+lo)\b`,
