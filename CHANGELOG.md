@@ -9,6 +9,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **The README explains the hackathon entry.** Problem: the hackathon rules ask the README to show how the project uses NVIDIA models and Nebius Token Factory, and two README lines were old. Resolution: a "Hackathon: Nebius x NVIDIA" section with the Nemotron tier table, the Token Factory and Tavily use, and fixed status and setup lines. ([PR #21](https://github.com/PATELOM925/P-Dot/pull/21))
 - **A resend or a retry no longer repeats saved or running work** ([decision 0012](docs/decisions/0012-resend-idempotency.md)). ([PR #20](https://github.com/PATELOM925/P-Dot/pull/20))
   - Problem: after a 500, the screen gives the draft back and the user sends it again. The resend saved an empty or second conversation, a second user message, a second memory or a second ready document, and a reply whose response was lost never got its "what was sent" record (eight `it.fails` tests). Two requests could also each write a reply to one message, and a stream cancelled before its first read kept its Nebius hold open.
   - Resolution:
