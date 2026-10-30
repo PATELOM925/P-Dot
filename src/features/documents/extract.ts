@@ -96,7 +96,7 @@ export async function imageToJpegDataUrl(file: File): Promise<string> {
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
-  for (const quality of [0.85, 0.7, 0.5]) {
+  for (const quality of [0.85, 0.7, 0.5, 0.35]) {
     const url = canvas.toDataURL("image/jpeg", quality);
     if (url.startsWith("data:image/jpeg;base64,") && url.length + BODY_ROOM_BYTES <= MAX_IMAGE_TEXT_BODY_BYTES) return url;
   }

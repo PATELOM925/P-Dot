@@ -59,7 +59,7 @@ const TOKENS_PER_TOOL_CALL = 64;
 const TOKENS_PER_TOOL_RESULT = 64;
 /**
  * Input tokens one image can make. An estimate, not a measurement: the
- * browser sends at most 1,600 px on the long side, which vision models with
+ * browser sends at most 1,280 px on the long side, which vision models with
  * tiles of 448 to 512 px turn into a few thousand tokens. Chosen well above
  * that (decision 0019); the settle uses the real usage.
  */
