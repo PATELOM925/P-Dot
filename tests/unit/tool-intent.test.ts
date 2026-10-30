@@ -4,10 +4,21 @@ import { detectToolIntent } from "@/lib/tool-intent";
 import { routeSummary } from "@/lib/routing";
 
 describe("detectToolIntent", () => {
+  it.each(["What's my schedule today?", "What's on my schedule?", "Show me the schedule today", "What is my schedule for tomorrow?"])(
+    "does not read the noun schedule in %j as a task request",
+    (message) => {
+      expect(detectToolIntent(message)).toBeNull();
+    },
+  );
+
   it.each([
     ["Remind me to call mom at 6", "task_request"],
     ["Set a reminder for the dentist on Friday", "task_request"],
     ["Can you schedule a call with Ravi tomorrow?", "task_request"],
+    ["Schedule it for Monday", "task_request"],
+    ["schedule a dentist visit", "task_request"],
+    ["Schedule tomorrow's standup at 9", "task_request"],
+    ["I need to schedule", "task_request"],
     ["Add buying milk to my to-do list", "task_request"],
     ["add a task: renew passport", "task_request"],
     ["put this on my todo", "task_request"],

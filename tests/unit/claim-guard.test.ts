@@ -115,6 +115,8 @@ describe("forcedToolChoice", () => {
       ["Any unread mail from Sam?", { name: "gmail_search" }],
       ["What meetings do I have this week?", { name: "calendar_list_events" }],
       ["Am I free on Friday afternoon?", { name: "calendar_list_events" }],
+      ["What's my schedule today?", { name: "calendar_list_events" }],
+      ["What's on my schedule?", { name: "calendar_list_events" }],
       ["Do my emails mention the meeting on Monday?", "required"],
     ])("forces a read for the question %j", (message, expected) => {
       expect(choice(message)).toEqual(expected);

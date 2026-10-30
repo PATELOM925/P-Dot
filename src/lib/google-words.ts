@@ -3,6 +3,8 @@
 // calendar) and the server (it makes the first hop read before it answers).
 // Pure rules, no model call.
 
+import { SCHEDULE_VERB } from "./tool-intent";
+
 const MAIL = /\b(?:e-?mail(?:s|ed)?|gmail|inbox|unread)\b|\bmails?\s+(?:from|for\s+me)\b/i;
 
 /**
@@ -27,6 +29,7 @@ const CALENDAR = new RegExp(
   [
     String.raw`\bcalendar\b`,
     String.raw`\bmy\s+(?:events?|schedule)\b`,
+    String.raw`\bschedule\s+(?:for\s+)?(?:today|tonight|tomorrow|this\s+week|next\s+week)\b(?!['’])`,
     String.raw`\bam\s+i\s+(?:free|busy)\b`,
     String.raw`\bfree\s+(?:time|slots?)\b`,
     String.raw`\bwhat(?:'|’)?s\s+on\s+(?:my|today|tomorrow|this|next)\b`,
@@ -38,7 +41,7 @@ const CALENDAR = new RegExp(
 const SCHEDULE_MEETING = /\b(?:schedule|book|set\s+up)\s+(?:a\s+|an\s+|the\s+)?(?:meeting|call|event)\b/i;
 
 /** Verbs that make a message a request to write, send or change, not a question to read. */
-const WRITE = /\b(?:send|write|draft|compose|reply|respond|forward|book|invite|create|add|cancel|reschedule|schedule|set\s+up)\b/i;
+const WRITE = new RegExp(String.raw`\b(?:send|write|draft|compose|reply|respond|forward|book|invite|create|add|cancel|reschedule|set\s+up)\b|${SCHEDULE_VERB}`, "i");
 
 export interface GoogleWords {
   mail: boolean;
