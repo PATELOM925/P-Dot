@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildContextWindow, titleFromMessage } from "@/server/assistant/context";
 import { buildPromptMessages, formatSearchResults, isContinuationRequest, neutralize } from "@/server/assistant/prompt";
-import { normalizeReplyText } from "@/server/assistant/reply-text";
+import { createReplyNormalizer, normalizeReplyText } from "@/lib/reply-text";
 
 const now = new Date(Date.UTC(2026, 9, 14));
 
@@ -205,6 +205,29 @@ describe("normalizeReplyText", () => {
 
   it("leaves other brackets alone", () => {
     expect(normalizeReplyText("【note】 [2]")).toBe("【note】 [2]");
+  });
+
+  it("writes the long citation forms as [n]", () => {
+    expect(normalizeReplyText("Cafe A 【2†L1-L4】, Cafe B [3†source] and 【1】.")).toBe("Cafe A [2], Cafe B [3] and [1].");
+  });
+});
+
+describe("createReplyNormalizer", () => {
+  const stream = (chunks: string[]) => {
+    const normalizer = createReplyNormalizer();
+    const shown = chunks.map((chunk) => normalizer.push(chunk)).join("");
+    return { shown, text: shown + normalizer.flush() };
+  };
+
+  it("holds a citation split across chunks until it closes", () => {
+    const { shown, text } = stream(["Union Cafe 【", "2†L1", "-L4】 is open. See [1", "†x] and [3", "]."]);
+    expect(shown).not.toMatch(/【|†/);
+    expect(text).toBe("Union Cafe [2] is open. See [1] and [3].");
+  });
+
+  it("gives back an open bracket that never closes when the stream ends", () => {
+    expect(stream(["Price [1", "0 off"]).text).toBe("Price [10 off");
+    expect(stream(["Note 【draft"]).text).toBe("Note 【draft");
   });
 });
 

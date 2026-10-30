@@ -37,7 +37,7 @@ import {
   type RouteReport,
 } from "./executor";
 import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
-import { normalizeReplyText } from "./reply-text";
+import { createReplyNormalizer } from "@/lib/reply-text";
 import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
 import { detectToolIntent } from "./tool-intent";
@@ -719,6 +719,16 @@ async function* runChatTurn(
     let calls: ToolCall[] = [];
     let hopText = "";
     let hopFinished = false;
+    const normalizer = createReplyNormalizer();
+    const accept = (normalized: string): string => {
+      let text = normalized;
+      // Text from two hops is kept apart, so it does not run together.
+      if (!hopText && content && text) text = `\n\n${text.trimStart()}`;
+      text = text.slice(0, MAX_ASSISTANT_CHARS - content.length);
+      hopText += text;
+      content += text;
+      return text;
+    };
     try {
       for await (const chunk of executeRouted({
         plan: { ...plan, deadlineMs: remainingMs, ...(textModel ? { models: [textModel] } : {}) },
@@ -741,15 +751,8 @@ async function* runChatTurn(
           calls = chunk.calls;
           continue;
         }
-        let text = normalizeReplyText(chunk.text);
-        // Text from two hops is kept apart, so it does not run together.
-        if (!hopText && content && text) text = `\n\n${text.trimStart()}`;
-        text = text.slice(0, MAX_ASSISTANT_CHARS - content.length);
-        if (text) {
-          hopText += text;
-          content += text;
-          yield { type: "delta", text };
-        }
+        const text = accept(normalizer.push(chunk.text));
+        if (text) yield { type: "delta", text };
         if (content.length >= MAX_ASSISTANT_CHARS) {
           truncated = true;
           break;
@@ -797,6 +800,8 @@ async function* runChatTurn(
       return;
     }
     logRoute(deps, logBase, turn.route, report, hop);
+    const tail = accept(normalizer.flush());
+    if (tail) yield { type: "delta", text: tail };
     fallback ||= report.fallback;
     // A hop cut at the length limit has no usage, so the turn's sum must not look whole.
     if (!hopFinished) usages.push(null);
