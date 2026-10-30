@@ -61,7 +61,7 @@ describe("token sealing", () => {
     expect(await openText(KEY, sealed, tokenAssociatedData("u2", "google"))).toBeNull();
     expect(await openText(OTHER_KEY, sealed, tokenAssociatedData("u1", "google"))).toBeNull();
     const [v, iv, body] = sealed.split(".");
-    const flipped = `${v}.${iv}.${body!.slice(0, -1)}${body!.endsWith("A") ? "B" : "A"}`;
+    const flipped = `${v}.${iv}.${body![0] === "A" ? "B" : "A"}${body!.slice(1)}`;
     expect(await openText(KEY, flipped, tokenAssociatedData("u1", "google"))).toBeNull();
     expect(await openText(KEY, "v2.x.y", "ad")).toBeNull();
     expect(sealed).not.toBe(await sealText(KEY, "refresh", tokenAssociatedData("u1", "google")));

@@ -90,6 +90,9 @@ async function runClaimed(
       return finished.proposal?.status === "executed"
         ? jsonResponse(finished.proposal, requestId)
         : errorResponse(409, "conflict", "This action was already decided.", requestId);
+    case "outcome_unknown":
+      // A failure after a reclaim: an earlier attempt may have acted, so the user answers.
+      return unknownOutcome(finished.proposal ?? proposal, requestId);
     default:
       logEvent("error", "external_action_finish_refused", { requestId, outcome: finished.outcome });
       return unknownOutcome(proposal, requestId);
