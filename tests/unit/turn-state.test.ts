@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STALL_MS, TURN_STATE_LABELS, blocksRetry, canRetryLast, chatErrorView, withNoRetry } from "@/features/chat/turn-state";
+import { STALL_MS, TURN_STATE_LABELS, blocksRetry, canRetryLast, chatErrorView, turnStepLine, withNoRetry } from "@/features/chat/turn-state";
 
 describe("chatErrorView", () => {
   it("uses the stream's retryable flag when it has one", () => {
@@ -29,8 +29,17 @@ describe("chatErrorView", () => {
     expect(chatErrorView("not_configured", "Not set up.", { trial: false }).retryable).toBe(false);
   });
 
-  it("has one label for each state and a 15-second stall", () => {
-    expect(STALL_MS).toBe(15_000);
+  it("names the step of a streaming reply", () => {
+    const base = { text: "", searching: false };
+    expect(turnStepLine({ ...base, searching: true })).toBe("Searching the web…");
+    expect(turnStepLine({ ...base, tool: "Searching your documents…" })).toBe("Searching your documents…");
+    expect(turnStepLine({ ...base, text: "Hi" })).toBe("Writing the reply…");
+    expect(turnStepLine({ ...base, tier: "heavy" })).toBe("Thinking harder…");
+    expect(turnStepLine(base)).toBe("Thinking…");
+  });
+
+  it("has one label for each state and a 30-second stall", () => {
+    expect(STALL_MS).toBe(30_000);
     expect(Object.values(TURN_STATE_LABELS)).toContain("Waiting for you");
   });
 });

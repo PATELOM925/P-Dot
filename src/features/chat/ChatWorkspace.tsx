@@ -46,7 +46,7 @@ import { toolStatusLine } from "./tool-status";
 import {
   STALL_LINE,
   STALL_MS,
-  TURN_STATE_LABELS,
+  turnStepLine,
   blocksRetry,
   canRetryLast,
   chatErrorView,
@@ -852,11 +852,17 @@ export function ChatWorkspace({
             <article className="message message-assistant" aria-busy="true">
               <p className="message-author">P-Dot</p>
               <p className="turn-state" data-state={stalled ? "stalled" : "working"}>
-                {stalled ? STALL_LINE : TURN_STATE_LABELS.working}
+                {stalled
+                  ? STALL_LINE
+                  : turnStepLine({
+                      text: streaming.text,
+                      tool: streaming.tool,
+                      searching: webSearch && !streaming.search,
+                      tier: streaming.tier,
+                    })}
               </p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
-              {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
-              {streaming.text ? (
+              {streaming.text && (
                 <AssistantReply
                   text={streaming.text}
                   sources={streaming.search?.sources ?? []}
@@ -864,16 +870,6 @@ export function ChatWorkspace({
                   showSources={streaming.search?.status === "used"}
                   streaming
                 />
-              ) : (
-                <div className="message-content">
-                  <span className="muted">
-                    {webSearch && !streaming.search
-                      ? "Searching the web…"
-                      : streaming.tier === "heavy"
-                        ? "Thinking harder…"
-                        : "Thinking…"}
-                  </span>
-                </div>
               )}
             </article>
           )}
