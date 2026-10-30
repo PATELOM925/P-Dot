@@ -2,7 +2,51 @@
 
 A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, browser dictation, approval cards, a Memory page for memories and documents, "What was sent" under each reply, an action log, reminders, and an installable app for Android. The assistant does not propose actions or use memories in replies yet, and nothing can be connected, automated or paired yet (those parts of Workflows, Connectors and Devices are previews). Unit tests use mocked providers; the database rules were tested against a local Supabase. A few small real Nebius calls checked the token usage and reasoning format (see [decision 0006](docs/decisions/0006-global-spend-guard.md)); a full chat through the live app has not been tested yet. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key is set. A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
+**Status: MVP implementation in progress.** Working: accounts, a streaming chat with opt-in web search, conversation history with rename and delete, Personal and Work modes, a to-do list, browser dictation, approval cards, a Memory page for memories and documents, "What was sent" under each reply, an action log, reminders, and an installable app for Android. The assistant does not propose actions or use memories in replies yet, and nothing can be connected, automated or paired yet (those parts of Workflows, Connectors and Devices are previews). Unit tests use mocked providers; the database rules were tested against a local Supabase. A few small real Nebius calls checked the token usage and reasoning format (see [decision 0006](docs/decisions/0006-global-spend-guard.md)); a full chat through the live app has not been tested yet. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19) with the Nebius and Tavily keys set. A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
+
+
+## Hackathon: Nebius x NVIDIA
+
+P-Dot is entered in the Nebius x NVIDIA Global AI Hackathon, **Personal AI Track**. The project started on 2026-10-09, inside the submission period.
+
+- Live app: https://pdot.iampatelom.com
+- License: Apache 2.0 ([LICENSE](LICENSE))
+
+### How P-Dot uses NVIDIA Nemotron through Nebius Token Factory
+
+Every chat reply is a runtime call to the Token Factory chat completions API (`https://api.tokenfactory.nebius.com/v1`, OpenAI-compatible, streamed). A router picks a model tier for each message without a model call ([`src/server/assistant/router.ts`](src/server/assistant/router.ts)). Each tier tries its models in order ([`src/server/assistant/tiers.ts`](src/server/assistant/tiers.ts), [decision 0007](docs/decisions/0007-model-routing.md)).
+
+| Tier | Models, in order | Used for | Reasoning | Max output tokens |
+| --- | --- | --- | --- | --- |
+| fast | `nvidia/Nemotron-3_5-Lightning`, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/nemotron-3-super-120b-a12b` | Everyday messages | Off | 1,024 |
+| standard | `nvidia/nemotron-3-super-120b-a12b`, `nvidia/Nemotron-3_5-Lightning` | One reasoning signal (planning, analysis, math, code), long messages, long conversations, web search results | Off | 2,048 |
+| heavy | `nvidia/Nemotron-3-Ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b` | Multi-step requests, one reasoning signal in a long message, and "Think harder" | On, 1,024-token budget | 4,096 |
+| vision | `nvidia/Nemotron-3.5-Super-VL` | Image input (router and tier ready; the chat API does not take images yet) | Off | 1,024 |
+
+The executor ([`src/server/assistant/executor.ts`](src/server/assistant/executor.ts)) adds retries with backoff, a move to the next model on 404, a first-token timeout per tier, one deadline per reply, a hedge on the fast tier after 1.5 s, and a circuit breaker. It never switches models after the first visible token. Under each reply, the chat shows the model and the reason (for example "Nemotron 3 Super · multi-step request"), and "What was sent" shows the model ID, the context size, memories, documents, web search use and tokens.
+
+Embeddings for memories and documents use `Qwen/Qwen3-Embedding-8B` on the same Token Factory key (1,024 dimensions), stored in Supabase with pgvector.
+
+Tool calls ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22), [decision 0013](docs/decisions/0013-ai-tools-and-scope.md)): a tool-calling loop runs on the standard tier or above, with `web_search` as the first tool. It runs at most 2 tool steps and a final answer step, and holds spend for each step. Planned: `search_documents`, `search_memories`, and the `propose_task`, `propose_reminder` and `save_memory` tools, which become approval cards, and chat titles written by Nemotron.
+
+### Where Token Factory sped up the work
+
+- **One OpenAI-compatible API.** The chat adapter is plain `fetch` with no SDK ([`src/server/providers/nebius/client.ts`](src/server/providers/nebius/client.ts)), so it runs on Cloudflare Workers as is.
+- **One key for the whole family.** Five Nemotron models and an embedding model use the same key and base URL. A fallback chain is a list of model IDs in config, with no new code.
+- **Public prices.** The model catalog with prices let us build the spend guard's price table ([`src/server/providers/nebius/pricing.ts`](src/server/providers/nebius/pricing.ts)) and refuse any model without a price.
+- **Reasoning control per request.** `chat_template_kwargs.enable_thinking` and `thinking_token_budget` let each tier choose reasoning on or off without a different model.
+- **Fast first tokens.** Measured through the executor on 2026-10-19 (small sample): 431 to 467 ms on Lightning, 502 to 530 ms on Super, 559 to 869 ms on Ultra with reasoning (a 200-token reasoning budget for the test).
+
+### Tavily
+
+When the user turns on web search (the "+" menu in chat), the server calls the Tavily Search API ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts)) with basic depth and up to 5 results. Excerpts are cut to 1,200 characters and unsafe URLs are dropped. Results go to Nemotron inside a delimited `<web_search_results>` block marked as untrusted, and the reply lists the sources with links. A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. Tavily credits have their own caps in the spend guard ([decision 0006](docs/decisions/0006-global-spend-guard.md)). Since [PR #22](https://github.com/PATELOM925/P-Dot/pull/22), with the toggle on, Nemotron calls `web_search` as a tool and picks the query itself.
+
+### Other Nebius tools
+
+P-Dot uses Nebius Token Factory only. It does not use Nebius AI Cloud, Serverless Endpoints or Serverless Jobs. The app runs on Cloudflare Workers, with Supabase for auth and Postgres.
+
+To run it yourself, see [Setup](#setup) and [Local development and testing (Docker)](#local-development-and-testing-docker).
+
 
 ## What works today
 
@@ -48,7 +92,7 @@ Requires Node.js 22.12 or newer.
    npm install
    ```
 
-2. **Create a Supabase project** and apply the schema in [`supabase/migrations/20261014000000_initial_schema.sql`](supabase/migrations/20261014000000_initial_schema.sql), either by pasting it into the Supabase SQL editor or with the Supabase CLI (`supabase link`, then `supabase db push`).
+2. **Create a Supabase project** and apply every migration in [`supabase/migrations/`](supabase/migrations/) in file name order with the Supabase CLI (`supabase link`, then `supabase db push`).
 
 3. **Configure Supabase Auth** (Authentication → URL Configuration and Email Templates):
    - Site URL: your production URL (or `http://localhost:3000` for local work).
@@ -260,6 +304,8 @@ Short version:
 Done and passing locally: lint, type-check, the unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules, spend guard holds, settles and refusals), production build, and the 6 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
 
 Deployed and checked on 2026-10-19: `/api/health` (auth configured, inference not configured), `/`, `/login`, `/signup` return 200, `/chat` redirects to `/login` when signed out, and `POST /api/chat` without a session returns 401. No CPU-limit or runtime errors in the Worker logs.
+
+Checked on 2026-10-30: `/api/health` reports auth, inference and web search configured.
 
 Spend guard SQL (2026-10-19): the migration was run on an in-memory Postgres (PGlite) with stand-ins for the Supabase roles and `auth.uid()`. Checked: hold and settle, settle once, no settle by another user, no negative or above-hold settle, parameter bounds, day, total and per-user caps, no direct table access for `anon` or `authenticated`. Not checked there: many requests at the same time (row locks).
 
