@@ -44,6 +44,7 @@ import {
   STALL_LINE,
   STALL_MS,
   TURN_STATE_LABELS,
+  blocksRetry,
   canRetryLast,
   chatErrorView,
   withNoRetry,
@@ -230,7 +231,8 @@ export function ChatWorkspace({
 
   function showTurnError(view: Omit<ErrorState, "turn">, userMessageId: string | null) {
     setError({ ...view, turn: true });
-    if (!view.retryable && userMessageId) setNoRetryIds((ids) => withNoRetry(ids, userMessageId));
+    // A limit is not final: Retry can work later. Only an error that says Retry cannot help blocks it.
+    if (blocksRetry(view) && userMessageId) setNoRetryIds((ids) => withNoRetry(ids, userMessageId));
   }
 
   function closeList() {
@@ -381,6 +383,7 @@ export function ChatWorkspace({
         if (stalledRef.current) {
           stalledRef.current = false;
           setStalled(false);
+          setStatus("P-Dot is replying…");
         }
         switch (event.type) {
           case "start":

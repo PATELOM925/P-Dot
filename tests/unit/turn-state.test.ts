@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STALL_MS, TURN_STATE_LABELS, canRetryLast, chatErrorView, withNoRetry } from "@/features/chat/turn-state";
+import { STALL_MS, TURN_STATE_LABELS, blocksRetry, canRetryLast, chatErrorView, withNoRetry } from "@/features/chat/turn-state";
 
 describe("chatErrorView", () => {
   it("uses the stream's retryable flag when it has one", () => {
@@ -59,5 +59,14 @@ describe("canRetryLast", () => {
   it("returns the same set when the message is already blocked", () => {
     const blocked = withNoRetry(new Set(), "msg-a");
     expect(withNoRetry(blocked, "msg-a")).toBe(blocked);
+  });
+});
+
+describe("blocksRetry", () => {
+  it("blocks Retry for a final error, but not for a rate limit or a spend limit", () => {
+    expect(blocksRetry(chatErrorView("payload_too_large", "Too long.", { retryable: false, trial: false }))).toBe(true);
+    expect(blocksRetry(chatErrorView("rate_limited", "Too many messages.", { trial: false }))).toBe(false);
+    expect(blocksRetry(chatErrorView("budget_exhausted", "Daily limit.", { trial: true }))).toBe(false);
+    expect(blocksRetry(chatErrorView("provider_unavailable", "Busy.", { retryable: true, trial: false }))).toBe(false);
   });
 });

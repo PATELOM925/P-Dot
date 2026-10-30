@@ -66,15 +66,47 @@ describe("parseMarkdown", () => {
     ["unmatched **", "**a ".repeat(15_000)],
     ["unmatched ~~ and _", "~~a _b ".repeat(8_600)],
   ];
+  // The old parser took over 1 s on each of these, so 250 ms still tells the two apart on a busy machine.
   for (const [name, text] of ADVERSARIAL) {
-    it(`parses 60k characters of ${name} in under 100 ms`, () => {
+    it(`parses 60k characters of ${name} in under 250 ms`, () => {
       expect(text.length).toBeGreaterThanOrEqual(60_000);
       parseMarkdown("warm up [x](https://example.com)");
       const started = performance.now();
       parseMarkdown(text);
-      expect(performance.now() - started).toBeLessThan(100);
+      expect(performance.now() - started).toBeLessThan(250);
     });
   }
+
+  // Line rules: a long line must cost linear time (the old heading and table regexes backtracked).
+  const LONG_LINES: [string, string][] = [
+    ["a heading of # runs", "# " + "#".repeat(8_000) + "x"],
+    ["a heading with spaces and #", "# " + "# ".repeat(4_000) + "x"],
+    ["a table separator that fails at the end", "| a | b |\n|-" + " ".repeat(8_000) + "x"],
+    ["a table separator of spaces", "| a | b |\n" + " ".repeat(8_000) + "x"],
+    ["a rule that fails at the end", "-" + " -".repeat(4_000) + " x"],
+    ["a list marker with spaces", "-" + " ".repeat(8_000) + "x"],
+    ["a quote of spaces", ">" + " ".repeat(8_000) + "x"],
+    ["a URL ending in punctuation", "see https://a.example/" + ".".repeat(8_000) + "x"],
+    ["a URL of punctuation only", "see https://a.example/" + ".".repeat(8_000)],
+  ];
+  for (const [name, line] of LONG_LINES) {
+    it(`parses an 8,000-character line with ${name} in under 250 ms`, () => {
+      expect(line.length).toBeGreaterThanOrEqual(8_000);
+      const started = performance.now();
+      for (let k = 0; k < 5; k += 1) parseMarkdown(line);
+      expect(performance.now() - started).toBeLessThan(250);
+    });
+  }
+
+  it("still reads headings, rules and table separators", () => {
+    expect(parseMarkdown("## Title ##")[0]).toMatchObject({ type: "heading", level: 2 });
+    expect(parseMarkdown("## C# tips")[0]).toMatchObject({ type: "heading", content: [{ type: "text", text: "C# tips" }] });
+    expect(parseMarkdown("#nospace")[0]?.type).toBe("paragraph");
+    expect(parseMarkdown("* * *")[0]?.type).toBe("rule");
+    expect(parseMarkdown("-*-")[0]?.type).not.toBe("rule");
+    expect(parseMarkdown("| a | b |\n|:--|--:|\n| 1 | 2 |")[0]?.type).toBe("table");
+    expect(parseMarkdown("| a | b |\n| x | y |")[0]?.type).toBe("paragraph");
+  });
 
   it("ends a code span only at a run of the same length", () => {
     expect(parseInline("``a`b`` and `c`")).toEqual([

@@ -76,3 +76,8 @@ export function canRetryLast(input: {
   const { sending, loadingMessages, activeId, last, noRetryIds } = input;
   return !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending && !noRetryIds.has(last.id);
 }
+
+/** True when Retry can never help this message: a final error, not a limit that ends later. */
+export function blocksRetry(view: { retryable?: boolean; limit?: boolean }): boolean {
+  return !view.retryable && !view.limit;
+}
