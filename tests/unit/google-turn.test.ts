@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CALENDAR_OFF_REPLY, SEND_OFF_REPLY, googleForTurn } from "@/server/assistant/google-turn";
+import { CALENDAR_OFF_REPLY, GMAIL_OFF_REPLY, SEND_OFF_REPLY, googleForTurn } from "@/server/assistant/google-turn";
 import type { GoogleServices } from "@/server/assistant/tools/google";
 import type { GoogleConnection } from "@/server/db/connected-accounts";
 import { CALENDAR_SCOPE, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE } from "@/server/google/oauth";
@@ -46,5 +46,20 @@ describe("googleForTurn with a missing scope (live test, 2026-10-30)", () => {
     const turn = await googleForTurn(deps([GMAIL_READ_SCOPE]), "u1", true, "Any unread email from Sam?");
     expect(turn?.flags).toEqual({ read: true, send: false, calendar: false });
     expect(turn?.note).not.toContain("access is off");
+  });
+
+  it("tells the user that Gmail is off for a mail question with only the calendar scope", async () => {
+    const turn = await googleForTurn(deps([CALENDAR_SCOPE]), "u1", true, "Any unread email from Sam?");
+    expect(turn?.flags).toEqual({ read: false, send: false, calendar: true });
+    expect(turn?.note).toContain(GMAIL_OFF_REPLY);
+    expect(turn?.note).not.toContain("Do not search Gmail instead");
+  });
+
+  it("says not to search Gmail only for a calendar-only question", async () => {
+    const both = await googleForTurn(deps([GMAIL_READ_SCOPE]), "u1", true, "Any email about my meeting today?");
+    expect(both?.note).toContain(CALENDAR_OFF_REPLY);
+    expect(both?.note).not.toContain("Do not search Gmail instead");
+    const send = await googleForTurn(deps([GMAIL_READ_SCOPE, CALENDAR_SCOPE]), "u1", true, "Send an email to Sam about lunch");
+    expect(send?.note).not.toContain("Do not search Gmail instead");
   });
 });
