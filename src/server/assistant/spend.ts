@@ -4,7 +4,7 @@ import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
 import type { ApiErrorCode } from "@/types/api";
 import type { SpendLimit } from "@/server/db/spend";
-import type { ChatMessage, TokenUsage } from "@/server/providers/nebius/client";
+import type { ChatMessage, TokenUsage, ToolDefinition } from "@/server/providers/nebius/client";
 import {
   costMicroUsd,
   inputTokenBound,
@@ -68,7 +68,8 @@ export function nebiusEmbeddingHoldMicroUsd(model: string, texts: string[]): num
 
 /**
  * Worst-case cost of one Nebius call, in micro-dollars: every input byte as a
- * token, plus the full output token limit, at the model's price. Throws a
+ * token (tool definitions included), plus the full output token limit, at the
+ * model's price. Throws a
  * ConfigError for a model that has no price and NebiusHoldTooLargeError above
  * the ceiling, before any provider call.
  */
@@ -77,9 +78,10 @@ export function nebiusHoldMicroUsd(
   messages: ChatMessage[],
   maxOutputTokens: number,
   extraInputBytes = 0,
+  tools: ToolDefinition[] = [],
 ): number {
   return requireHold(requirePrice(model), {
-    promptTokens: inputTokenBound(messages, extraInputBytes),
+    promptTokens: inputTokenBound(messages, extraInputBytes, tools),
     completionTokens: maxOutputTokens,
   });
 }

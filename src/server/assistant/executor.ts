@@ -2,7 +2,7 @@ import "server-only";
 import type { ModelTier } from "@/lib/routing";
 import type { SpendLimit } from "@/server/db/spend";
 import { ProviderError } from "@/server/providers/errors";
-import type { ChatMessage, CompletionChunk, ModelProvider, TokenUsage } from "@/server/providers/model";
+import type { ChatMessage, CompletionChunk, ModelProvider, TokenUsage, ToolDefinition } from "@/server/providers/model";
 import type { CircuitBreaker } from "./breaker";
 import { RETRY_POLICY, type TierPlan } from "./tiers";
 
@@ -11,8 +11,9 @@ import { RETRY_POLICY, type TierPlan } from "./tiers";
 // breaker. Provider-agnostic: it uses only the ModelProvider interface.
 //
 // The one rule that matters most: an attempt can be retried or replaced only
-// BEFORE the first visible token goes to the user. After that, the executor
-// never switches models; an error goes to the caller as before.
+// BEFORE the first visible token or a whole tool call goes to the caller.
+// After that, the executor never switches models; an error goes to the caller
+// as before.
 //
 // See docs/decisions/0007-model-routing.md.
 
@@ -95,6 +96,8 @@ export function newRouteReport(tier: ModelTier): RouteReport {
 export interface ExecuteOptions {
   plan: TierPlan;
   messages: ChatMessage[];
+  /** Functions the model may call. None: tools are off for this call. */
+  tools?: ToolDefinition[];
   provider: ModelProvider;
   budget: AttemptBudget;
   breaker: CircuitBreaker;
@@ -105,8 +108,8 @@ export interface ExecuteOptions {
   random?: () => number;
 }
 
-/** Chunks for the caller: visible text, then one finish. */
-export type ExecutedChunk = Extract<CompletionChunk, { type: "text" } | { type: "finish" }>;
+/** Chunks for the caller: visible text, the whole tool calls if any, then one finish. */
+export type ExecutedChunk = Extract<CompletionChunk, { type: "text" } | { type: "tool_calls" } | { type: "finish" }>;
 
 type ErrorAction = "retry" | "next_model" | "stop";
 
@@ -281,6 +284,7 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
               maxOutputTokens: plan.maxOutputTokens,
               thinkingBudgetTokens: plan.thinkingBudgetTokens,
               timeoutMs: remaining,
+              ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
             },
             attempt.controller.signal,
           )
@@ -414,8 +418,8 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
     notBefore.set(attempt.model, Math.max(notBefore.get(attempt.model) ?? 0, until));
   }
 
-  /** Runs attempts until one sends visible text. Returns that attempt and its first text. */
-  async function acquire(): Promise<{ attempt: Attempt; text: string }> {
+  /** Runs attempts until one sends visible text or whole tool calls. Returns that attempt and that chunk. */
+  async function acquire(): Promise<{ attempt: Attempt; first: ExecutedChunk }> {
     for (;;) {
       if (request.signal.aborted) throw abortError();
       if (live.length === 0) {
@@ -467,7 +471,9 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
             continue;
           }
           recordFirstToken(attempt);
-          if (chunk.type === "text" && chunk.text.length > 0) return { attempt, text: chunk.text };
+          if (chunk.type === "text" && chunk.text.length > 0) return { attempt, first: chunk };
+          // With tools off, tool calls are not a reply: the attempt ends empty and the next model runs.
+          if (chunk.type === "tool_calls" && options.tools && options.tools.length > 0) return { attempt, first: chunk };
           attempt.pending = pull(attempt);
           continue;
         }
@@ -485,7 +491,7 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
     report.model = committed.model;
     report.fallback = committed.model !== plan.models[0];
     report.firstTokenMs = Date.now() - startedAt;
-    yield { type: "text", text: first.text };
+    yield first.first;
 
     // Committed: pass the stream through. No more retries or model switches.
     let usage: TokenUsage | null = null;
@@ -498,7 +504,7 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
       }
       if (result.done) break;
       const chunk = result.value;
-      if (chunk.type === "text") yield chunk;
+      if (chunk.type === "text" || chunk.type === "tool_calls") yield chunk;
       else if (chunk.type === "finish") {
         usage = chunk.usage;
         finished = true;
