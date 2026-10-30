@@ -1052,6 +1052,8 @@ export function ChatWorkspace({
                 aria-disabled={!sending && (!draft.trim() || limit.over) ? true : undefined}
                 onClick={(event) => {
                   if (sending) {
+                    // Stop puts the prompt back and turns this into Send before the click ends, so the click must not submit it.
+                    event.preventDefault();
                     abortRef.current?.abort();
                   } else if (!draft.trim() || limit.over) {
                     event.preventDefault();
