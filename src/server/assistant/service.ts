@@ -3,6 +3,7 @@ import {
   HISTORY_CHAR_BUDGET,
   HISTORY_MESSAGE_LIMIT,
   MAX_ASSISTANT_CHARS,
+  MEMORY_CONTEXT_COUNT,
   REPLY_CLAIM_LEASE_SECONDS,
 } from "@/lib/limits";
 import type {
@@ -40,6 +41,7 @@ import { normalizeReplyText } from "./reply-text";
 import { routeRequest, type RouteDecision } from "./router";
 import {
   budgetRefusal,
+  MEMORY_BLOCK_MAX_BYTES,
   nebiusHoldMicroUsd,
   nebiusSettleMicroUsd,
   NebiusHoldTooLargeError,
@@ -55,9 +57,11 @@ import {
   selectTools,
   TOOLS,
   toToolDefinition,
+  type OwnDataServices,
   type ToolFlags,
   type ToolSpec,
 } from "./tools";
+import type { MemoryMatch } from "@/server/db/retrieval";
 
 export interface AssistantDeps {
   repo: ConversationRepository;
@@ -83,6 +87,12 @@ export interface AssistantDeps {
    * without it, no record is written. A failed write never fails the reply.
    */
   contextRecords?: ContextRecordRepository;
+  /**
+   * The user's own P-Dot data for memory retrieval and the own-data tools
+   * (decision 0013). Optional: without it, replies use no memories and those
+   * tools are not offered.
+   */
+  ownData?: OwnDataServices | null;
 }
 
 /** A Nebius hold made before the stream starts and settled when it ends. */
@@ -263,7 +273,8 @@ export async function prepareChatTurn(
     const searchWanted = request.webSearch && deps.search !== null;
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
     // which only makes the prompt smaller than the one this hold prices.
-    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted });
+    const ownData = Boolean(deps.ownData);
+    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted, ownData });
     const route = withToolTier(
       routeRequest({
         message: pendingHistory.at(-1)?.content ?? "",
@@ -293,7 +304,7 @@ export async function prepareChatTurn(
             model,
             promptBound,
             plan.maxOutputTokens,
-            searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0,
+            (searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0) + (ownData ? MEMORY_BLOCK_MAX_BYTES : 0),
             toolDefinitionsBound,
           ),
         ),
@@ -359,7 +370,7 @@ export async function prepareChatTurn(
         webSearch: request.webSearch,
         searchBudgetExhausted,
         route,
-        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted },
+        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted, ownData },
         holds,
       },
     };
@@ -517,6 +528,26 @@ async function* runChatTurn(
     }
   }
 
+  // Active memories of this mode, top MEMORY_CONTEXT_COUNT. A failure means a reply without memories.
+  let memories: MemoryMatch[] = [];
+  if (deps.ownData) {
+    try {
+      const [vector] = await deps.ownData.embedder.embed([turn.userMessage.content], signal);
+      if (vector) {
+        const found = await deps.ownData.retrieval.matchMemories(vector, turn.conversation.mode, MEMORY_CONTEXT_COUNT);
+        memories = found.slice(0, MEMORY_CONTEXT_COUNT);
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        deps.log("info", "chat_client_aborted", { ...logBase, stage: "memories" });
+        return;
+      }
+      deps.log("warn", "memory_retrieval_failed", { ...logBase, kind: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  const memoryIds = new Set(memories.map((memory) => memory.id));
+  const documentChunkIds = new Set<string>();
+
   // 2. Inference over a bounded context window, on the routed tier. When tools
   // are offered, up to MAX_TOOL_HOPS hops can call them, then one final pass
   // runs with tools off. Every attempt of every hop holds and settles spend.
@@ -530,10 +561,12 @@ async function* runChatTurn(
     now: deps.now(),
     mode: turn.conversation.mode,
     toolGuidance: tools.map((tool) => tool.guidance),
+    memories,
   });
   const plan = deps.routing[turn.route.tier];
-  // One deadline for all hops, so a turn stays inside the reply claim lease (decision 0012).
+  // One deadline for all hops and tool runs, so a turn stays inside the reply claim lease (decision 0012).
   const deadlineAt = Date.now() + plan.deadlineMs;
+  const toolSignal = AbortSignal.any([signal, AbortSignal.timeout(plan.deadlineMs)]);
   const sources: WebSearchResult[] = [...results];
   const callsPerTool = new Map<string, number>();
 
@@ -703,10 +736,12 @@ async function* runChatTurn(
             mode: turn.conversation.mode,
             conversationId: turn.conversation.id,
             userMessageId: turn.userMessage.id,
-            signal,
+            signal: toolSignal,
             sources,
           });
           result = outcome.content;
+          for (const id of outcome.memoryIds ?? []) memoryIds.add(id);
+          for (const id of outcome.documentChunkIds ?? []) documentChunkIds.add(id);
           if (outcome.sources && outcome.sources.length > 0) {
             sources.push(...outcome.sources);
             yield { type: "search", status: "used", sources: toSourceRefs(sources) };
@@ -776,8 +811,8 @@ async function* runChatTurn(
         model: report.model,
         historyMessageCount: historyWindow.length,
         historyChars: historyWindow.reduce((sum, m) => sum + m.content.length, 0),
-        memoryIds: [],
-        documentChunkIds: [],
+        memoryIds: [...memoryIds],
+        documentChunkIds: [...documentChunkIds],
         webSourceCount: webSearch === "used" ? sources.length : 0,
         promptVersion: PROMPT_VERSION,
         inputTokens: validUsage?.promptTokens ?? null,
