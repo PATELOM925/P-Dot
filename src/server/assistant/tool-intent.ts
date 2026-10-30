@@ -44,9 +44,10 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
     intent: "own_data",
     pattern: new RegExp(
       [
-        String.raw`\bmy\s+(?:notes?|documents?|docs|files?|uploads?|resume|cv|pdfs?)\b`,
+        String.raw`\bmy\s+(?:[\w'-]+\s+){0,2}(?:notes?|documents?|docs|files?|uploads?|resume|cv|pdfs?)\b`,
+        String.raw`\b(?:in|from|according\s+to|based\s+on)\s+my\s+(?:[\w'-]+\s+){0,3}(?:notes?|documents?|docs?|files?|uploads?|pdfs?)\b`,
         String.raw`\b(?:the|my|that|this)\s+(?:document|doc|file|pdf|resume|cv|notes?)\s+(?:that\s+|which\s+)?i\s+(?:uploaded|added|saved|shared|sent)\b`,
-        String.raw`\b(?:in|from)\s+(?:the|my|that)\s+(?:file|document|doc|notes?)\b`,
+        String.raw`\b(?:in|from|according\s+to|based\s+on)\s+(?:the|that)\s+(?:file|document|doc|notes?)\b`,
         String.raw`\bwhat\s+(?:do|did)\s+you\s+(?:know|remember)\s+about\s+me\b`,
         String.raw`\bdo\s+you\s+remember\b`,
         String.raw`\bwhat\s+did\s+i\s+(?:tell|say\s+to|save|share\s+with)\s+you\b`,
