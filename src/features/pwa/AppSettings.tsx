@@ -4,7 +4,7 @@ import { useState } from "react";
 import { errorMessage } from "@/lib/api-client";
 import { promptInstall, requestNotifications, showTestNotification, usePwa } from "./pwa-store";
 
-function InstallControl() {
+export function InstallControl() {
   const pwa = usePwa();
   const [message, setMessage] = useState<string | null>(null);
 

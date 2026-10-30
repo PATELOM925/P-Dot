@@ -42,6 +42,7 @@ const OWNED_TABLES = [
   "reminders",
   "spend_reservations",
   "tasks",
+  "telegram_links",
   "usage_windows",
 ] as const;
 const SERVER_ONLY_TABLES = ["spend_counters"] as const;
@@ -131,6 +132,10 @@ async function seedOwner(gate: SqlGate, userId: string): Promise<Owned> {
      values ($1, 'google', 'gate-subject', 'gate@example.com', $2, $3)`,
     [userId, [GMAIL_READ_SCOPE], CIPHERTEXT],
   );
+  await gate.admin(
+    "insert into telegram_links (user_id, link_code_hash, link_code_expires_at) values ($1, $2, now() + interval '10 minutes')",
+    [userId, "a".repeat(64)],
+  );
   await gate.admin("insert into usage_windows (user_id, window_start, request_count) values ($1, now(), 1)", [userId]);
   await gate.admin(
     `insert into spend_reservations (user_id, provider, usage_day, period_kind, period_start, held, charged)
@@ -187,6 +192,11 @@ function insertFor(table: OwnedTable, owner: string, refs: Owned): [string, unkn
         `insert into connected_accounts (user_id, provider, account_subject, account_email, scopes, token_ciphertext)
          values ($1, 'google', 'x-subject', 'x@example.com', $2, $3)`,
         [owner, [GMAIL_READ_SCOPE], CIPHERTEXT],
+      ];
+    case "telegram_links":
+      return [
+        "insert into telegram_links (user_id, link_code_hash, link_code_expires_at) values ($1, $2, now() + interval '10 minutes')",
+        [owner, "b".repeat(64)],
       ];
     case "context_records":
       return [

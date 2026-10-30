@@ -61,6 +61,7 @@ const APP_NAMES: Record<McpServerId, RegExp> = {
   // Case matters here: "in Linear" names the app, "in linear time" does not.
   linear: /\b(?:[Ii]n|[Oo]n|[Ff]rom|[Cc]heck|[Oo]pen)\s+Linear\b|\b[Mm]y\s+[Ll]inear\b|\b[Ll]inear\s+(?:issues?|tickets?|projects?|board|cycles?|workspace|account)\b/,
   todoist: /\btodoist\b/i,
+  github: /\bgithub\b/i,
 };
 
 const noneOn = (sources: MessageSources) => !sources.webSearch && !sources.useGoogle && sources.apps.length === 0;

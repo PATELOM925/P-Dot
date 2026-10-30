@@ -1,4 +1,4 @@
-// What the Notion, Linear and Todoist cards on the Connectors page show (decision 0016). Pure, so it is unit-tested.
+// What the Notion, Linear, Todoist and GitHub cards on the Connectors page show (decision 0016). Pure, so it is unit-tested.
 import { isMcpServerId, MCP_OUTCOMES, MCP_SERVER_NAMES, type McpOutcome } from "@/lib/connectors";
 import type { McpConnectionView } from "@/server/mcp/health";
 
@@ -17,6 +17,9 @@ const TOOL_LABELS: Record<string, string> = {
   linear_get_issue: "Read an issue",
   todoist_list_tasks: "List tasks due soon",
   todoist_find_tasks: "Search tasks",
+  github_search_issues: "Search issues",
+  github_list_pull_requests: "List open pull requests",
+  github_read_file: "Read a file",
 };
 
 export function mcpToolLabel(name: string): string {

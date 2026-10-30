@@ -37,8 +37,14 @@ export interface McpServer {
   issuer: string;
   /** Every OAuth endpoint from discovery must be https on one of these origins. */
   authOrigins: readonly string[];
-  /** The scope P-Dot asks for. */
-  scope: string;
+  /**
+   * "public": the client ID is P-Dot's CIMD URL, else one from DCR. "confidential":
+   * the app has neither, so the owner registers a client and its ID and secret
+   * come from env (decision 0020). The secret goes only to the token endpoint.
+   */
+  client: "public" | "confidential";
+  /** The scope P-Dot asks for. Null: no scope parameter, and P-Dot stores `acceptedScopes` as a label. */
+  scope: string | null;
   /** Scopes P-Dot accepts in a token answer and stores. Keep in step with connected_accounts_known_scopes. */
   acceptedScopes: readonly string[];
   tools: readonly CatalogTool[];
@@ -86,6 +92,7 @@ function tool<Args extends Record<string, unknown>>(spec: CatalogTool<Args>): Ca
 
 const notion: McpServer = {
   id: "notion",
+  client: "public",
   name: "Notion",
   resource: "https://mcp.notion.com/mcp",
   issuer: "https://mcp.notion.com",
@@ -127,6 +134,7 @@ const notion: McpServer = {
 
 const linear: McpServer = {
   id: "linear",
+  client: "public",
   name: "Linear",
   resource: "https://mcp.linear.app/mcp",
   issuer: "https://mcp.linear.app",
@@ -169,6 +177,7 @@ const linear: McpServer = {
 
 const todoist: McpServer = {
   id: "todoist",
+  client: "public",
   name: "Todoist",
   resource: "https://ai.todoist.net/mcp",
   issuer: "https://todoist.com",
@@ -208,7 +217,137 @@ const todoist: McpServer = {
   ],
 };
 
-export const MCP_SERVERS: Record<McpServerId, McpServer> = { notion, linear, todoist };
+// GitHub (decision 0020): the official server's read-only URL. A GitHub App
+// with read-only permissions, registered by the owner, is the client.
+const GITHUB_REPO = /^([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})$/;
+const GITHUB_REPO_IN_TEXT = /(?<![\w./-])[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}(?![\w/-])/g;
+const GITHUB_LINK_IN_TEXT = /https:\/\/(?:www\.)?github\.com\/[^\s<>()"'`]+/gi;
+const GITHUB_FILE_LINK = /^https:\/\/(?:www\.)?github\.com\/[^/\s]+\/[^/\s]+\/blob\/[^/\s]+\/\S+$/;
+
+function githubRepo(owner: string, name: string): string | null {
+  const id = `${owner}/${name}`;
+  const match = GITHUB_REPO.exec(id);
+  return match && name !== "." && name !== ".." ? id.toLowerCase() : null;
+}
+
+/** The parts of a github.com link: a repository, and a file when the link has `blob/<ref>/<path>`. */
+function githubLinkParts(value: string): { repo: string; file: { ref: string; path: string } | null } | null {
+  let url: URL;
+  try {
+    url = new URL(value.replace(/[.,;:!?]+$/, ""));
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || !["github.com", "www.github.com"].includes(url.hostname) || url.username || url.password) return null;
+  let parts: string[];
+  try {
+    parts = url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  } catch {
+    return null;
+  }
+  const repo = parts.length >= 2 ? githubRepo(parts[0]!, parts[1]!.replace(/\.git$/, "")) : null;
+  if (!repo) return null;
+  if (parts[2] !== "blob") return { repo, file: null };
+  // A file link that P-Dot cannot read safely is no ID at all, not a repository.
+  const path = parts.slice(4).join("/");
+  if (parts.length < 5 || parts.slice(3).some((part) => part === "." || part === "..") || path.length > 400 || parts[3]!.length > 200) {
+    return null;
+  }
+  return { repo, file: { ref: parts[3]!, path } };
+}
+
+/** "owner/name" for a repository, or `https://github.com/owner/name/blob/<ref>/<path>` for a file. Owner and name in lower case. */
+export function githubId(value: string): string | null {
+  const text = value.trim();
+  const repo = GITHUB_REPO.exec(text);
+  if (repo) return githubRepo(repo[1]!, repo[2]!);
+  const link = githubLinkParts(text);
+  if (!link) return null;
+  return link.file ? `https://github.com/${link.repo}/blob/${link.file.ref}/${link.file.path}` : link.repo;
+}
+
+function githubIdsInText(text: string): string[] {
+  const ids = new Set<string>();
+  for (const match of text.matchAll(GITHUB_LINK_IN_TEXT)) {
+    const link = githubLinkParts(match[0]);
+    if (!link) continue;
+    ids.add(link.repo);
+    if (link.file) ids.add(`https://github.com/${link.repo}/blob/${link.file.ref}/${link.file.path}`);
+  }
+  for (const match of text.matchAll(GITHUB_REPO_IN_TEXT)) {
+    const id = githubId(match[0]);
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
+const splitRepo = (id: string) => {
+  const [owner, repo] = id.split("/") as [string, string];
+  return { owner, repo };
+};
+
+const github: McpServer = {
+  id: "github",
+  client: "confidential",
+  name: "GitHub",
+  resource: "https://api.githubcopilot.com/mcp/readonly",
+  issuer: "https://github.com/login/oauth",
+  authOrigins: ["https://github.com"],
+  scope: null,
+  acceptedScopes: ["read"],
+  normalizeId: githubId,
+  idsInUserText: githubIdsInText,
+  resultIds: () => [],
+  tools: [
+    tool({
+      name: "github_search_issues",
+      remote: "search_issues",
+      description: "Search GitHub issues that the user can see. Returns up to 10 issues.",
+      guidance:
+        "github_search_issues: search GitHub issues. The query must be one phrase copied word for word from the user's message. You can call it once.",
+      args: z.object({ query: query("GitHub issues") }).strict(),
+      outbound: { kind: "words", field: "query" },
+      remoteArgs: ({ query }) => ({ query, perPage: 10 }),
+      sends: ["query", "perPage"],
+      maxCallsPerTurn: 1,
+      statusQuery: ({ query }) => query,
+    }),
+    tool({
+      name: "github_list_pull_requests",
+      remote: "list_pull_requests",
+      description: "List the open pull requests of one GitHub repository, for example vercel/next.js. Returns up to 10.",
+      guidance:
+        "github_list_pull_requests: list open pull requests. Use a repository (owner/name) or a GitHub link from the user's message.",
+      args: z
+        .object({ repo: z.string().trim().regex(/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/).describe("owner/name, from the user's message.") })
+        .strict(),
+      outbound: { kind: "id", field: "repo" },
+      remoteArgs: ({ repo }) => ({ ...splitRepo(repo), state: "open", perPage: 10 }),
+      sends: ["owner", "repo", "state", "perPage"],
+      maxCallsPerTurn: 2,
+      statusQuery: ({ repo }) => repo,
+    }),
+    tool({
+      name: "github_read_file",
+      remote: "get_file_contents",
+      description: "Read one file from GitHub by its link, for example https://github.com/owner/name/blob/main/README.md.",
+      guidance: "github_read_file: read one file. Use a github.com file link (with /blob/) from the user's message.",
+      args: z
+        .object({ url: z.string().trim().max(700).regex(GITHUB_FILE_LINK).describe("A github.com file link from the user's message.") })
+        .strict(),
+      outbound: { kind: "id", field: "url" },
+      remoteArgs: ({ url }) => {
+        const link = githubLinkParts(url)!;
+        return { ...splitRepo(link.repo), path: link.file!.path, ref: link.file!.ref };
+      },
+      sends: ["owner", "repo", "path", "ref"],
+      maxCallsPerTurn: 3,
+      statusQuery: () => undefined,
+    }),
+  ],
+};
+
+export const MCP_SERVERS: Record<McpServerId, McpServer> = { notion, linear, todoist, github };
 
 export function mcpServer(id: unknown): McpServer | null {
   return typeof id === "string" && Object.hasOwn(MCP_SERVERS, id) ? MCP_SERVERS[id as McpServerId] : null;

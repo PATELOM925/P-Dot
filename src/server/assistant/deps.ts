@@ -2,7 +2,7 @@ import "server-only";
 import { hasAccount } from "@/lib/auth-identity";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
-import { getMcpConfig, type AssistantConfig } from "@/server/config";
+import { getMcpConfig, isMcpServerReady, type AssistantConfig } from "@/server/config";
 import { createMcpAccountRepository } from "@/server/db/connected-accounts";
 import { createConnectorServices, type ConnectorServices } from "@/server/mcp/connector-turn";
 import { mcpFetch } from "@/server/mcp/flow";
@@ -96,6 +96,7 @@ export function connectorServicesFor(auth: AuthContext): ConnectorServices | nul
     anonymous: !hasAccount(auth),
     fetch: mcpFetch,
     log: logEvent,
+    isReady: (server) => isMcpServerReady(server),
   });
 }
 

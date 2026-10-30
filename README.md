@@ -49,6 +49,10 @@ Open https://pdot.iampatelom.com. Sign in with the demo account `demo@pdot.iampa
 **Connectors**
 - Google: Gmail (search, propose emails) and Calendar (search, propose events), with one-click connect. Missing permissions are shown on the card.
 - Notion, Linear and Todoist: read only, through their MCP servers.
+- GitHub (off until the owner sets it up): read only, through GitHub's MCP server. Search issues, list open pull requests in a repository you name, and read a file from a link you paste.
+- Telegram (off until the owner sets it up): link your own chat with a one-time code, then send a reply to it with **Send to Telegram**. Each message needs a press on Send on its card. The bot does not read or answer your messages.
+- Open on your phone: a QR code of the site address on Connectors, with install steps. You sign in on the phone yourself.
+- Coming soon: Vercel (Vercel must approve P-Dot as a client first), WhatsApp (needs Meta business setup and paid templates) and phone calls. See [decision 0020](docs/decisions/0020-connectors-v2.md).
 
 **UI**
 - Nav order: Chat, Today, Connectors, Memory, Activity, Settings. On a phone, Activity, Settings and Devices are under the **More** tab.

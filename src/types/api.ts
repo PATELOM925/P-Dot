@@ -28,7 +28,10 @@ export type AssistantToolName =
   | "linear_search_issues"
   | "linear_get_issue"
   | "todoist_list_tasks"
-  | "todoist_find_tasks";
+  | "todoist_find_tasks"
+  | "github_search_issues"
+  | "github_list_pull_requests"
+  | "github_read_file";
 
 /** Steps of deep research and the morning brief that show a status line (decision 0018). They are not tools. */
 export type ResearchStep = "research_search" | "research_read" | "research_write" | "brief_search";

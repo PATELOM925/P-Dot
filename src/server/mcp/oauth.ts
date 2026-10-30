@@ -192,7 +192,7 @@ export function authorizationUrl(
     response_type: "code",
     client_id: input.clientId,
     redirect_uri: input.redirectUri,
-    scope: server.scope,
+    ...(server.scope === null ? {} : { scope: server.scope }),
     state: input.state,
     code_challenge: input.codeChallenge,
     code_challenge_method: "S256",
@@ -223,7 +223,9 @@ export interface Tokens {
 export const DEFAULT_EXPIRES_IN_SECONDS = 3600;
 
 function toTokens(server: McpServer, body: z.infer<typeof tokenAnswer>, now: number, previousRefresh: string | null): Tokens {
-  const granted = body.scope === undefined ? [server.scope] : body.scope.split(" ").filter(Boolean);
+  // An app without OAuth scopes (a GitHub App) gets the catalog's label.
+  const granted =
+    server.scope === null ? [...server.acceptedScopes] : body.scope === undefined ? [server.scope] : body.scope.split(" ").filter(Boolean);
   return {
     accessToken: body.access_token,
     accessExpiresAt: now + (body.expires_in ?? DEFAULT_EXPIRES_IN_SECONDS) * 1000,
@@ -238,10 +240,13 @@ const form = (body: Record<string, string>): RequestInit => ({
   body: new URLSearchParams(body).toString(),
 });
 
+/** The client secret of a confidential client, only for the token endpoint (decision 0020). */
+const secretField = (clientSecret: string | null | undefined): Record<string, string> => (clientSecret ? { client_secret: clientSecret } : {});
+
 export async function exchangeCode(
   fetchImpl: FetchLike,
   server: McpServer,
-  input: { tokenEndpoint: string; clientId: string; redirectUri: string; code: string; verifier: string },
+  input: { tokenEndpoint: string; clientId: string; clientSecret?: string | null; redirectUri: string; code: string; verifier: string },
   now: number,
 ): Promise<Tokens> {
   const body = await oauthRequest(
@@ -252,6 +257,7 @@ export async function exchangeCode(
       code: input.code,
       redirect_uri: input.redirectUri,
       client_id: input.clientId,
+      ...secretField(input.clientSecret),
       code_verifier: input.verifier,
       resource: server.resource,
     }),
@@ -265,13 +271,19 @@ export async function exchangeCode(
 export async function refreshTokens(
   fetchImpl: FetchLike,
   server: McpServer,
-  input: { tokenEndpoint: string; clientId: string; refreshToken: string },
+  input: { tokenEndpoint: string; clientId: string; clientSecret?: string | null; refreshToken: string },
   now: number,
 ): Promise<Tokens> {
   const body = await oauthRequest(
     fetchImpl,
     input.tokenEndpoint,
-    form({ grant_type: "refresh_token", refresh_token: input.refreshToken, client_id: input.clientId, resource: server.resource }),
+    form({
+      grant_type: "refresh_token",
+      refresh_token: input.refreshToken,
+      client_id: input.clientId,
+      ...secretField(input.clientSecret),
+      resource: server.resource,
+    }),
     OAUTH_TIMEOUT_MS,
     tokenAnswer,
   );

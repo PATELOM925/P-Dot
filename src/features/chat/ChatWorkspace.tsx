@@ -103,6 +103,7 @@ export function ChatWorkspace({
   google = null,
   trial = false,
   connectedApps = [],
+  telegram = null,
 }: {
   /** Keys this device's pinned conversations to the signed-in user. */
   userId: string;
@@ -115,6 +116,8 @@ export function ChatWorkspace({
   trial?: boolean;
   /** Apps the user connected that chat can read. Read on the server. */
   connectedApps?: McpServerId[];
+  /** The linked Telegram chat, for "Send to Telegram" under a reply (decision 0020). Read on the server. */
+  telegram?: { name: string } | null;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
@@ -969,7 +972,7 @@ export function ChatWorkspace({
           )}
           {messages.map((message) => (
             <Fragment key={message.id}>
-              <MessageItem message={message} state={turnStates.get(message.id)} />
+              <MessageItem message={message} state={turnStates.get(message.id)} telegram={telegram} />
               {suggestionsFor(placedProposals.byMessage.get(message.id), placedSuggestions.get(message.id))}
             </Fragment>
           ))}

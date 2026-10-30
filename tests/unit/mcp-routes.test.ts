@@ -156,7 +156,9 @@ describe("POST /api/connectors/mcp/:server/connect", () => {
     expect(anonymous.status).toBe(403);
     expect((await anonymous.json()) as { error: { code: string } }).toMatchObject({ error: { code: "account_required" } });
     signInAs(USER);
-    expect(outcome(await connectRoute.POST(post("/api/connectors/mcp/github/connect"), params("github")))).toBe("error");
+    expect(outcome(await connectRoute.POST(post("/api/connectors/mcp/vercel/connect"), params("vercel")))).toBe("error");
+    // GitHub needs its own client settings (decision 0020).
+    expect(outcome(await connectRoute.POST(post("/api/connectors/mcp/github/connect"), params("github")))).toBe("not_set_up");
     quotaAllowed = false;
     expect(outcome(await connectRoute.POST(post("/api/connectors/mcp/notion/connect"), params("notion")))).toBe("rate_limited");
     vi.stubEnv("CONNECTOR_TOKEN_ENCRYPTION_KEY", "");

@@ -39,6 +39,8 @@ export interface ConnectorDeps {
   log: Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** False for an app whose settings are missing (decision 0020). Chat does not offer it. Default: every app. */
+  isReady?: (server: McpServerId) => boolean;
 }
 
 const ERROR_TEXT: Record<McpError["kind"], string> = {
@@ -67,7 +69,7 @@ export function createConnectorServices(deps: ConnectorDeps): ConnectorServices 
       if (deps.anonymous || requested.length === 0) return tools;
       const rows = await deps.repo.listMcp(deps.userId);
       for (const row of rows) {
-        if (!requested.includes(row.provider) || row.status !== "connected") continue;
+        if (!requested.includes(row.provider) || row.status !== "connected" || deps.isReady?.(row.provider) === false) continue;
         const server = MCP_SERVERS[row.provider];
         const bundle = await openBundle(deps.key, deps.userId, server, row.subject, row.tokenCiphertext);
         if (!bundle) continue;

@@ -1,6 +1,7 @@
 import "server-only";
 import type { McpAccountRepository, McpTokenRow } from "@/server/db/connected-accounts";
 import type { FetchLike } from "@/server/google/http";
+import { getMcpClientCredentials } from "@/server/config";
 import type { Logger } from "@/server/log";
 import type { McpServer } from "./catalog";
 import { MAX_SEALED_CHARS, openBundle, sealBundle, type McpBundle } from "./bundle";
@@ -131,7 +132,12 @@ export async function openMcpAccess(deps: McpAccessDeps): Promise<McpAccess> {
       const tokens = await refreshTokens(
         deps.fetch,
         server,
-        { tokenEndpoint: bundle.tokenEndpoint, clientId: bundle.clientId, refreshToken: bundle.refreshToken! },
+        {
+          tokenEndpoint: bundle.tokenEndpoint,
+          clientId: bundle.clientId,
+          clientSecret: server.client === "confidential" ? (getMcpClientCredentials(server.id)?.clientSecret ?? null) : null,
+          refreshToken: bundle.refreshToken!,
+        },
         now(),
       );
       next = { ...bundle, accessToken: tokens.accessToken, accessExpiresAt: tokens.accessExpiresAt, refreshToken: tokens.refreshToken, claim: null };

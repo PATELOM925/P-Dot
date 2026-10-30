@@ -1,5 +1,6 @@
 import { routeSummary } from "@/lib/routing";
 import type { MessageDTO, WebSearchStatus } from "@/types/api";
+import { SendToTelegram } from "@/features/connectors/SendToTelegram";
 import { AssistantReply } from "./AssistantReply";
 import { TURN_STATE_LABELS, type TurnState } from "./turn-state";
 import { WhatWasSent } from "./WhatWasSent";
@@ -23,7 +24,16 @@ export function SearchNotice({ status, message }: { status: WebSearchStatus; mes
   return <p className="alert alert-warning small">{text}</p>;
 }
 
-export function MessageItem({ message, state }: { message: UiMessage; state?: TurnState }) {
+export function MessageItem({
+  message,
+  state,
+  telegram = null,
+}: {
+  message: UiMessage;
+  state?: TurnState;
+  /** The linked Telegram chat (decision 0020). Null when Telegram is off or not linked. */
+  telegram?: { name: string } | null;
+}) {
   const isUser = message.role === "user";
   if (message.stopped) {
     return (
@@ -68,6 +78,11 @@ export function MessageItem({ message, state }: { message: UiMessage; state?: Tu
             </p>
           )}
           <WhatWasSent messageId={message.id} createdAt={message.createdAt} />
+          {telegram && !message.pending && message.content.trim() && (
+            <div className="message-telegram">
+              <SendToTelegram text={message.content} chatName={telegram.name} />
+            </div>
+          )}
         </div>
       )}
     </article>
