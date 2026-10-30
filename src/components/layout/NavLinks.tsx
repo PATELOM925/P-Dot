@@ -5,12 +5,11 @@ import { usePathname } from "next/navigation";
 import { WaitingApprovalsBadge } from "@/features/actions/WaitingApprovalsBadge";
 
 const LINKS = [
-  { href: "/today", label: "Today" },
   { href: "/chat", label: "Chat" },
-  { href: "/memory", label: "Memory" },
-  { href: "/workflows", label: "Workflows" },
+  { href: "/today", label: "Today" },
   { href: "/connectors", label: "Connectors" },
-  { href: "/action-log", label: "Action log" },
+  { href: "/memory", label: "Memory" },
+  { href: "/activity", label: "Activity" },
   { href: "/settings", label: "Settings" },
 ];
 

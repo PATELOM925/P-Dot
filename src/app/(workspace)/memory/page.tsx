@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { DocumentsPanel } from "@/features/documents/DocumentsPanel";
 import { MemoryList } from "@/features/memory/MemoryList";
 import { DOCUMENT_LIST_LIMIT, MEMORY_LIST_LIMIT } from "@/lib/limits";
@@ -9,7 +10,7 @@ import { createDocumentRepository } from "@/server/db/documents";
 import { createMemoryRepository } from "@/server/db/memories";
 import { getMode } from "@/server/mode";
 
-export const metadata: Metadata = { title: "What P-Dot remembers · P-Dot" };
+export const metadata: Metadata = { title: "Memory · P-Dot" };
 
 export default async function MemoryPage() {
   const auth = await requireAuth("/memory");
@@ -21,27 +22,29 @@ export default async function MemoryPage() {
 
   return (
     <main className="page stack">
-      <div>
-        <h1>What P-Dot remembers</h1>
-        <p className="muted">
-          Everything P-Dot keeps about you in {MODE_LABELS[mode]} mode: memories and documents. You can change or delete
-          any of it, and it only keeps what you add or approve. Switch mode at the top to see the other list.
-        </p>
-      </div>
-
-      <p className="muted" role="status">
-        P-Dot uses your kept memories in this mode when it replies. It can search your documents when you ask about
-        your notes, documents or files. A memory it suggests is not used until you keep it. The &ldquo;What was sent&rdquo; link under each reply lists the ones it used.
-      </p>
+      <PageHeader
+        title="Memory"
+        info={
+          <>
+            <p>
+              This page shows what P-Dot keeps for {MODE_LABELS[mode]} mode. It keeps only what you add or approve, and
+              you can change or delete all of it. Switch the mode at the top to see the other list.
+            </p>
+            <p>
+              P-Dot uses your kept memories when it replies. It searches your documents when you ask about your notes,
+              documents or files. It does not use a suggested memory until you keep it. Open &ldquo;What was sent&rdquo;
+              under a reply to see which ones it used.
+            </p>
+            <p>
+              Changes to your memories and documents show in <Link href="/activity">Activity</Link>, without their text.
+            </p>
+          </>
+        }
+      />
 
       <MemoryList key={mode} mode={mode} initialMemories={memories} />
 
       <DocumentsPanel key={`documents-${mode}`} mode={mode} initialDocuments={documents} />
-
-      <p className="hint">
-        Changes to your memories and documents are recorded in the <Link href="/action-log">action log</Link>, without
-        their text.
-      </p>
     </main>
   );
 }

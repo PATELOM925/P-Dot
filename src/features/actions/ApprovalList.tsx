@@ -52,8 +52,7 @@ export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionPr
       )}
       {state === "ready" && visible.length === 0 && (
         <p className="muted">
-          Nothing is waiting. When P-Dot proposes adding a task, a reminder or a memory, it shows up here and in the chat,
-          and nothing happens until you approve it.
+          Nothing is waiting for your approval.
         </p>
       )}
       {visible.length > 0 && (
