@@ -1,9 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { GoogleCard } from "@/features/connectors/GoogleCard";
+import { googleCardState, googleOutcomeMessage } from "@/features/connectors/google";
 import { builtInStatus } from "@/features/connectors/status";
 import { DOCUMENT_LIST_LIMIT, MEMORY_LIST_LIMIT, REMINDER_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
 import { MODE_LABELS } from "@/lib/mode";
 import { requireAuth, type AuthContext } from "@/server/auth/session";
+import { getGoogleConfig } from "@/server/config";
+import { createConnectedAccountRepository } from "@/server/db/connected-accounts";
 import { createDocumentRepository } from "@/server/db/documents";
 import { createMemoryRepository } from "@/server/db/memories";
 import { createReminderRepository } from "@/server/db/reminders";
@@ -15,8 +19,6 @@ export const metadata: Metadata = { title: "Connectors · P-Dot" };
 
 // Planned connectors, shown as a preview. None can be connected yet.
 const PLANNED = [
-  { key: "gmail", name: "Gmail", can: "read and summarise mail, draft replies", asks: "before sending or deleting" },
-  { key: "calendar", name: "Calendar", can: "read events and find free time", asks: "before creating or changing events" },
   { key: "telegram", name: "Telegram", can: "deliver your daily brief and to-do list to your own chat", asks: "before messaging anyone else" },
   { key: "github", name: "GitHub", can: "read pull requests and issues you can see", asks: "before commenting, merging or changing anything" },
   { key: "vercel", name: "Vercel", can: "report deploy status and errors", asks: "before deploying or changing settings" },
@@ -39,10 +41,28 @@ async function loadBuiltInStatus(auth: AuthContext, mode: Mode) {
   );
 }
 
-export default async function ConnectorsPage() {
+/** The Google row without the token, or "load_failed". A failure here never breaks the rest of the page. */
+async function loadGoogleConnection(auth: AuthContext) {
+  try {
+    return await createConnectedAccountRepository(auth.supabase).getGoogleConnection(auth.userId);
+  } catch {
+    return "load_failed" as const;
+  }
+}
+
+interface ConnectorsPageProps {
+  searchParams: Promise<{ google?: string | string[] }>;
+}
+
+export default async function ConnectorsPage({ searchParams }: ConnectorsPageProps) {
   const auth = await requireAuth("/connectors");
   const mode = await getMode();
-  const status = await loadBuiltInStatus(auth, mode);
+  const configured = getGoogleConfig().status === "ready";
+  const [status, google] = await Promise.all([
+    loadBuiltInStatus(auth, mode),
+    configured ? loadGoogleConnection(auth) : Promise.resolve(null),
+  ]);
+  const googleMessage = googleOutcomeMessage((await searchParams).google);
 
   // P-Dot's own lists and files. The first three are the only things an approved action can change (decision 0009).
   const builtIn = [
@@ -104,12 +124,24 @@ export default async function ConnectorsPage() {
         </div>
       </section>
 
+      <section className="stack" aria-labelledby="accounts-heading">
+        <div className="section-heading">
+          <h2 id="accounts-heading">Your accounts</h2>
+          <p className="muted">
+            Accounts you connect. P-Dot reads them only for a message where you allow it, and it asks before it sends or
+            adds anything. Replies do not use Google yet; that step is still being built.
+          </p>
+        </div>
+        <div className="card-grid">
+          <GoogleCard state={googleCardState(configured, google)} message={googleMessage} />
+        </div>
+      </section>
+
       <section className="stack" aria-labelledby="planned-heading">
         <div className="section-heading">
           <h2 id="planned-heading">Planned accounts</h2>
           <p className="muted">
-            Not available yet. They need secure account linking (OAuth) and encrypted token storage, which are still
-            being planned. These cards preview the plan; nothing can be connected today.
+            Not available yet. These cards preview the plan; none of them can be connected today.
           </p>
         </div>
         <div className="card-grid">
