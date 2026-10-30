@@ -4,6 +4,7 @@ import { InstallButton } from "@/features/pwa/InstallButton";
 import type { Mode } from "@/types/api";
 import { ModeToggle } from "./ModeToggle";
 import { NavLinks } from "./NavLinks";
+import { ThemeToggle } from "./ThemeToggle";
 
 export function WorkspaceHeader({ email, trial, mode }: { email: string | null; trial: boolean; mode: Mode }) {
   return (
@@ -14,6 +15,7 @@ export function WorkspaceHeader({ email, trial, mode }: { email: string | null; 
       <NavLinks />
       <div className="header-account">
         <InstallButton />
+        <ThemeToggle />
         <ModeToggle mode={mode} />
         {trial ? (
           <span className="status-pill header-trial">Trial</span>

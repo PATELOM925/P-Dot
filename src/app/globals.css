@@ -35,39 +35,39 @@
   --shadow: 0 12px 32px rgb(30 35 60 / 0.09);
   --radius: 16px;
   --radius-lg: 28px;
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14151a;
-    --surface: #1d1f26;
-    --surface-muted: #272a33;
-    --surface-field: #181a20;
-    --text: #eef0f5;
-    --text-muted: #aab0bf;
-    --border: #2f323d;
-    --border-strong: #434756;
-    --border-field: #6b7080;
-    --accent: #9a93ff;
-    --accent-hover: #b1abff;
-    --accent-text: #15123d;
-    --accent-gradient: linear-gradient(135deg, #8b84ff, #b28bff);
-    --accent-soft: #2a2860;
-    --accent-soft-text: #dedcff;
-    --sage: #1b3a2b;
-    --sage-text: #b4e6c8;
-    --butter: #3d3317;
-    --butter-text: #f3dc92;
-    --personal: #4a1f2f;
-    --personal-text: #ffc2d4;
-    --work: #1c3355;
-    --work-text: #bcd7ff;
-    --danger: #ffb4a3;
-    --error-bg: #4a2620;
-    --focus: #9a93ff;
-    --shadow: 0 12px 32px rgb(0 0 0 / 0.35);
-  }
+/* The theme script in the root layout sets data-theme before the first paint: the device setting, or the user's choice. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #14151a;
+  --surface: #1d1f26;
+  --surface-muted: #272a33;
+  --surface-field: #181a20;
+  --text: #eef0f5;
+  --text-muted: #aab0bf;
+  --border: #2f323d;
+  --border-strong: #434756;
+  --border-field: #6b7080;
+  --accent: #9a93ff;
+  --accent-hover: #b1abff;
+  --accent-text: #15123d;
+  --accent-gradient: linear-gradient(135deg, #8b84ff, #b28bff);
+  --accent-soft: #2a2860;
+  --accent-soft-text: #dedcff;
+  --sage: #1b3a2b;
+  --sage-text: #b4e6c8;
+  --butter: #3d3317;
+  --butter-text: #f3dc92;
+  --personal: #4a1f2f;
+  --personal-text: #ffc2d4;
+  --work: #1c3355;
+  --work-text: #bcd7ff;
+  --danger: #ffb4a3;
+  --error-bg: #4a2620;
+  --focus: #9a93ff;
+  --shadow: 0 12px 32px rgb(0 0 0 / 0.35);
 }
 
 *,
@@ -1978,16 +1978,14 @@ a.tool-row {
   color: var(--sage-text);
 }
 
-@media (prefers-color-scheme: dark) {
-  .chip-gmail { background: #4a2222; color: #ffc9c9; }
-  .chip-calendar { background: #1c3355; color: #bcd7ff; }
-  .chip-github { background: #2c2f38; color: #e5e7eb; }
-  .chip-telegram { background: #123a52; color: #bfe6fb; }
-  .chip-vercel { background: #2c2f38; color: #eef0f5; }
-  .chip-whatsapp { background: #1b3a2b; color: #b4e6c8; }
-  .chip-phone { background: #4a2e18; color: #ffd5b0; }
-  .chip-search { background: #2e1d52; color: #d8b4fe; }
-}
+[data-theme="dark"] .chip-gmail { background: #4a2222; color: #ffc9c9; }
+[data-theme="dark"] .chip-calendar { background: #1c3355; color: #bcd7ff; }
+[data-theme="dark"] .chip-github { background: #2c2f38; color: #e5e7eb; }
+[data-theme="dark"] .chip-telegram { background: #123a52; color: #bfe6fb; }
+[data-theme="dark"] .chip-vercel { background: #2c2f38; color: #eef0f5; }
+[data-theme="dark"] .chip-whatsapp { background: #1b3a2b; color: #b4e6c8; }
+[data-theme="dark"] .chip-phone { background: #4a2e18; color: #ffd5b0; }
+[data-theme="dark"] .chip-search { background: #2e1d52; color: #d8b4fe; }
 
 .connector-tag {
   align-self: flex-start;
@@ -3326,4 +3324,19 @@ label.button[aria-disabled="true"] {
 
 .pin-button.is-pinned {
   color: var(--accent);
+}
+
+/* Theme switch (header icon button and the phone More sheet row) */
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+}
+
+.theme-row {
+  gap: 0.625rem;
 }
