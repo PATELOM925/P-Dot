@@ -25,15 +25,19 @@ const CONJUNCTIONS = /\b(?:but|and then|however|except)\b/;
  */
 const LEAD = "^(?:(?:please|p-dot|pdot),?\\s+)*";
 const EMAIL_START = new RegExp(`${LEAD}(?:e-?mail|mail|write to|send (?:an? )?(?:e-?mail|mail|message) to)\\s+`);
-const CALENDAR_START = new RegExp(`${LEAD}(?:invite\\b|schedule\\b|add\\b.*\\bto (?:the |my )?(?:event|meeting|calendar)\\b)`);
+/** Calendar verbs. The guests must follow the verb directly: "invite sam@…", "add sam@… to the meeting", "schedule … with sam@…". */
+const INVITE_START = new RegExp(`${LEAD}invite\\s+`);
+const ADD_START = new RegExp(`${LEAD}add\\s+`);
+const ADD_TARGET = /\bto (?:the |my )?(?:event|meeting|calendar)\b/;
+const SCHEDULE_START = new RegExp(`${LEAD}schedule\\b`);
 
 /** A quote opener, and the characters that close it. */
 const QUOTES: Record<string, readonly string[]> = { "'": ["'", "’"], '"': ['"', "”"], "‘": ["’", "'"], "“": ["”", '"'] };
 
 /**
  * Removes quoted spans and fails closed. An opener is a quote character at
- * the start or after whitespace, `:` or `(`; an apostrophe inside a word
- * (don't, Sam's) is not one. A closer is a matching quote that no letter or
+ * the start or after any character that is not a letter or a digit (also
+ * `,`, `-` or `[`); an apostrophe inside a word (don't, Sam's) is not one. A closer is a matching quote that no letter or
  * digit follows. An opener with no closer quotes everything to the end.
  */
 function withoutQuotes(text: string): string {
@@ -41,7 +45,7 @@ function withoutQuotes(text: string): string {
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i]!;
     const closers = QUOTES[ch];
-    if (closers && (i === 0 || /[\s:(]/.test(text[i - 1]!))) {
+    if (closers && (i === 0 || !/[\p{L}\p{N}]/u.test(text[i - 1]!))) {
       let end = -1;
       for (let j = i + 1; j < text.length; j += 1) {
         if (closers.includes(text[j]!) && !/[\p{L}\p{N}]/u.test(text[j + 1] ?? "")) {
@@ -144,12 +148,21 @@ function emailGrant(clause: string, own: string | null): string[] | null {
 }
 
 function calendarGrant(clause: string, own: string | null): string[] | null {
-  if (!CALENDAR_START.test(clause)) return null;
-  const addresses = clause
-    .split(/[\s,;:()<>[\]]+/)
-    .map(token)
-    .filter((value) => ADDRESS.test(value));
-  return own && /\b(?:me|myself)\b/.test(clause) ? [...addresses, own] : addresses;
+  const invite = INVITE_START.exec(clause);
+  if (invite) {
+    const list = leadingAddresses(clause.slice(invite[0].length), own);
+    return list.length > 0 ? list : null;
+  }
+  const add = ADD_START.exec(clause);
+  if (add) {
+    // "Add lunch to my calendar" grants an event with no guests; guests only right after "add".
+    return ADD_TARGET.test(clause) ? leadingAddresses(clause.slice(add[0].length), own) : null;
+  }
+  if (SCHEDULE_START.test(clause)) {
+    const withIndex = clause.search(/\swith\s/);
+    return withIndex === -1 ? [] : leadingAddresses(clause.slice(withIndex + " with ".length).trimStart(), own);
+  }
+  return null;
 }
 
 /**
