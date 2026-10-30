@@ -9,6 +9,7 @@ import {
 } from "./own-data";
 import type { ToolSpec } from "./registry";
 import { webSearchTool } from "./web-search";
+import { CONNECTOR_TOOLS } from "./connectors";
 
 export * from "./registry";
 export { earlierAttemptCheck };
@@ -21,4 +22,5 @@ export const TOOLS: readonly ToolSpec[] = [
   proposeTaskTool,
   proposeReminderTool,
   saveMemoryTool,
+  ...CONNECTOR_TOOLS,
 ] as ToolSpec[];

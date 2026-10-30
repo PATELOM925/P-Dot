@@ -1,7 +1,10 @@
 import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
-import type { AssistantConfig } from "@/server/config";
+import { getMcpConfig, type AssistantConfig } from "@/server/config";
+import { createMcpAccountRepository } from "@/server/db/connected-accounts";
+import { createConnectorServices, type ConnectorServices } from "@/server/mcp/connector-turn";
+import { mcpFetch } from "@/server/mcp/flow";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createContextRecordRepository } from "@/server/db/context-records";
 import { createMemoryRepository } from "@/server/db/memories";
@@ -40,6 +43,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
     titles: true,
+    connectors: connectorServicesFor(auth),
     ownData: {
       embedder: createBudgetedEmbedder({
         settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
@@ -50,6 +54,20 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
       proposals: createActionProposalRepository(auth.supabase),
     },
   };
+}
+
+/** The connector services when the connector key is set (decision 0016), else null. */
+export function connectorServicesFor(auth: AuthContext): ConnectorServices | null {
+  const config = getMcpConfig();
+  if (config.status !== "ready") return null;
+  return createConnectorServices({
+    repo: createMcpAccountRepository(auth.supabase),
+    key: config.encryptionKey,
+    userId: auth.userId,
+    anonymous: auth.isAnonymous === true,
+    fetch: mcpFetch,
+    log: logEvent,
+  });
 }
 
 /**

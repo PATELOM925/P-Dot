@@ -1,5 +1,6 @@
 // Contracts shared by the browser and the API routes. No secrets or server-only types here.
 import type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
+import type { McpServerId } from "@/lib/connectors";
 
 export type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
 
@@ -15,7 +16,13 @@ export type AssistantToolName =
   | "search_memories"
   | "propose_task"
   | "propose_reminder"
-  | "save_memory";
+  | "save_memory"
+  | "notion_search"
+  | "notion_fetch"
+  | "linear_search_issues"
+  | "linear_get_issue"
+  | "todoist_list_tasks"
+  | "todoist_find_tasks";
 
 /** Outcome of web search for an assistant reply. */
 export type WebSearchStatus = "off" | "used" | "no_results" | "failed";
@@ -90,8 +97,17 @@ export interface ApiErrorBody {
 
 /** Request body for POST /api/chat. */
 export type ChatRequest =
-  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean; effort?: Effort }
-  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort };
+  | {
+      action: "send";
+      conversationId?: string;
+      mode?: Mode;
+      message: string;
+      webSearch: boolean;
+      effort?: Effort;
+      /** Apps to read for this message only (decision 0016). Never together with web search. */
+      connectors?: McpServerId[];
+    }
+  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort; connectors?: McpServerId[] };
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once
