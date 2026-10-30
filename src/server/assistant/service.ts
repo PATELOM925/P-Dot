@@ -40,6 +40,7 @@ import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
 import { normalizeReplyText } from "./reply-text";
 import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
+import { detectToolIntent } from "./tool-intent";
 import {
   budgetRefusal,
   MEMORY_BLOCK_MAX_BYTES,
@@ -276,14 +277,19 @@ export async function prepareChatTurn(
     const searchWanted = request.webSearch && deps.search !== null;
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
     // which only makes the prompt smaller than the one this hold prices.
+    // Memories go into every turn when the data services exist. The own-data tools only
+    // when the message asks for them (detectToolIntent), so a plain message stays on the fast tier.
     const ownData = Boolean(deps.ownData);
-    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted, ownData });
+    const latest = pendingHistory.at(-1)?.content ?? "";
+    const toolIntent = ownData ? detectToolIntent(latest) : null;
+    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted, ownData: toolIntent !== null });
     const route = withToolTier(
       routeRequest({
-        message: pendingHistory.at(-1)?.content ?? "",
+        message: latest,
         historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
         webSearch: request.webSearch,
         effort: request.effort ?? "auto",
+        toolIntent,
       }),
       toolsBound.length > 0,
     );
@@ -373,7 +379,7 @@ export async function prepareChatTurn(
         webSearch: request.webSearch,
         searchBudgetExhausted,
         route,
-        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted, ownData },
+        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted, ownData: toolIntent !== null },
         holds,
       },
     };

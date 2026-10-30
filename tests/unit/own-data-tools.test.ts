@@ -130,7 +130,7 @@ describe("search tools over the user's own data", () => {
     ]);
     own.chunkMatches = [1, 2, 3, 4, 5, 6].map((n) => chunk(`k${n}`, `Doc ${n}`)).concat([chunk("w1", "Work doc", "work")]);
 
-    const { events } = await runTurn(deps, { action: "send", message: "Where is my passport number?", webSearch: false }, waited);
+    const { events } = await runTurn(deps, { action: "send", message: "Where is my passport number in my documents?", webSearch: false }, waited);
 
     expect(ofType(events, "status")).toEqual([{ type: "status", tool: "search_documents", query: "passport" }]);
     expect(own.searches.find((s) => s.kind === "documents")).toEqual({ kind: "documents", mode: "personal", count: 5 });
@@ -148,7 +148,7 @@ describe("search tools over the user's own data", () => {
     const { deps, own, contextRecords, waited } = setup([{ calls: [call("search_memories", { query: "food" })] }, { text: "OK." }]);
     own.memoryMatches = [memory("m1", "Vegetarian")];
 
-    await runTurn(deps, { action: "send", message: "Dinner idea?", webSearch: false }, waited);
+    await runTurn(deps, { action: "send", message: "Dinner idea? What do you know about me?", webSearch: false }, waited);
 
     expect(contextRecords.records[0]!.memoryIds).toEqual(["m1"]);
   });
@@ -162,10 +162,21 @@ describe("search tools over the user's own data", () => {
     expect(requests[0]).not.toHaveProperty("tools");
   });
 
-  it("offers the own-data tools on the standard tier, without web_search while search is off", async () => {
-    const { deps, requests, waited } = setup([{ text: "OK." }]);
+  it("keeps a plain message on the fast tier with no tools, and still adds memories", async () => {
+    const { deps, own, requests, waited } = setup([{ text: "OK." }]);
+    own.memoryMatches = [memory("m1", "Likes tea")];
 
     const { turn } = await runTurn(deps, { action: "send", message: "thanks", webSearch: false }, waited);
+
+    expect(requests[0]).not.toHaveProperty("tools");
+    expect(turn.route).toEqual({ tier: "fast", reason: "everyday" });
+    expect(requests[0]!.messages.at(-1)!.content).toContain("Likes tea");
+  });
+
+  it("offers the own-data tools on the standard tier when the message asks, and names why", async () => {
+    const { deps, requests, waited } = setup([{ text: "OK." }]);
+
+    const { turn } = await runTurn(deps, { action: "send", message: "Remind me to water the plants", webSearch: false }, waited);
 
     expect(requests[0]!.tools?.map((t) => t.name)).toEqual([
       "search_documents",
@@ -174,7 +185,7 @@ describe("search tools over the user's own data", () => {
       "propose_reminder",
       "save_memory",
     ]);
-    expect(turn.route.tier).toBe("standard");
+    expect(turn.route).toEqual({ tier: "standard", reason: "task_request" });
   });
 });
 
@@ -222,7 +233,7 @@ describe("proposal tools", () => {
   it("save_memory writes a proposed memory from the assistant, linked to the user message, with a vector", async () => {
     const { deps, own, spend, waited } = setup([{ calls: [call("save_memory", { content: "Allergic to peanuts" })] }, { text: "Keep it below." }]);
 
-    const { turn } = await runTurn(deps, { action: "send", message: "I am allergic to peanuts", webSearch: false }, waited);
+    const { turn } = await runTurn(deps, { action: "send", message: "Remember that I am allergic to peanuts", webSearch: false }, waited);
 
     expect(own.memories).toEqual([
       expect.objectContaining({
@@ -248,7 +259,7 @@ describe("proposal tools", () => {
       { repo },
     );
     repo.failInsertForRole = "assistant";
-    const first = await runTurn(deps, { action: "send", message: "I fly from BOM, book flights", webSearch: false }, waited);
+    const first = await runTurn(deps, { action: "send", message: "Remember that I fly from BOM, and add a task to book flights", webSearch: false }, waited);
     expect(first.events.at(-1)).toMatchObject({ type: "error" });
 
     repo.failInsertForRole = null;
