@@ -20,6 +20,9 @@ import { TITLE_MAX_OUTPUT_TOKENS } from "@/server/assistant/title";
 import { titleFromMessage } from "@/server/assistant/context";
 import type { CompletionChunk, ModelCallRequest, ModelProvider } from "@/server/providers/model";
 import { createBarrier } from "../support/barrier";
+import { fakeGoogle, json, TOKEN_URL } from "../support/fake-google";
+import { sealText, tokenAssociatedData } from "@/server/google/crypto";
+import type { ConnectedAccountRepository, GoogleTokenRow } from "@/server/db/connected-accounts";
 import { collect } from "../support/streams";
 import {
   ALL_WRITE_FAULTS,
@@ -192,11 +195,61 @@ describe("POST /api/chat", () => {
   });
 });
 
+/** A connected Google account in memory, for the google variants of the sweep (decision 0014). */
+class SweepAccounts implements ConnectedAccountRepository {
+  constructor(public row: GoogleTokenRow) {}
+  async getGoogleConnection() {
+    return { email: this.row.email, scopes: this.row.scopes, status: this.row.status };
+  }
+  async getGoogleToken() {
+    return { ...this.row };
+  }
+  async saveGoogle() {}
+  async markGoogleNeedsReconnect(_userId: string, ciphertext: string) {
+    if (this.row.tokenCiphertext === ciphertext) this.row.status = "needs_reconnect";
+  }
+  async deleteGoogle() {
+    return false;
+  }
+}
+
+const SWEEP_KEY = new Uint8Array(32).fill(6);
+const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
+
 describe("POST /api/chat when one write fails", () => {
   const MESSAGE = "Plan my week";
   const KEY = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const LEASE_MS = REPLY_CLAIM_LEASE_SECONDS * 1000;
-  type Variant = "new" | "existing" | "search" | "tools";
+  type Variant = "new" | "existing" | "search" | "tools" | "google" | "google401";
+  /** Asks for an email with the address, so the Google proposal guard allows it. */
+  const GOOGLE_MESSAGE = "Find the lunch email, then email sam@example.com that I can come.";
+
+  /** The first pass reads Gmail and proposes the email; the next pass answers. */
+  function googleModel() {
+    const requests: ModelCallRequest[] = [];
+    const provider: ModelProvider = {
+      name: "nebius",
+      stream(request) {
+        requests.push(request);
+        const isTitle = request.maxOutputTokens === TITLE_MAX_OUTPUT_TOKENS;
+        const afterTools = request.messages.at(-1)?.role === "tool";
+        return (async function* (): AsyncGenerator<CompletionChunk> {
+          if (isTitle) yield { type: "text", text: "Lunch" };
+          else if (request.tools?.some((tool) => tool.name === "propose_email") && !afterTools) {
+            yield {
+              type: "tool_calls",
+              calls: [
+                { id: "g1", name: "gmail_search", arguments: JSON.stringify({ query: "lunch" }) },
+                { id: "g2", name: "propose_email", arguments: JSON.stringify({ to: ["sam@example.com"], subject: "Lunch", body: "I can come." }) },
+              ],
+            };
+          } else yield { type: "text", text: "Approve the email below." };
+          yield { type: "finish", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5 } };
+        })();
+      },
+    };
+    return { provider, requests };
+  }
   /** Asks for a task and a memory, so the own-data tools are offered and the model calls two of them. */
   const TOOLS_MESSAGE = "Remember that I fly from BOM, and add a task to book flights";
 
@@ -254,10 +307,32 @@ describe("POST /api/chat when one write fails", () => {
     });
     faults.wrap(quota, ["consume"]);
     faults.wrap(contextRecords, ["insertContextRecord"]);
-    const tools = variant === "tools";
+    const google = variant === "google" || variant === "google401";
+    const tools = variant === "tools" || google;
     const own = new FakeOwnData(ALICE, testEmbedder(spend), () => repo.messages.at(-1)?.createdAt ?? "2026-10-14T12:00:00.000Z");
     const ownData = own.services();
-    const model = toolModel();
+    const model = google ? googleModel() : toolModel();
+    let accounts: SweepAccounts | null = null;
+    const googleEndpoint = fakeGoogle({
+      [TOKEN_URL]: () => json({ access_token: "at", expires_in: 3600 }),
+      [`${GMAIL_API}/messages?`]: () =>
+        variant === "google401" ? json({ error: { status: "UNAUTHENTICATED" } }, 401) : json({ messages: [{ id: "m1" }] }),
+      [`${GMAIL_API}/messages/m1`]: () =>
+        json({ id: "m1", threadId: "t", snippet: "Lunch on Friday?", payload: { headers: [{ name: "Subject", value: "Lunch" }] } }),
+    });
+    const endpoint = { fetch: googleEndpoint.fetch };
+    if (google) {
+      accounts = new SweepAccounts({
+        subject: "sub-1",
+        email: "me@example.com",
+        scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"],
+        status: "connected",
+        tokenCiphertext: await sealText(SWEEP_KEY, "refresh-1", tokenAssociatedData(ALICE, "google")),
+      });
+      faults.wrap(accounts, ["getGoogleConnection", "getGoogleToken"], { label: "Accounts", read: true });
+      faults.wrap(accounts, ["markGoogleNeedsReconnect"], { label: "Accounts" });
+      faults.wrap(endpoint, ["fetch"], { label: "Google", read: true });
+    }
     if (tools) {
       faults.wrap(repo, ["renameConversation"]);
       // Its spend writes are swept through FakeSpend; the call itself can only fail.
@@ -270,6 +345,14 @@ describe("POST /api/chat when one write fails", () => {
     }
     const fake = fakeDeps({ repo, spend, quota, contextRecords, ...(tools ? { ownData, provider: model.provider } : {}) });
     if (tools) fake.deps.titles = true;
+    if (google && accounts) {
+      fake.deps.google = {
+        config: { clientId: "id", clientSecret: "secret", encryptionKey: SWEEP_KEY, redirectUri: "http://localhost/cb" },
+        accounts,
+        proposals: ownData.proposals,
+        fetch: (input, init) => endpoint.fetch(input, init),
+      };
+    }
     vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
     signInAs(ALICE);
 
@@ -283,11 +366,18 @@ describe("POST /api/chat when one write fails", () => {
     const send = () =>
       chatRoute.POST(
         chatRequest(
-          { action: "send", message: tools ? TOOLS_MESSAGE : MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) },
+          {
+            action: "send",
+            message: google ? GOOGLE_MESSAGE : tools ? TOOLS_MESSAGE : MESSAGE,
+            webSearch,
+            ...(google ? { useGoogle: true as const } : {}),
+            ...(existing ? { conversationId: existing.id } : {}),
+          },
           { "Idempotency-Key": KEY },
         ),
       );
-    const retry = (conversationId: string) => chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch }));
+    const retry = (conversationId: string) =>
+      chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch, ...(google ? { useGoogle: true as const } : {}) }));
     const afterBusy = async (request: () => Promise<Response>) => {
       const response = await request();
       if (response.status !== 409 || (await response.clone().json()).error.code !== "busy") return response;
@@ -332,7 +422,26 @@ describe("POST /api/chat when one write fails", () => {
     expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
     expect(fake.calls.length, `${at}: at most one provider call for each claim`).toBeLessThanOrEqual(quota.calls);
 
-    if (tools) {
+    if (google) {
+      // Proposing never calls a Google write API, and a retry or resend never repeats a proposal.
+      expect(googleEndpoint.calls.filter((c) => c.method !== "GET" && c.url !== TOKEN_URL), `${at}: no Google write`).toEqual([]);
+      expect(own.proposals.length, `${at}: at most one proposal`).toBeLessThanOrEqual(1);
+      expect(own.proposals.every((p) => p.status === "proposed" && p.payload.kind === "send_email"), `${at}: proposal`).toBe(true);
+      expect(googleEndpoint.calls.filter((c) => c.url === TOKEN_URL).length, `${at}: one refresh for each turn`).toBeLessThanOrEqual(quota.calls);
+      // The 401 reached the tool only when the Gmail list call was answered.
+      const got401 = variant === "google401" && googleEndpoint.calls.some((c) => c.url.startsWith(`${GMAIL_API}/messages?`));
+      // An outage in an earlier attempt lets that attempt propose; the 401 comes in a later retry.
+      const outageFirst = sweepCase.some((f) => f.label === "Accounts.getGoogleToken" || f.label === "Google.fetch");
+      if (got401) {
+        if (!outageFirst) expect(own.proposals, `${at}: a credential that ended stops the propose tool`).toHaveLength(0);
+        const markFailed = sweepCase.some((f) => f.label === "Accounts.markGoogleNeedsReconnect" && f.fault === "refused");
+        if (!markFailed) expect(accounts!.row.status, `${at}: the row is marked`).toBe("needs_reconnect");
+      } else if (variant === "google401") {
+        expect(accounts!.row.status, `${at}: no 401, no mark`).toBe("connected");
+      } else if (!sweepCase.some((f) => /^(Proposals|Accounts|Google|Embedder|Retrieval|FakeSpend)\./.test(f.label))) {
+        expect(own.proposals, `${at}: the proposal is saved`).toHaveLength(1);
+      }
+    } else if (tools) {
       // Tool hops and the title are extra calls; each claim still starts at most one first pass.
       const firstPasses = model.requests.filter(
         (r) => r.maxOutputTokens !== TITLE_MAX_OUTPUT_TOKENS && r.messages.at(-1)?.role !== "tool",
@@ -367,7 +476,7 @@ describe("POST /api/chat when one write fails", () => {
     expect(contextRecords.records.length, `${at}: no record without a saved reply`).toBeLessThanOrEqual(1);
   }
 
-  it.each(["new", "existing", "search", "tools"] as const)(
+  it.each(["new", "existing", "search", "tools", "google", "google401"] as const)(
     "%s conversation: every write and read, up to two faults, ends with one message, its reply and its record",
     async (variant) => {
       const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase), {
@@ -388,6 +497,8 @@ describe("POST /api/chat when one write fails", () => {
         ...(variant === "tools"
           ? ["Proposals.createProposal", "Memories.createMemory", "Embedder.embed", "MemoryRepository.renameConversation"]
           : []),
+        ...(variant === "google" ? ["Proposals.createProposal", "Accounts.getGoogleConnection", "Accounts.getGoogleToken", "Google.fetch"] : []),
+        ...(variant === "google401" ? ["Accounts.markGoogleNeedsReconnect", "Accounts.getGoogleToken"] : []),
       ]) {
         expect(labels, label).toContain(label);
       }
