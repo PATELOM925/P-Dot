@@ -15,9 +15,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - The top 4 active memories of the mode go in the final user turn as an untrusted block. The embedding holds spend, and the first hold prices the block.
     - The own-data tools are offered only when the message asks to remind, schedule, add a task, remember or save, or asks about the user's notes, documents or memories (`detectToolIntent`, a pure rule check next to the router). Such a turn runs on the standard tier, and the line under the reply says that tools are on. A plain message stays on the fast tier with no tools.
     - `search_documents` and `search_memories` search the current mode, at most 5 matches, shown by title. Their IDs go in the context record.
-    - `propose_task`, `propose_reminder` and `save_memory` write proposals or a proposed memory before `done`, and do not write a second copy on "Retry reply".
+    - `propose_task`, `propose_reminder` and `save_memory` write proposals or a proposed memory before `done`. A new message always gets its cards, also when two tabs send the same text at the same time. A "Retry reply" or a resend of a saved message writes nothing when its first attempt already wrote a proposal or a memory, also after the user edited, approved or rejected that card.
     - A short fast-tier call with a spend hold makes the title of a new conversation and sends a `title` event.
-    - The chat route's write-fault sweep now also covers the proposal, memory and title writes: a resend or Retry reply never repeats a proposal or a memory.
+    - The chat route's write-fault sweep now also covers the proposal, memory and title writes: a resend or Retry reply does not repeat a proposal or a memory.
     - After `done`, chat shows no error for a title event, Stop or a cut stream, and the composer is free at once. A late end of an earlier stream cannot free a newer send.
     - A generated title never overwrites a rename by the user: the rename applies only while the title is still the first one.
     - 10 hallucination guardrail tests on main's fakes, and updated screen copy.
