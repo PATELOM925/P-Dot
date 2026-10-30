@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalModeMenu, ApprovalModeSetup } from "@/features/actions/ApprovalModePicker";
@@ -38,6 +39,7 @@ import { StarterPrompts } from "./StarterPrompts";
 import type { StarterPrompt } from "./starter-prompts";
 import { readChatStream } from "./stream";
 import { toolStatusLine } from "./tool-status";
+import { STALL_LINE, STALL_MS, TURN_STATE_LABELS, chatErrorView, type TurnState } from "./turn-state";
 import { appendDictation, useDictation } from "./useDictation";
 
 interface StreamingReply {
@@ -51,11 +53,20 @@ interface StreamingReply {
 
 interface ErrorState {
   message: string;
+  retryable?: boolean;
+  limit?: boolean;
+  /** Text that streamed before the failure. It is shown muted and is not saved. */
+  partial?: string;
+  /** The error belongs to a send or a retry, so it shows under that turn. */
+  turn?: boolean;
 }
 
 function syncUrl(conversationId: string | null) {
   window.history.replaceState(null, "", conversationId ? `/chat?c=${encodeURIComponent(conversationId)}` : "/chat");
 }
+
+/** Event handlers only. */
+const now = () => Date.now();
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
@@ -69,9 +80,12 @@ const EMPTY_HINTS: Record<Mode, string> = {
 export function ChatWorkspace({
   initialConversationId,
   mode,
+  trial = false,
 }: {
   initialConversationId: string | null;
   mode: Mode;
+  /** A trial user (decision 0015): limit errors say so. */
+  trial?: boolean;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
@@ -86,6 +100,13 @@ export function ChatWorkspace({
   const [sending, setSending] = useState(false);
   const [streaming, setStreaming] = useState<StreamingReply | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
+  const [stopped, setStopped] = useState<{ partial: string } | null>(null);
+  // "Working" only while events arrive (spec D1): the time of the last stream event, and whether it is too long ago.
+  const lastEventRef = useRef(0);
+  const streamTextRef = useRef("");
+  const [stalled, setStalled] = useState(false);
+  const stalledRef = useRef(false);
+  const leftStreamRef = useRef<AbortController | null>(null);
   const [status, setStatus] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -181,8 +202,26 @@ export function ChatWorkspace({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages, streaming]);
 
-  function openConversation(id: string) {
+  useEffect(() => {
+    if (!sending) return;
+    const timer = window.setInterval(() => {
+      if (stalledRef.current || now() - lastEventRef.current < STALL_MS) return;
+      stalledRef.current = true;
+      setStalled(true);
+      setStatus(STALL_LINE);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [sending]);
+
+  /** Stops a reply because the user leaves its conversation. That is not a "Stopped" turn to show. */
+  function leaveStream() {
+    if (abortRef.current) leftStreamRef.current = abortRef.current;
     abortRef.current?.abort();
+    setStopped(null);
+  }
+
+  function openConversation(id: string) {
+    leaveStream();
     // Words still being dictated belong to the conversation the user is leaving.
     dictation.cancel();
     setActiveId(id);
@@ -196,7 +235,7 @@ export function ChatWorkspace({
   }
 
   function startNewConversation() {
-    abortRef.current?.abort();
+    leaveStream();
     dictation.cancel();
     loadSeq.current += 1;
     setActiveId(null);
@@ -251,7 +290,7 @@ export function ChatWorkspace({
     const sentInAuto = approvalMode === "auto";
     const controller = new AbortController();
     abortRef.current = controller;
-    const tempId = `pending-${Date.now()}`;
+    const tempId = `pending-${now()}`;
     let accepted = false;
     let finished = false;
 
@@ -264,6 +303,11 @@ export function ChatWorkspace({
     setSending(true);
     setOpenMenu(null);
     setError(null);
+    setStopped(null);
+    setStalled(false);
+    stalledRef.current = false;
+    streamTextRef.current = "";
+    lastEventRef.current = now();
     setStreaming({ text: "", search: null });
     setStatus("Sending…");
     if (action === "send") {
@@ -288,6 +332,11 @@ export function ChatWorkspace({
     try {
       const stream = await postChat(body, controller.signal, keyHeaders);
       for await (const event of readChatStream(stream)) {
+        lastEventRef.current = now();
+        if (stalledRef.current) {
+          stalledRef.current = false;
+          setStalled(false);
+        }
         switch (event.type) {
           case "start":
             accepted = true;
@@ -328,6 +377,7 @@ export function ChatWorkspace({
             break;
           }
           case "delta":
+            streamTextRef.current += event.text;
             setStreaming((current) => ({
               text: (current?.text ?? "") + event.text,
               search: current?.search ?? null,
@@ -347,23 +397,36 @@ export function ChatWorkspace({
           case "error":
             finished = true;
             setStreaming(null);
-            setError({ message: event.message });
+            setError({
+              ...chatErrorView(event.code, event.message, { retryable: event.retryable, trial }),
+              partial: streamTextRef.current,
+              turn: true,
+            });
             setStatus("");
             break;
         }
       }
       if (!finished) {
         setStreaming(null);
-        setError({ message: "The reply was interrupted. Please retry." });
+        setError({ message: "The reply did not finish. Try again.", retryable: true, partial: streamTextRef.current, turn: true });
       }
     } catch (err) {
       setStreaming(null);
       if (isAbort(err)) {
         if (!accepted) restoreDraft();
-        setStatus("Stopped.");
+        // Stop is not an error: the partial text stays, muted, and the user can retry or type again.
+        if (leftStreamRef.current !== controller) {
+          if (accepted) setStopped({ partial: streamTextRef.current });
+          setStatus("Reply stopped.");
+          inputRef.current?.focus();
+        }
       } else if (!redirectIfUnauthorized(err)) {
         if (!accepted) restoreDraft();
-        setError({ message: err instanceof Error ? err.message : "Something went wrong. Please retry." });
+        const view =
+          err instanceof ApiError
+            ? chatErrorView(err.code, err.message, { trial })
+            : { message: "P-Dot could not reply. Try again.", retryable: true, limit: false };
+        setError({ ...view, partial: accepted ? streamTextRef.current : "", turn: true });
         setStatus("");
         if (!accepted && sendKey.refused(err, action) === "answered") {
           void showSavedMessage((err as ApiError).conversationId ?? activeId, action === "send" ? text : "");
@@ -459,6 +522,15 @@ export function ChatWorkspace({
   const autoRunning = new Set(auto.running.map((p) => p.id));
   const placedProposals = placeByTime(messages, conversationProposals);
   const placedSuggestions = placeBySource(messages, memorySuggestions.items);
+  // "Waiting for you" on a reply with a card to decide; "Done" on the last reply otherwise.
+  const turnStates = new Map<string, TurnState>();
+  const lastReply = [...messages].reverse().find((m) => m.role === "assistant");
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const open = placedProposals.byMessage.get(message.id)?.some((p) => p.status === "proposed" && !autoRunning.has(p.id));
+    if (open) turnStates.set(message.id, "waiting");
+    else if (message.id === lastReply?.id && !sending) turnStates.set(message.id, "done");
+  }
   const showSuggestions = activeId !== null && !loadingMessages;
   const suggestionsFor = (proposals?: ActionProposalDTO[], suggestions?: MemorySuggestion[]) =>
     showSuggestions && (
@@ -617,13 +689,16 @@ export function ChatWorkspace({
           )}
           {messages.map((message) => (
             <Fragment key={message.id}>
-              <MessageItem message={message} />
+              <MessageItem message={message} state={turnStates.get(message.id)} />
               {suggestionsFor(placedProposals.byMessage.get(message.id), placedSuggestions.get(message.id))}
             </Fragment>
           ))}
           {streaming && (
             <article className="message message-assistant" aria-busy="true">
               <p className="message-author">P-Dot</p>
+              <p className="turn-state" data-state={stalled ? "stalled" : "working"}>
+                {stalled ? STALL_LINE : TURN_STATE_LABELS.working}
+              </p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
               {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
               {streaming.text ? (
@@ -642,23 +717,46 @@ export function ChatWorkspace({
               {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
           )}
+          {(stopped || error?.partial) && (
+            <article className="message message-assistant message-partial">
+              <p className="turn-state" data-state={stopped ? "stopped" : "failed"}>
+                {stopped ? "You stopped this reply. It is not saved." : "This reply stopped. It is not saved."}
+              </p>
+              {(stopped?.partial || error?.partial) && <Markdown text={(stopped?.partial || error?.partial)!} />}
+            </article>
+          )}
+          {error ? (
+            <div className="turn-error" role="alert">
+              <p>{error.message}</p>
+              <div className="actions">
+                {trial && error.limit && (
+                  <Link className="button button-small button-primary" href="/signup">
+                    Create an account
+                  </Link>
+                )}
+                {error.turn && error.retryable && canRetry && (
+                  <button type="button" className="button button-small" onClick={() => void submit("retry")}>
+                    Retry
+                  </button>
+                )}
+                <button type="button" className="button button-small" onClick={() => setError(null)}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ) : (
+            canRetry && (
+              <div className="turn-retry">
+                <p className="small muted">{stopped ? "You can send a new message, or retry." : "This message has no reply yet."}</p>
+                <button type="button" className="button button-small" onClick={() => void submit("retry")}>
+                  Retry
+                </button>
+              </div>
+            )
+          )}
           {suggestionsFor(placedProposals.rest)}
           <div ref={endRef} />
         </div>
-
-        {error && (
-          <div className="alert alert-error chat-error" role="alert">
-            <span>{error.message}</span>
-          </div>
-        )}
-        {canRetry && (
-          <div className="retry-bar">
-            <span className="small muted">This message has no reply yet.</span>
-            <button type="button" className="button button-small" onClick={() => void submit("retry")}>
-              Retry reply
-            </button>
-          </div>
-        )}
 
         {/* Once per device: choose Ask first or Auto. Outside the form, so Enter on an option cannot send. */}
         <ApprovalModeSetup />

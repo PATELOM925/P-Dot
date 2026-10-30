@@ -658,6 +658,88 @@ textarea::placeholder {
   line-height: 1.55;
 }
 
+/* One honest state for each reply turn (Working, Waiting for you, Stopped, Did not finish, Done). */
+.turn-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.turn-state::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.turn-state[data-state="working"]::before {
+  background: var(--accent);
+  animation: turn-pulse 1.2s ease-in-out infinite;
+}
+
+.turn-state[data-state="waiting"] {
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--butter);
+  color: var(--butter-text);
+}
+
+.turn-state[data-state="done"]::before {
+  background: var(--sage-text);
+}
+
+.turn-state[data-state="failed"],
+.turn-state[data-state="stalled"] {
+  color: var(--danger);
+}
+
+@keyframes turn-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-state[data-state="working"]::before {
+    animation: none;
+  }
+}
+
+.message-partial .md {
+  color: var(--text-muted);
+}
+
+.turn-error,
+.turn-retry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+}
+
+.turn-error {
+  background: var(--error-bg);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.turn-error p,
+.turn-retry p {
+  margin: 0;
+}
+
+.turn-retry {
+  border: 1px dashed var(--border-field);
+}
+
 /* Safe Markdown in replies (src/features/chat/markdown). */
 .md {
   white-space: normal;

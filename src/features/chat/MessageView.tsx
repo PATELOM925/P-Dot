@@ -2,6 +2,7 @@ import { routeSummary } from "@/lib/routing";
 import { toSafeHttpUrl } from "@/lib/safe-url";
 import type { MessageDTO, SourceRef, WebSearchStatus } from "@/types/api";
 import { Markdown } from "./markdown/Markdown";
+import { TURN_STATE_LABELS, type TurnState } from "./turn-state";
 import { WhatWasSent } from "./WhatWasSent";
 
 export interface UiMessage extends MessageDTO {
@@ -61,7 +62,7 @@ export function SourceList({ sources }: { sources: SourceRef[] }) {
   );
 }
 
-export function MessageItem({ message }: { message: UiMessage }) {
+export function MessageItem({ message, state }: { message: UiMessage; state?: TurnState }) {
   const isUser = message.role === "user";
   return (
     <article className={`message ${isUser ? "message-user" : "message-assistant"}`}>
@@ -76,6 +77,11 @@ export function MessageItem({ message }: { message: UiMessage }) {
       {!isUser && message.webSearch === "used" && <SourceList sources={message.sources} />}
       {!isUser && (
         <div className="message-footer">
+          {state && (
+            <p className="turn-state" data-state={state}>
+              {TURN_STATE_LABELS[state]}
+            </p>
+          )}
           {message.route && (
             <p className="message-route" title={`Model tier: ${message.route.tier}`}>
               {routeSummary(message.route)}
