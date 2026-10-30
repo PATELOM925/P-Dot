@@ -1,6 +1,6 @@
 # 0015: Try P-Dot without an account
 
-- Status: Proposed (2026-10-30). High-level design. The low-level design follows in this record.
+- Status: Proposed (2026-10-30). High-level and low-level design.
 - Related: [0001 Supabase](0001-supabase-auth-and-database.md), [0006 spend guard](0006-global-spend-guard.md), [0009 memory and actions](0009-memory-documents-actions.md), [0011 approval modes](0011-approval-modes.md), [0013 tools](0013-ai-tools-and-scope.md).
 
 ## Goal
@@ -48,3 +48,68 @@ The request asked for a server action. Supabase limits anonymous sign-ins to 30 
 
 - **Converting a trial to a permanent account.** Supabase needs manual identity linking on, then an email change that the user confirms by email, then a password. The hosted project sends email only to team members (DEPLOYMENT.md, step 6). So this is not simple or safe today.
 - CAPTCHA, a separate spend cap for trial users, and automatic clean-up of old trial users.
+
+## Low-level design
+
+### Files and functions
+
+| File | Change |
+| --- | --- |
+| `src/lib/auth-identity.ts` (new) | `readIdentity(claims)` returns `{ userId, email, isAnonymous }` or `null`. `email` is `null` when the claim is missing, not a string or empty. `isAnonymous` is `claims.is_anonymous === true`. A token without the claim is an account. The server session and the proxy both use it. |
+| `src/server/auth/session.ts` | `AuthContext` gets `isAnonymous?: boolean`, set by `getAuthContext` from `readIdentity`. New `hasAccount(auth)`: `true` only when `isAnonymous === false`. A context made without the field (a test fake) has no account, so the check fails closed. |
+| `src/server/http/route.ts` | `withAuthenticatedRoute` option `requireAccount`. When it is set and `hasAccount` is false, the route answers 403 `account_required` ("Create an account to connect other accounts.") before the handler runs. |
+| `src/types/api.ts` | `ApiErrorCode` gets `account_required`. |
+| `src/server/auth/proxy-session.ts` | The redirect away from `/login`, `/signup` and `/forgot-password` applies only to an account, not to a trial user. |
+| `src/features/auth/errors.ts` (new) | `isRateLimit` and `isOutage` move here from `actions.ts` (a `"use server"` file can export only async functions). New `trialErrorMessage(error)`. |
+| `src/features/auth/TryWithoutAccount.tsx` (new) | Client button. On click it loads `@supabase/ssr` on demand, makes a browser client with the publishable key, and calls `getSession()`. With a session it goes to `/chat`. Otherwise it calls `signInAnonymously()`, then `window.location.assign("/chat")`. A full page load makes the server read the new cookies. |
+| `src/features/auth/actions.ts` | `updatePasswordAction` refuses a trial user: "A trial has no password. Create an account first." |
+| `src/app/page.tsx`, `src/app/(auth)/login/page.tsx` | Show the button to signed-out visitors. The login page shows it under the form after an "or" line. |
+| `src/app/(auth)/signup/page.tsx` | For a trial user: "Your trial chats do not move to the new account." |
+| `src/app/(workspace)/layout.tsx`, `src/components/layout/WorkspaceHeader.tsx`, `src/components/layout/TrialBanner.tsx` (new) | The banner under the header for a trial user. The header shows "Trial" in place of the email. |
+| `src/app/(workspace)/settings/page.tsx` | A trial user sees "You are trying P-Dot without an account", a "Create an account" link and an "End trial" button, and no "Change password". |
+| `src/app/(workspace)/connectors/page.tsx` | A trial user sees "Create an account to connect other accounts." in the planned accounts section. |
+| `src/features/chat/starter-prompts.ts`, `src/features/chat/StarterPrompts.tsx` (new), `ChatWorkspace.tsx` | 4 prompt chips for each mode in the empty chat. A click fills the draft and sets the web search and effort switches. It never sends. |
+| `supabase/config.toml` | `enable_anonymous_sign_ins = true` for the local stack only. The hosted setting is the owner's (DEPLOYMENT.md). |
+| `docs/DEPLOYMENT.md`, `CHANGELOG.md` | The owner step, the abuse limits and the clean-up SQL. |
+
+### Button states
+
+| State | Shown |
+| --- | --- |
+| Idle | "Try P-Dot now, no account" |
+| Pending | "Starting your trial…", button disabled |
+| Already signed in | Goes to `/chat`, no new user |
+| Error | The message under the button in `role="alert"`, button enabled again |
+
+### Error cases
+
+| Supabase answer | Message |
+| --- | --- |
+| `anonymous_provider_disabled` (HTTP 422) | "Trying P-Dot without an account is off right now. Create an account or sign in." |
+| HTTP 429 or a code that starts with `over_` | "Too many trials from this network. Wait a few minutes, or create an account." |
+| `captcha_failed` | Same as off: this page sends no CAPTCHA token. |
+| Network error, HTTP 5xx or no status | "The account service is unavailable right now. Please try again later." |
+| No Supabase settings in the build | Same as unavailable. |
+| Any other error | "We could not start a trial. Try again, or create an account." |
+
+The messages never include the Supabase error text.
+
+### Prompt chips
+
+| Shows off | Personal | Work | Sets |
+| --- | --- | --- | --- |
+| Web search with sources | What are the top news stories today? Give me the sources. | What is new in the latest Next.js release? Give me the sources. | Web search on |
+| Memory | Remember that I prefer short answers. | Remember that I prefer short answers. | Nothing |
+| Reminder or task | Remind me to call the dentist tomorrow at 10 am. | Remind me to send the weekly report on Friday at 4 pm. | Nothing |
+| Think harder | Plan a 3-day weekend in Lisbon on a small budget. | Plan my week to ship a small feature by Friday. | Effort "Think harder" |
+
+The wording works before and after pull request #24. Before #24 the model answers in text. After #24 the memory and reminder chips make a "Remember this?" card or an approval card.
+
+### Tests
+
+- `readIdentity`: an anonymous token with `email: ""`, an anonymous token with no email, an account, a token without `is_anonymous`, a token without `sub`.
+- `trialErrorMessage`: each row of the error table, built as the real `AuthApiError` and `AuthRetryableFetchError` objects from `@supabase/supabase-js`.
+- `withAuthenticatedRoute` with `requireAccount`: a trial user gets 403 `account_required` and the handler does not run; an account runs the handler; a context without `isAnonymous` gets 403; a route without the option lets a trial user through.
+- Proxy: a trial user stays on `/signup` and `/login`; an account is sent to `/chat`; a signed-out visitor to `/chat` goes to `/login`.
+- `updatePasswordAction`: a trial user is refused before `updateUser` runs.
+- Prompt chips: 4 for each mode, one with web search, one with "Think harder", each shorter than the message limit.
