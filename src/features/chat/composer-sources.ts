@@ -41,7 +41,7 @@ export function toggleSource(sources: MessageSources, key: string, connectedApps
 /** The "Use Google" row of the "+" menu, or null when Google is not set up. */
 export function googleToolItem(google: GoogleChatState, on: boolean): ToolItem | null {
   if (google === null) return null;
-  const item = { key: "google", title: "Use Google", chip: "Google", chipClass: "chip-app", icon: "google" } as const;
+  const item = { key: "google", title: "Use Google", chip: "Google", chipClass: "chip-app", icon: "google", brand: "google" } as const;
   if (google === "trial") {
     return { ...item, description: "Create an account to use Google.", on: false, unavailable: {} };
   }

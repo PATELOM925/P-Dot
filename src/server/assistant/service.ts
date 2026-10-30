@@ -767,7 +767,7 @@ async function* runChatTurn(
     ),
   });
   const plan = deps.routing[turn.route.tier];
-  const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null) : null;
+  const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null, turn.timeZone) : null;
   // One deadline for all hops and tool runs, so a turn stays inside the reply claim lease (decision 0012).
   const deadlineAt = Date.now() + plan.deadlineMs;
   const toolSignal = AbortSignal.any([signal, AbortSignal.timeout(plan.deadlineMs)]);

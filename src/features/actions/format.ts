@@ -117,12 +117,28 @@ export function payloadDetails(payload: ActionPayload, formatDate: (iso: string)
         ["Event", payload.title],
         ["Starts", formatDate(payload.start)],
         ["Ends", formatDate(payload.end)],
+        ["Length", formatLength(Date.parse(payload.end) - Date.parse(payload.start))],
         ["Guests", payload.attendees.length > 0 ? payload.attendees.join(", ") : "None"],
       ];
       if (payload.attendees.length > 0) rows.push(["Invitations", "Google emails an invitation to each guest."]);
       return [...rows, mode];
     }
   }
+}
+
+/** An event's length in words, such as "1 hour" or "1 hour 30 minutes". */
+export function formatLength(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "Not known";
+  const total = Math.round(ms / 60_000);
+  const parts: [number, string][] = [
+    [Math.floor(total / 1440), "day"],
+    [Math.floor((total % 1440) / 60), "hour"],
+    [total % 60, "minute"],
+  ];
+  return parts
+    .filter(([count]) => count > 0)
+    .map(([count, unit]) => `${count} ${unit}${count === 1 ? "" : "s"}`)
+    .join(" ") || "Less than 1 minute";
 }
 
 export interface ProposalFilter {

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { BrandName } from "@/components/ui/BrandMark";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GoogleCard } from "@/features/connectors/GoogleCard";
 import { googleCardState, googleOutcomeMessage } from "@/features/connectors/google";
@@ -190,9 +191,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           {layout.planned.map((connector) => (
             <article key={connector.name} className="panel">
               <div className="panel-heading">
-                <h3>
-                  <span className={`chip chip-${connector.key}`}>{connector.name}</span>
-                </h3>
+                <h3>{connector.brand ? <BrandName brand={connector.brand} name={connector.name} /> : connector.name}</h3>
                 <span className="status-pill">Coming soon</span>
               </div>
               <p>

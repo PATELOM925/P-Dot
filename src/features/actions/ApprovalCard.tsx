@@ -258,7 +258,7 @@ export function ApprovalCard({
         </form>
       ) : (
         <dl className="approval-details" aria-label={detailsLabel}>
-          {payloadDetails(shownPayload, (iso) => formatLocal(iso)).map(([label, value]) => (
+          {payloadDetails(shownPayload, (iso) => formatLocal(iso, "dateTimeZone")).map(([label, value]) => (
             <div key={label}>
               <dt>{label}</dt>
               <dd>{value}</dd>

@@ -3,7 +3,7 @@ import type { Mode, ModelTier, WebSearchStatus } from "@/types/api";
 import type { ChatMessage } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import { MCP_CONFIG_GATED, MCP_SERVER_IDS, MCP_SERVER_NAMES } from "@/lib/connectors";
-import { localTime } from "@/lib/time-zone";
+import { localTime, upcomingDays } from "@/lib/time-zone";
 import type { HistoryMessage } from "./context";
 
 const BASE_SYSTEM_PROMPT = `You are P-Dot, a personal assistant that helps one person with everyday questions, research, writing, and planning.
@@ -176,13 +176,26 @@ export interface PromptInput {
  * Changes when the system prompt or the prompt layout changes. Stored with
  * each "what was sent" record, so a record can be read against the prompt it used.
  */
-export const PROMPT_VERSION = "2026-10-30.8";
+export const PROMPT_VERSION = "2026-10-31.1";
 
-/** Today in the user's time zone, so relative times ("tomorrow at 6pm") mean the user's time. */
+/**
+ * Today in the user's time zone, so relative times ("tomorrow at 6pm") mean
+ * the user's time, and a list of the next days with their weekdays. A live
+ * test (2026-10-30) wrote "Thu Nov 4" for a Wednesday and labelled -05:00
+ * times as IST.
+ */
 function dateLine(now: Date, timeZone: string | null | undefined): string {
-  if (!timeZone) return `Today's date (UTC) is ${now.toISOString().slice(0, 10)}. The user's time zone is not known: read times as UTC.`;
-  const local = localTime(now, timeZone);
-  return `The user's time zone is ${timeZone} (UTC${local.offset}). The user's local date and time now is ${local.date} ${local.time}. Read every date and time the user gives, such as "tomorrow at 6pm", in this time zone, and write times with the offset ${local.offset}.`;
+  const zone = timeZone ?? "UTC";
+  const local = localTime(now, zone);
+  const days = upcomingDays(now, zone)
+    .map((entry, index) => `${entry.day}${index === 0 ? " (today)" : ""}${entry.offset === local.offset ? "" : ` UTC${entry.offset}`}`)
+    .join(", ");
+  const known = timeZone
+    ? `The user's time zone is ${timeZone} (UTC${local.offset}). The user's local date and time now is ${local.date} ${local.time}. Read every date and time the user gives, such as "tomorrow at 6pm", in this time zone, and write times with the offset ${local.offset}, or with the offset that the list below gives for that day.`
+    : `Today's date (UTC) is ${now.toISOString().slice(0, 10)}. The user's time zone is not known: read times as UTC.`;
+  return `${known}
+Days in ${timeZone ? "the user's time zone" : "UTC"}: ${days}. Take each weekday from this list or from a tool result. Never work out a weekday yourself.
+Show every time in ${timeZone ? `the user's time zone (${timeZone})` : "UTC"}. Name the time zone once, for example in a table header. Never ask the user to convert a time.`;
 }
 
 export function buildPromptMessages(input: PromptInput): ChatMessage[] {
