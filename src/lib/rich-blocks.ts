@@ -10,7 +10,6 @@ export type RichBlockKind = (typeof RICH_BLOCK_KINDS)[number];
 export const MAX_RICH_BLOCK_CHARS = 6000;
 export const MAX_RICH_BLOCKS_PER_REPLY = 3;
 
-// eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const text = (max: number) =>
   z
