@@ -9,6 +9,9 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Database step for the Notion, Linear and Todoist connectors** ([decision 0016](docs/decisions/0016-mcp-connectors.md)). ([PR #29](https://github.com/PATELOM925/P-Dot/pull/29))
+  - Problem: P-Dot cannot store a connection to Notion, Linear or Todoist.
+  - Resolution: migration `20261031000000_mcp_connectors.sql` (expand) lets `connected_accounts` hold `notion`, `linear` and `todoist` rows with read scopes only, no address and a sealed bundle of at most 12,288 characters. An anonymous session cannot insert or update such a row. Google rows and the live Google code do not change. The SQL gate checks it in both grant modes.
 - **Sign in with Google, and connect Google for Gmail and Calendar** ([decision 0014](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #25](https://github.com/PATELOM925/P-Dot/pull/25))
   - Problem: a user can sign in only with an email and a password, and P-Dot cannot read the user's Gmail or calendar or act there after approval.
   - Resolution:
