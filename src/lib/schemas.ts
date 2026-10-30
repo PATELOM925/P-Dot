@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MCP_SERVER_IDS } from "./connectors";
+import { DOCUMENT_MEDIA_TYPES } from "./document-types";
 import {
   MAX_ACTION_SUMMARY_CHARS,
   MAX_DOCUMENT_CHARS,
@@ -143,7 +144,7 @@ export const createDocumentSchema = z
       .trim()
       .min(1, "Title cannot be empty.")
       .max(MAX_DOCUMENT_TITLE_CHARS, `Title must be at most ${MAX_DOCUMENT_TITLE_CHARS} characters.`),
-    mediaType: z.enum(["text/plain", "text/markdown"]),
+    mediaType: z.enum(DOCUMENT_MEDIA_TYPES),
     text: z
       .string()
       .min(1, "The document is empty.")

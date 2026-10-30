@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createActionLogRepository } from "@/server/db/action-log";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
+import { createDocumentRepository } from "@/server/db/documents";
+import { DOCUMENT_MEDIA_TYPES } from "@/lib/document-types";
 import { sqlGateClient } from "../support/sql-gate-client";
 import { MEMORY, REMINDER, TASK, decideAs, propose, proposalEvents, type Decision } from "../support/sql-gate-actions";
 import {
@@ -364,6 +366,28 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
   });
 
   describe("app parsers read every row the database accepts", () => {
+    it("stores every document media type of decision 0019, lists each one, and refuses video and audio", async () => {
+      const owner = await gate.createUser();
+      for (const mediaType of DOCUMENT_MEDIA_TYPES) {
+        await gate.admin(
+          "insert into documents (user_id, mode, title, media_type, char_count) values ($1, 'work', $2, $2, 1)",
+          [owner, mediaType],
+        );
+      }
+      const listed = await createDocumentRepository(sqlGateClient(gate, owner)).listDocuments(owner, "work", 50);
+      expect(listed.map((document) => document.mediaType).sort()).toEqual([...DOCUMENT_MEDIA_TYPES].sort());
+      for (const mediaType of ["video/mp4", "audio/mpeg", "image/svg+xml", "IMAGE/PNG"]) {
+        expect(
+          await errorCode(() =>
+            gate.admin("insert into documents (user_id, mode, title, media_type, char_count) values ($1, 'work', 'x', $2, 1)", [
+              owner,
+              mediaType,
+            ]),
+          ),
+        ).toBe("23514");
+      }
+    });
+
     it("lists flat action log rows, with and without a proposal, exactly as stored", async () => {
       const owner = await gate.createUser();
       const proposal = await gate.admin<{ id: string }>(

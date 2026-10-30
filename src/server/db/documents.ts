@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { DOCUMENT_MEDIA_TYPES } from "@/lib/document-types";
 import type { DocumentDTO, DocumentMediaType, DocumentStatus, Mode } from "@/types/api";
 import { EMBEDDING_MODEL, toPgVector } from "@/server/providers/nebius/embeddings";
 import type { ClientRequest } from "@/server/http/request-key";
@@ -56,7 +57,7 @@ const documentRow = z.object({
   id: z.string(),
   mode: z.enum(["personal", "work"]),
   title: z.string(),
-  media_type: z.enum(["text/plain", "text/markdown"]),
+  media_type: z.enum(DOCUMENT_MEDIA_TYPES),
   char_count: z.number(),
   status: z.enum(["processing", "ready", "failed"]),
   created_at: z.string(),
