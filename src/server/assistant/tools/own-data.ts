@@ -124,7 +124,7 @@ const reminderArgs = z.object({
   title: z.string().trim().min(1).max(MAX_REMINDER_TITLE_CHARS).describe("What to remind the user about."),
   dueAt: z.iso
     .datetime({ offset: true })
-    .describe("When, as an ISO 8601 date and time with a time zone offset, for example 2026-10-31T09:00:00Z."),
+    .describe("When, as an ISO 8601 date and time with the user's UTC offset, for example 2026-10-31T18:00:00+05:30."),
 });
 
 export const proposeReminderTool: ToolSpec<z.infer<typeof reminderArgs>> = {
@@ -133,7 +133,7 @@ export const proposeReminderTool: ToolSpec<z.infer<typeof reminderArgs>> = {
   args: reminderArgs,
   kind: "propose",
   guidance:
-    "propose_reminder: when the user asks to be reminded, propose a reminder with an exact date and time. Use today's date above to work out relative times. It is added only after the user approves it.",
+    "propose_reminder: when the user asks to be reminded, propose a reminder with an exact date and time. Work out relative times from the user's local date and time above, and give dueAt with the user's offset. It is added only after the user approves it.",
   maxCallsPerTurn: 3,
   offered: (flags) => flags.ownData,
   statusQuery: () => undefined,

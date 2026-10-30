@@ -145,6 +145,8 @@ export interface PreparedTurn {
   /** Chronological history ending with `userMessage`. */
   history: HistoryMessage[];
   webSearch: boolean;
+  /** The user's IANA time zone from the browser, or null. */
+  timeZone: string | null;
   /** True when search was requested but the Tavily budget refused it. */
   searchBudgetExhausted: boolean;
   /** The tier for this reply and why the router chose it. */
@@ -346,6 +348,7 @@ export async function prepareChatTurn(
       webSearch: request.webSearch && googleFlags === null ? "failed" : "off",
       results: [],
       now: deps.now(),
+      timeZone: request.timeZone,
       mode,
       toolGuidance: toolsBound.map((tool) => tool.guidance),
       serverNote: google?.note,
@@ -426,6 +429,7 @@ export async function prepareChatTurn(
         repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
         webSearch: request.webSearch && googleFlags === null,
+        timeZone: request.timeZone ?? null,
         searchBudgetExhausted,
         route,
         toolFlags: {
@@ -647,6 +651,7 @@ async function* runChatTurn(
     webSearch,
     results,
     now: deps.now(),
+    timeZone: turn.timeZone,
     mode: turn.conversation.mode,
     toolGuidance: tools.map((tool) => tool.guidance),
     memories,

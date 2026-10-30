@@ -43,6 +43,7 @@ import { StarterPrompts } from "./StarterPrompts";
 import type { StarterPrompt } from "./starter-prompts";
 import { readChatStream } from "./stream";
 import { toolStatusLine } from "./tool-status";
+import { browserTimeZone } from "@/lib/time-zone";
 import {
   STALL_LINE,
   STALL_MS,
@@ -338,6 +339,8 @@ export function ChatWorkspace({
 
     const sentApps = apps;
     const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
+    const timeZone = browserTimeZone();
+    const zone = timeZone ? { timeZone } : {};
     const body: ChatRequest =
       action === "send"
         ? {
@@ -348,8 +351,17 @@ export function ChatWorkspace({
             ...connectors,
             ...(useGoogle ? { useGoogle: true as const } : {}),
             ...(activeId ? { conversationId: activeId } : { mode }),
+            ...zone,
           }
-        : { action, conversationId: activeId!, webSearch, effort, ...connectors, ...(useGoogle ? { useGoogle: true as const } : {}) };
+        : {
+            action,
+            conversationId: activeId!,
+            webSearch,
+            effort,
+            ...connectors,
+            ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...zone,
+          };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };

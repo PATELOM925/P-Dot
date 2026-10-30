@@ -2,6 +2,7 @@ import "server-only";
 import type { Mode, WebSearchStatus } from "@/types/api";
 import type { ChatMessage } from "@/server/providers/nebius/client";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
+import { localTime } from "@/lib/time-zone";
 import type { HistoryMessage } from "./context";
 
 const BASE_SYSTEM_PROMPT = `You are P-Dot, a personal assistant that helps one person with everyday questions, research, writing, and planning.
@@ -110,6 +111,8 @@ export interface PromptInput {
   webSearch: WebSearchStatus;
   results: WebSearchResult[];
   now: Date;
+  /** The user's IANA time zone from the browser. Missing: the prompt gives the UTC date. */
+  timeZone?: string | null;
   mode: Mode;
   /** One line of guidance for each tool offered in this request. None: the request has no tools. */
   toolGuidance?: string[];
@@ -128,10 +131,16 @@ export interface PromptInput {
  * Changes when the system prompt or the prompt layout changes. Stored with
  * each "what was sent" record, so a record can be read against the prompt it used.
  */
-export const PROMPT_VERSION = "2026-10-30.2";
+export const PROMPT_VERSION = "2026-10-30.3";
+
+/** Today in the user's time zone, so relative times ("tomorrow at 6pm") mean the user's time. */
+function dateLine(now: Date, timeZone: string | null | undefined): string {
+  if (!timeZone) return `Today's date (UTC) is ${now.toISOString().slice(0, 10)}. The user's time zone is not known: read times as UTC.`;
+  const local = localTime(now, timeZone);
+  return `The user's time zone is ${timeZone} (UTC${local.offset}). The user's local date and time now is ${local.date} ${local.time}. Read every date and time the user gives, such as "tomorrow at 6pm", in this time zone, and write times with the offset ${local.offset}.`;
+}
 
 export function buildPromptMessages(input: PromptInput): ChatMessage[] {
-  const date = input.now.toISOString().slice(0, 10);
   const note = searchStatusNote(input.webSearch);
   const guidance = input.toolGuidance ?? [];
   const toolRules = guidance.length > 0 ? [TOOLS_RULE, ...guidance.map((line) => `- ${line}`)].join("\n") : NO_TOOLS_RULE;
@@ -141,7 +150,7 @@ export function buildPromptMessages(input: PromptInput): ChatMessage[] {
   const hasEarlierReply = input.history.some((message) => message.role === "assistant");
   const continuation =
     hasEarlierReply && latest?.role === "user" && isContinuationRequest(latest.content) ? CONTINUATION_NOTE : null;
-  const system = [`${BASE_SYSTEM_PROMPT}\n${rules}`, MODE_SCOPE[input.mode], `Today's date (UTC) is ${date}.`, note, continuation, input.serverNote]
+  const system = [`${BASE_SYSTEM_PROMPT}\n${rules}`, MODE_SCOPE[input.mode], dateLine(input.now, input.timeZone), note, continuation, input.serverNote]
     .filter(Boolean)
     .join("\n\n");
 

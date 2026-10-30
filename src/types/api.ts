@@ -113,8 +113,18 @@ export type ChatRequest =
       connectors?: McpServerId[];
       /** Gmail and Calendar for this message only (decision 0014). Never together with web search or apps. */
       useGoogle?: true;
+      /** The browser's IANA time zone, for example "Asia/Kolkata". */
+      timeZone?: string;
     }
-  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort; connectors?: McpServerId[]; useGoogle?: true };
+  | {
+      action: "retry";
+      conversationId: string;
+      webSearch: boolean;
+      effort?: Effort;
+      connectors?: McpServerId[];
+      useGoogle?: true;
+      timeZone?: string;
+    };
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once

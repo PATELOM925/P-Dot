@@ -19,6 +19,7 @@ import {
   MAX_TITLE_CHARS,
 } from "./limits";
 import { EFFORTS } from "./routing";
+import { MAX_TIME_ZONE_CHARS, isValidTimeZone } from "./time-zone";
 import type { ChatRequest } from "@/types/api";
 
 const conversationId = z.uuid();
@@ -40,6 +41,8 @@ const connectorsSchema = z
  */
 const oneSource = (value: { webSearch: boolean; connectors?: unknown[]; useGoogle?: true }) =>
   [value.webSearch, (value.connectors?.length ?? 0) > 0, value.useGoogle === true].filter(Boolean).length <= 1;
+/** The browser's IANA time zone, so the reply reads "tomorrow at 6pm" in the user's time. */
+const timeZoneSchema = z.string().max(MAX_TIME_ZONE_CHARS).refine(isValidTimeZone, "Unknown time zone.").optional();
 const mixedSources = { message: "Use only one of web search, Google or connected apps for a message.", path: ["webSearch"] };
 
 // `.strict()` rejects unknown keys, so a client cannot smuggle in fields such
@@ -59,6 +62,7 @@ const sendSchema = z
     // Only sent when the "Use Google" toggle is on (decision 0014), so an older server still accepts a send without it.
     useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
+    timeZone: timeZoneSchema,
   })
   .strict()
   .refine(oneSource, mixedSources);
@@ -71,6 +75,7 @@ const retrySchema = z
     effort: effortSchema,
     useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
+    timeZone: timeZoneSchema,
   })
   .strict()
   .refine(oneSource, mixedSources);
