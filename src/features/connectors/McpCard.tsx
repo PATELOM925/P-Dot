@@ -34,7 +34,7 @@ export function McpCard({
   const name = MCP_SERVER_NAMES[app];
   const pill = PILL[state.kind];
   const helpId = `${app}-connect-help`;
-  const help = `P-Dot can read ${name} only for a message where you turn on Use ${name}. P-Dot cannot change anything in ${name}.`;
+  const help = `P-Dot reads ${name} only for a message that names ${name}. You can turn it off for that message. P-Dot cannot change anything in ${name}.`;
   return (
     <article className="panel" id={app} aria-labelledby={`${app}-heading`}>
       <div className="panel-heading">
