@@ -58,3 +58,21 @@ export function chatErrorView(
   const retryable = options.retryable ?? !(code && NOT_RETRYABLE.has(code));
   return { message, retryable, limit };
 }
+
+/** Adds a user message to the set that never shows Retry. A new set, for React state. */
+export function withNoRetry(ids: ReadonlySet<string>, userMessageId: string): ReadonlySet<string> {
+  if (ids.has(userMessageId)) return ids;
+  return new Set(ids).add(userMessageId);
+}
+
+/** Retry shows for the last message only when it is a saved user message with no reply, and Retry can help. */
+export function canRetryLast(input: {
+  sending: boolean;
+  loadingMessages: boolean;
+  activeId: string | null;
+  last: { id: string; role: string; pending?: boolean } | undefined;
+  noRetryIds: ReadonlySet<string>;
+}): boolean {
+  const { sending, loadingMessages, activeId, last, noRetryIds } = input;
+  return !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending && !noRetryIds.has(last.id);
+}

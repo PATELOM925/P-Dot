@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STALL_MS, TURN_STATE_LABELS, chatErrorView } from "@/features/chat/turn-state";
+import { STALL_MS, TURN_STATE_LABELS, canRetryLast, chatErrorView, withNoRetry } from "@/features/chat/turn-state";
 
 describe("chatErrorView", () => {
   it("uses the stream's retryable flag when it has one", () => {
@@ -32,5 +32,32 @@ describe("chatErrorView", () => {
   it("has one label for each state and a 15-second stall", () => {
     expect(STALL_MS).toBe(15_000);
     expect(Object.values(TURN_STATE_LABELS)).toContain("Waiting for you");
+  });
+});
+
+describe("canRetryLast", () => {
+  const base = { sending: false, loadingMessages: false, activeId: "c1" };
+  const user = (id: string) => ({ id, role: "user" });
+
+  it("keeps a blocked message blocked after an error on another message, for the page session", () => {
+    let blocked = withNoRetry(new Set(), "msg-a");
+    expect(canRetryLast({ ...base, last: user("msg-a"), noRetryIds: blocked })).toBe(false);
+    blocked = withNoRetry(blocked, "msg-b");
+    expect(canRetryLast({ ...base, activeId: "c2", last: user("msg-b"), noRetryIds: blocked })).toBe(false);
+    expect(canRetryLast({ ...base, last: user("msg-a"), noRetryIds: blocked })).toBe(false);
+    expect(canRetryLast({ ...base, last: user("msg-c"), noRetryIds: blocked })).toBe(true);
+  });
+
+  it("offers Retry only for a saved user message with no reply, when nothing is sending", () => {
+    const none = new Set<string>();
+    expect(canRetryLast({ ...base, last: { id: "x", role: "assistant" }, noRetryIds: none })).toBe(false);
+    expect(canRetryLast({ ...base, last: { id: "x", role: "user", pending: true }, noRetryIds: none })).toBe(false);
+    expect(canRetryLast({ ...base, sending: true, last: user("x"), noRetryIds: none })).toBe(false);
+    expect(canRetryLast({ ...base, activeId: null, last: user("x"), noRetryIds: none })).toBe(false);
+  });
+
+  it("returns the same set when the message is already blocked", () => {
+    const blocked = withNoRetry(new Set(), "msg-a");
+    expect(withNoRetry(blocked, "msg-a")).toBe(blocked);
   });
 });

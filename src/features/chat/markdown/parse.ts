@@ -236,6 +236,38 @@ function matchBrackets(text: string): Int32Array {
   return match;
 }
 
+/** The start of each run of backticks, grouped by run length, in order. */
+function backtickRuns(text: string): Map<number, number[]> {
+  const runs = new Map<number, number[]>();
+  for (let i = 0; i < text.length; ) {
+    if (text[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    const start = i;
+    while (text[i] === "`") i += 1;
+    const length = i - start;
+    const list = runs.get(length);
+    if (list) list.push(start);
+    else runs.set(length, [start]);
+  }
+  return runs;
+}
+
+/** The start of the first run of exactly `length` backticks at or after `from`, or -1 (binary search). */
+function nextTickRun(runs: Map<number, number[]>, length: number, from: number): number {
+  const list = runs.get(length);
+  if (!list) return -1;
+  let low = 0;
+  let high = list.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (list[mid]! < from) low = mid + 1;
+    else high = mid;
+  }
+  return low < list.length ? list[low]! : -1;
+}
+
 /** For each "(", the index of its matching ")" on the same line, or -1. One pass with a stack. */
 function matchParens(text: string): Int32Array {
   const match = new Int32Array(text.length).fill(-1);
@@ -257,6 +289,7 @@ export function parseInline(text: string, depth = 0): Inline[] {
   };
 
   const brackets = matchBrackets(text);
+  const tickRuns = backtickRuns(text);
   const parens = matchParens(text);
   // A search for a closing marker that found none from some point finds none from any later point.
   const noneFrom = new Map<string, number>();
@@ -284,16 +317,21 @@ export function parseInline(text: string, depth = 0): Inline[] {
       continue;
     }
     if (char === "`") {
+      // A code span ends at the next run of exactly as many backticks. Each run is counted once,
+      // and a run with no match is kept as text in one step, so the scan stays linear.
       let tickCount = 0;
       while (text[i + tickCount] === "`") tickCount += 1;
-      const ticks = "`".repeat(tickCount);
-      const end = findClosing(i + ticks.length, ticks);
+      const end = nextTickRun(tickRuns, tickCount, i + tickCount);
       if (end !== -1) {
         flush();
-        out.push({ type: "code", text: text.slice(i + ticks.length, end).trim() || text.slice(i + ticks.length, end) });
-        i = end + ticks.length;
-        continue;
+        const body = text.slice(i + tickCount, end);
+        out.push({ type: "code", text: body.trim() || body });
+        i = end + tickCount;
+      } else {
+        buffer += text.slice(i, i + tickCount);
+        i += tickCount;
       }
+      continue;
     }
     if (char === "[") {
       CITE.lastIndex = i;

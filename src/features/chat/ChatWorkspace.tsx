@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalModeMenu, ApprovalModeSetup } from "@/features/actions/ApprovalModePicker";
+import { useModal } from "@/components/ui/useModal";
 import { useApprovalMode } from "@/features/actions/approval-mode";
 import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
@@ -39,7 +40,15 @@ import { StarterPrompts } from "./StarterPrompts";
 import type { StarterPrompt } from "./starter-prompts";
 import { readChatStream } from "./stream";
 import { toolStatusLine } from "./tool-status";
-import { STALL_LINE, STALL_MS, TURN_STATE_LABELS, chatErrorView, type TurnState } from "./turn-state";
+import {
+  STALL_LINE,
+  STALL_MS,
+  TURN_STATE_LABELS,
+  canRetryLast,
+  chatErrorView,
+  withNoRetry,
+  type TurnState,
+} from "./turn-state";
 import { appendDictation, useDictation } from "./useDictation";
 
 interface StreamingReply {
@@ -101,7 +110,8 @@ export function ChatWorkspace({
   const [streaming, setStreaming] = useState<StreamingReply | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
   const [stopped, setStopped] = useState<{ partial: string } | null>(null);
-  const [noRetryId, setNoRetryId] = useState<string | null>(null);
+  // User messages whose last error said Retry cannot help, for the whole page session.
+  const [noRetryIds, setNoRetryIds] = useState<ReadonlySet<string>>(() => new Set());
   // "Working" only while events arrive (spec D1): the time of the last stream event, and whether it is too long ago.
   const lastEventRef = useRef(0);
   const streamTextRef = useRef("");
@@ -110,6 +120,8 @@ export function ChatWorkspace({
   const leftStreamRef = useRef<AbortController | null>(null);
   const drawerToggleRef = useRef<HTMLButtonElement>(null);
   const drawerCloseRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const drawerBackdropRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -218,7 +230,7 @@ export function ChatWorkspace({
 
   function showTurnError(view: Omit<ErrorState, "turn">, userMessageId: string | null) {
     setError({ ...view, turn: true });
-    if (!view.retryable && userMessageId) setNoRetryId(userMessageId);
+    if (!view.retryable && userMessageId) setNoRetryIds((ids) => withNoRetry(ids, userMessageId));
   }
 
   function closeList() {
@@ -227,6 +239,7 @@ export function ChatWorkspace({
 
   // The phone drawer: focus goes to its Close button, and Esc closes it. On close, focus goes back to
   // the toggle, after the render that takes `inert` off the chat.
+  useModal(showList, drawerRef, drawerBackdropRef);
   const drawerWasOpen = useRef(false);
   useEffect(() => {
     if (!showList) {
@@ -543,8 +556,7 @@ export function ChatWorkspace({
 
   const last = messages.at(-1);
   // A message whose last error said Retry cannot help keeps no Retry, also after Dismiss.
-  const canRetry =
-    !sending && !loadingMessages && activeId !== null && last?.role === "user" && !last.pending && last.id !== noRetryId;
+  const canRetry = canRetryLast({ sending, loadingMessages, activeId, last, noRetryIds });
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
 
   // Oldest first, so a reply's suggestions read in the order P-Dot made them.
@@ -597,8 +609,9 @@ export function ChatWorkspace({
 
   return (
     <div className="chat-layout">
-      {showList && <div className="drawer-backdrop" aria-hidden="true" onClick={closeList} />}
+      {showList && <div ref={drawerBackdropRef} className="drawer-backdrop" aria-hidden="true" onClick={closeList} />}
       <aside
+        ref={drawerRef}
         id="chat-drawer"
         className={`chat-sidebar${showList ? " is-open" : ""}`}
         aria-label="Conversations"
@@ -730,7 +743,7 @@ export function ChatWorkspace({
         </ul>
       </aside>
 
-      <main className="chat-main" inert={showList ? true : undefined}>
+      <main className="chat-main">
         <div className="chat-toolbar">
           <button
             ref={drawerToggleRef}

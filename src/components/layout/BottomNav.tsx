@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useModal } from "@/components/ui/useModal";
 import { usePopover } from "@/components/ui/usePopover";
 import { signOutAction } from "@/features/auth/actions";
 import { WaitingApprovalsBadge } from "@/features/actions/WaitingApprovalsBadge";
@@ -28,11 +29,21 @@ export function BottomNav({ trial }: { trial: boolean }) {
   const sheetRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const doneRef = useRef<HTMLButtonElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   usePopover({ open, menuRef: sheetRef, triggerRef: moreRef, onClose: close });
+  useModal(open, sheetRef, backdropRef);
 
+  // Focus moves into the sheet, and back to "More" after the render that takes `inert` off the nav.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (open) doneRef.current?.focus();
+    if (open) {
+      wasOpen.current = true;
+      doneRef.current?.focus();
+    } else if (wasOpen.current) {
+      wasOpen.current = false;
+      moreRef.current?.focus();
+    }
   }, [open]);
 
   const moreActive = MORE.some((link) => pathname === link.href);
@@ -61,7 +72,7 @@ export function BottomNav({ trial }: { trial: boolean }) {
       </nav>
       {open && (
         <>
-          <div className="sheet-backdrop" aria-hidden="true" />
+          <div ref={backdropRef} className="sheet-backdrop" aria-hidden="true" />
           <div id="more-sheet" ref={sheetRef} role="dialog" aria-modal="true" aria-label="More pages" className="sheet">
             <div className="sheet-head">
               <p className="sheet-title">More</p>
@@ -69,10 +80,7 @@ export function BottomNav({ trial }: { trial: boolean }) {
                 ref={doneRef}
                 type="button"
                 className="button button-small"
-                onClick={() => {
-                  setOpen(false);
-                  moreRef.current?.focus();
-                }}
+                onClick={() => setOpen(false)}
               >
                 Done
               </button>
