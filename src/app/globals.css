@@ -175,7 +175,7 @@ a:hover {
   align-items: center;
 }
 
-/* Brand: accent dot + wordmark */
+/* Brand: mascot + wordmark */
 
 .brand {
   display: inline-flex;
@@ -187,20 +187,23 @@ a:hover {
   text-decoration: none;
 }
 
-.brand::before {
-  content: "";
+.brand .brand-mascot {
   width: 1.75rem;
   height: 1.75rem;
-  border-radius: 50%;
-  background: var(--accent-gradient);
   flex-shrink: 0;
+  filter: drop-shadow(0 2px 4px rgb(99 102 241 / 0.25));
+}
+
+/* The mark in the header stays still: no blink. */
+.brand-mascot .mascot-eyes {
+  animation: none;
 }
 
 .workspace-header .brand {
   font-size: 1.25rem;
 }
 
-.workspace-header .brand::before {
+.workspace-header .brand .brand-mascot {
   width: 1.5rem;
   height: 1.5rem;
 }

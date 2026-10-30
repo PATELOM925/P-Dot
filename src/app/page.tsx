@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BrandLink } from "@/components/layout/BrandLink";
 import { TryWithoutAccount } from "@/features/auth/TryWithoutAccount";
 import { DynamicAgentCard } from "@/features/landing/DynamicAgentCard";
 import { SiteFooter } from "@/components/layout/SiteFooter";
@@ -21,9 +22,7 @@ export default function LandingPage() {
   return (
     <div className="landing">
       <header className="landing-header">
-        <Link href="/" className="brand">
-          P-Dot
-        </Link>
+        <BrandLink />
         <nav className="actions" aria-label="Account">
           <Link className="button" href="/login">
             Sign in
