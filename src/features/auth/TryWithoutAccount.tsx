@@ -33,7 +33,8 @@ export function TryWithoutAccount({ className = "button button-primary button-la
         const { error: signInError } = await supabase.auth.signInAnonymously();
         if (signInError) return fail(trialErrorMessage(signInError));
       }
-      // A full page load, so the server reads the new session cookies. The button stays disabled until then.
+      // The button stays disabled until the page changes.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full load makes the server read the new session cookies
       window.location.assign("/chat");
     } catch {
       fail(UNAVAILABLE_MESSAGE);
