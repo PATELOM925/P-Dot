@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useRef, type RefObject } from "react";
+import { BrandMark } from "@/components/ui/BrandMark";
+import type { BrandId } from "@/components/ui/brand-marks";
 import { moveMenuFocus, usePopover } from "@/components/ui/usePopover";
 
 /**
@@ -15,12 +17,15 @@ export interface ToolItem {
   chip: string;
   chipClass: "chip-web" | "chip-deep" | "chip-app";
   icon: "web" | "deep" | "app" | "google";
+  /** The service's brand mark, shown in place of the icon. */
+  brand?: BrandId;
   on: boolean;
   /** The tool cannot turn on here. With `href`, the row is a link to the page that sets it up. */
   unavailable?: { href?: string };
 }
 
-function ToolIcon({ icon }: { icon: ToolItem["icon"] }) {
+function ToolIcon({ icon, brand }: { icon: ToolItem["icon"]; brand?: BrandId }) {
+  if (brand) return <BrandMark brand={brand} />;
   if (icon === "web") {
     return (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -101,7 +106,7 @@ export function ToolsMenu({
                 href={item.unavailable.href}
                 autoFocus={index === 0}
               >
-                <ToolIcon icon={item.icon} />
+                <ToolIcon icon={item.icon} brand={item.brand} />
                 <span className="tool-row-text">
                   <span className="tool-row-title">{item.title}</span>
                   <span className="tool-row-description">{item.description}</span>
@@ -132,7 +137,7 @@ export function ToolsMenu({
                 closeToTrigger();
               }}
             >
-              <ToolIcon icon={item.icon} />
+              <ToolIcon icon={item.icon} brand={item.brand} />
               <span className="tool-row-text">
                 <span className="tool-row-title">{item.title}</span>
                 <span className="tool-row-description">{item.description}</span>
@@ -190,7 +195,7 @@ export function ToolChips({
             inputRef.current?.focus();
           }}
         >
-          <ToolIcon icon={item.icon} />
+          <ToolIcon icon={item.icon} brand={item.brand} />
           {item.chip}
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18" />

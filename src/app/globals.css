@@ -1986,6 +1986,30 @@ a.tool-row {
 [data-theme="dark"] .chip-phone { background: #4a2e18; color: #ffd5b0; }
 [data-theme="dark"] .chip-search { background: #2e1d52; color: #d8b4fe; }
 
+/* Brand marks next to service names (src/components/ui/BrandMark.tsx). */
+.brand-mark {
+  flex-shrink: 0;
+  color: var(--mark-light);
+}
+
+[data-theme="dark"] .brand-mark {
+  color: var(--mark-dark);
+}
+
+.brand-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.brand-names {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 1rem;
+  row-gap: 0.375rem;
+}
+
 .connector-tag {
   align-self: flex-start;
 }

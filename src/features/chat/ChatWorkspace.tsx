@@ -630,6 +630,7 @@ export function ChatWorkspace({
         chip: MCP_SERVER_NAMES[app],
         chipClass: "chip-app",
         icon: "app",
+        brand: app,
         on: sources.apps.includes(app),
       }),
     ),
