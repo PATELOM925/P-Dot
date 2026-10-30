@@ -176,28 +176,29 @@ function toWrittenProposal(row: unknown, operation: string): ActionProposalDTO {
 
 export function createActionProposalRepository(supabase: SupabaseClient): ActionProposalRepository {
   /** Every decision function answers { outcome, claimId?, proposal }. */
-  async function callDecision(name: string, args: Record<string, unknown>): Promise<DecisionResult> {
+  async function callDecision(name: string, args: Record<string, unknown>, operation: string): Promise<DecisionResult> {
     const { data, error } = await supabase.rpc(name, args);
-    if (error) throw new RepositoryError(name);
+    if (error) throw new RepositoryError(operation);
     const parsed = decisionResponse.safeParse(data);
-    if (!parsed.success) throw new RepositoryError(name);
+    if (!parsed.success) throw new RepositoryError(operation);
     const { outcome, proposal, claimId } = parsed.data;
     if (proposal === null || proposal === undefined) {
-      if (outcome !== "not_found") throw new RepositoryError(name);
+      if (outcome !== "not_found") throw new RepositoryError(operation);
       return { outcome, proposal: null, row: null };
     }
     // The decision may already be committed. Never fail because of the
     // payload: an older row with a payload that cannot be shown still gets
     // its ID and status back.
     const row = decidedRow.safeParse(proposal);
-    if (!row.success) throw new RepositoryError(name);
+    if (!row.success) throw new RepositoryError(operation);
     const subject = accountSubject.safeParse(proposal);
+    const claimedFor = subject.success ? subject.data.execution_account_subject : null;
     return {
       outcome,
       proposal: toProposal(proposal),
       row: row.data,
       ...(claimId ? { claimId } : {}),
-      accountSubject: subject.success ? (subject.data.execution_account_subject ?? null) : null,
+      ...(claimedFor ? { accountSubject: claimedFor } : {}),
     };
   }
 
@@ -231,7 +232,11 @@ export function createActionProposalRepository(supabase: SupabaseClient): Action
     },
 
     async decide(proposalId, decision, payload) {
-      return callDecision("decide_action_proposal", { p_id: proposalId, p_decision: decision, p_payload: payload ?? null });
+      return callDecision(
+        "decide_action_proposal",
+        { p_id: proposalId, p_decision: decision, p_payload: payload ?? null },
+        "decideActionProposal",
+      );
     },
 
     async getProposal(userId, proposalId) {
@@ -251,15 +256,19 @@ export function createActionProposalRepository(supabase: SupabaseClient): Action
         p_claim_id: claimId,
         p_succeeded: outcome.succeeded,
         p_result: outcome.succeeded ? outcome.result : { error: "execution_failed", reason: outcome.reason },
-      });
+      }, "finishExternalAction");
     },
 
     async reclaimExternal(proposalId, leaseSeconds) {
-      return callDecision("reclaim_external_action", { p_id: proposalId, p_lease_seconds: leaseSeconds });
+      return callDecision("reclaim_external_action", { p_id: proposalId, p_lease_seconds: leaseSeconds }, "reclaimExternalAction");
     },
 
     async settleUnknownExternal(proposalId, leaseSeconds, done) {
-      return callDecision("settle_unknown_external_action", { p_id: proposalId, p_lease_seconds: leaseSeconds, p_done: done });
+      return callDecision(
+        "settle_unknown_external_action",
+        { p_id: proposalId, p_lease_seconds: leaseSeconds, p_done: done },
+        "settleUnknownExternalAction",
+      );
     },
   };
 }
