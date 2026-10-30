@@ -222,7 +222,7 @@ describe("POST /api/chat when one write fails", () => {
   const LEASE_MS = REPLY_CLAIM_LEASE_SECONDS * 1000;
   type Variant = "new" | "existing" | "search" | "tools" | "google" | "google401";
   /** Asks for an email with the address, so the Google proposal guard allows it. */
-  const GOOGLE_MESSAGE = "Find the lunch email, then email sam@example.com that I can come.";
+  const GOOGLE_MESSAGE = "Email sam@example.com that I can come. Check the lunch email first.";
 
   /** The first pass reads Gmail and proposes the email; the next pass answers. */
   function googleModel() {
