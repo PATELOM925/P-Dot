@@ -9,9 +9,11 @@ import {
 } from "./own-data";
 import type { ToolSpec } from "./registry";
 import { webSearchTool } from "./web-search";
+import { GOOGLE_TOOLS } from "./google";
 
 export * from "./registry";
 export { earlierAttemptCheck };
+export { newGoogleTurn, type GoogleServices, type GoogleTurn } from "./google";
 
 /** Every tool, in the order the model sees them. Add a new tool here and in `AssistantToolName`. */
 export const TOOLS: readonly ToolSpec[] = [
@@ -21,4 +23,5 @@ export const TOOLS: readonly ToolSpec[] = [
   proposeTaskTool,
   proposeReminderTool,
   saveMemoryTool,
+  ...GOOGLE_TOOLS,
 ] as ToolSpec[];

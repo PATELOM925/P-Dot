@@ -9,6 +9,7 @@ import type { Logger } from "@/server/log";
 import type { ToolCall, ToolDefinition } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import type { Embedder } from "../embed";
+import type { GoogleServices, GoogleTurn } from "./google";
 
 // The one place that defines the assistant's tools. A tool is a ToolSpec in
 // TOOLS. The set offered for a request is chosen from request flags only
@@ -21,6 +22,21 @@ export interface ToolFlags {
   webSearch: boolean;
   /** The server can read and write the user's own P-Dot data (memories, documents, proposals). */
   ownData: boolean;
+  /**
+   * The model may write its own web search query. False in a turn that offers
+   * Google tools, and in a conversation that ever had a Google reply
+   * (decision 0014, decision 10). The first search with the user's message is apart.
+   */
+  webSearchTool: boolean;
+  /** Set only when the user turned on "Use Google" for this message and the connection allows it. */
+  google: GoogleToolFlags | null;
+}
+
+/** What the Google connection allows, from its granted scopes. */
+export interface GoogleToolFlags {
+  read: boolean;
+  send: boolean;
+  calendar: boolean;
 }
 
 /**
@@ -47,6 +63,8 @@ export interface ToolServices {
   waitUntil: (work: Promise<unknown>) => void;
   /** Null or missing when the server has no data services for this request. */
   ownData?: OwnDataServices | null;
+  /** Null or missing when Google is not set up or the session is anonymous. */
+  google?: GoogleServices | null;
 }
 
 export interface ToolContext {
@@ -65,6 +83,8 @@ export interface ToolContext {
   signal: AbortSignal;
   /** Web sources the turn already has, in citation order. A tool adds only new URLs. */
   sources: readonly WebSearchResult[];
+  /** Shared by the Google tools of this turn. Missing when the turn offers none. */
+  google?: GoogleTurn | null;
 }
 
 export interface ToolOutcome {

@@ -23,7 +23,7 @@ export const webSearchTool: ToolSpec<z.infer<typeof args>> = {
   guidance:
     "web_search: the user turned on web search for this message, and results for the message are already attached. Call web_search only when you need one more search with a different query. You can call it once.",
   maxCallsPerTurn: 1,
-  offered: (flags) => flags.webSearch,
+  offered: (flags) => flags.webSearch && flags.webSearchTool,
   statusQuery: ({ query }) => query,
   async run({ query }, context) {
     const { services, signal } = context;
