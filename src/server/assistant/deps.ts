@@ -1,4 +1,5 @@
 import "server-only";
+import { hasAccount } from "@/lib/auth-identity";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
@@ -15,6 +16,7 @@ import { createSpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
 import { createNebiusProvider } from "@/server/providers/model";
 import { searchWeb } from "@/server/providers/tavily/client";
+import { limitsFor } from "@/server/trial-limits";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
 import { createBudgetedEmbedder, type Embedder } from "./embed";
 import type { AssistantDeps } from "./service";
@@ -29,11 +31,14 @@ const breaker = createCircuitBreaker(BREAKER_DEFAULTS);
 /** Wires the assistant service to real providers for one authenticated request. */
 export function createAssistantDeps(auth: AuthContext, config: AssistantConfig): AssistantDeps {
   const tavily = config.tavily;
-  const spend = createSpendGuard(auth.supabase, config.spend);
+  // One guard with this user's caps (trial caps for a trial) for every paid call of the turn:
+  // the reply, tool hops (also the Google ones), the title and the retrieval embeddings.
+  const limits = limitsFor(auth, config);
+  const spend = createSpendGuard(auth.supabase, limits.spend);
   // Google tools need a real account and the Google settings (decision 0014). The flag comes from the verified JWT.
   const googleConfig = getGoogleConfig();
   const google =
-    googleConfig.status === "ready" && auth.isAnonymous !== true
+    googleConfig.status === "ready" && hasAccount(auth)
       ? {
           config: googleConfig.config,
           accounts: createConnectedAccountRepository(auth.supabase),
@@ -43,7 +48,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
       : null;
   return {
     repo: createConversationRepository(auth.supabase),
-    quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
+    quota: createQuotaGate(auth.supabase, limits.quota.requestsPerWindow, limits.quota.windowSeconds),
     spend,
     routing: config.routing,
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
@@ -55,7 +60,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     contextRecords: createContextRecordRepository(auth.supabase),
     titles: true,
     google,
-    googleBlocked: google ? null : auth.isAnonymous === true ? "demo_session" : "not_set_up",
+    googleBlocked: google ? null : hasAccount(auth) ? "not_set_up" : "demo_session",
     ownData: {
       embedder: createBudgetedEmbedder({
         settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
@@ -88,6 +93,6 @@ export function waitUntil(work: Promise<unknown>): void {
 export function createEmbedderForRequest(auth: AuthContext, config: AssistantConfig): Embedder {
   return createBudgetedEmbedder({
     settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
-    spend: createSpendGuard(auth.supabase, config.spend),
+    spend: createSpendGuard(auth.supabase, limitsFor(auth, config).spend),
   });
 }

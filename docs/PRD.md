@@ -49,6 +49,7 @@ The initial target is an individual who wants one workspace for everyday questio
 
 - Landing page with sign-in and signup entry points.
 - Signup, login, logout, email verification if required by the provider, and password recovery.
+- A trial without an account, for the hackathon judges ([decision 0015](decisions/0015-judge-demo-mode.md)). A trial user is a Supabase anonymous user with lower per-user limits than an account. A trial cannot set a password or connect other accounts, and its chats do not move to a new account.
 - Protected workspace and server-enforced authentication for all private endpoints.
 - Clear validation and authentication error states without revealing whether an account exists.
 

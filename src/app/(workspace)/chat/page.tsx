@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ChatWorkspace, type GoogleChatState } from "@/features/chat/ChatWorkspace";
+import { hasAccount } from "@/lib/auth-identity";
 import { getAuthContext } from "@/server/auth/session";
 import { getGoogleConfig } from "@/server/config";
 import { createConnectedAccountRepository } from "@/server/db/connected-accounts";
@@ -16,7 +17,7 @@ async function googleState(): Promise<GoogleChatState> {
   if (getGoogleConfig().status !== "ready") return null;
   const auth = await getAuthContext();
   if (!auth) return null;
-  if (auth.isAnonymous) return "trial";
+  if (!hasAccount(auth)) return "trial";
   try {
     const connection = await createConnectedAccountRepository(auth.supabase).getGoogleConnection(auth.userId);
     return connection?.status === "connected" ? "connected" : "not_connected";

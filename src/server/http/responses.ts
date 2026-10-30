@@ -35,6 +35,9 @@ export function errorResponse(
 export const unauthorized = (requestId: string) =>
   errorResponse(401, "unauthorized", "Sign in to continue.", requestId);
 
+export const accountRequired = (requestId: string) =>
+  errorResponse(403, "account_required", "Create an account to connect other accounts.", requestId);
+
 export const notFound = (requestId: string) =>
   errorResponse(404, "not_found", "Conversation not found.", requestId);
 
