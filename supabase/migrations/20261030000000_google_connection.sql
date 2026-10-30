@@ -122,19 +122,26 @@ alter table public.action_proposals
   add column if not exists execution_claim_id uuid,
   add column if not exists execution_started_at timestamptz,
   add column if not exists execution_account_subject text,
-  add column if not exists execution_target text;
+  add column if not exists execution_target text,
+  -- 1 at the claim, plus 1 for each reclaim. After a reclaim, an earlier
+  -- attempt may have reached Google.
+  add column if not exists execution_attempt smallint,
+  -- True when no request can know the outcome any more. Only the user's answer
+  -- (settle_unknown_external_action) settles the row then.
+  add column if not exists execution_outcome_unknown boolean not null default false;
 
 alter table public.action_proposals add constraint action_proposals_execution_claim check (
   (status = 'executing') = (execution_claim_id is not null)
   and (status <> 'executing' or (execution_started_at is not null
-    and execution_account_subject is not null and execution_target is not null))
+    and execution_account_subject is not null and execution_target is not null and execution_attempt >= 1))
   and (execution_target is null or execution_target in ('gmail:me', 'calendar:primary')));
 
 -- No API role may read execution_claim_id. The app selects named columns,
 -- and main's code never names this one.
 revoke select on public.action_proposals from anon, authenticated;
 grant select (id, user_id, conversation_id, kind, payload, summary, status, result, created_at, decided_at,
-  decided_by_function, execution_started_at, execution_account_subject, execution_target)
+  decided_by_function, execution_started_at, execution_account_subject, execution_target, execution_attempt,
+  execution_outcome_unknown)
   on public.action_proposals to authenticated;
 
 -- The answer for a proposal that another decision claimed first. Unchanged
@@ -481,7 +488,8 @@ begin
     set status = 'executing', decided_at = now(), payload = v_payload,
         execution_claim_id = gen_random_uuid(), execution_started_at = now(),
         execution_account_subject = v_subject,
-        execution_target = case v_row.kind when 'send_email' then 'gmail:me' else 'calendar:primary' end
+        execution_target = case v_row.kind when 'send_email' then 'gmail:me' else 'calendar:primary' end,
+        execution_attempt = 1
     where p.id = p_id and p.user_id = v_uid and p.status = 'proposed'
     returning * into v_row;
     if not found then
@@ -548,7 +556,13 @@ grant execute on function public.decide_action_proposal(uuid, text, jsonb) to au
 -- for create_calendar_event. false: { error: 'execution_failed', reason },
 -- with a reason from a fixed list. Store 'failed' only when Google did not act.
 -- Before it calls Google, the Worker checks that the connected account is the
--- one in execution_account_subject; if not, it stores 'account_changed'.
+-- one in execution_account_subject; if not, it reports 'account_changed'.
+--
+-- A failure is stored as 'failed' only on the first attempt. After a reclaim,
+-- the earlier attempt may have reached Google, so a failure of this attempt
+-- does not prove that nothing happened: the row stays 'executing', is marked
+-- execution_outcome_unknown, and the answer is 'outcome_unknown'. Then only
+-- the user's answer settles it.
 --
 -- Returns { outcome, proposal }. outcome: not_found, already_decided,
 -- stale_claim (another request holds the claim now), invalid, executed, failed.
@@ -607,6 +621,14 @@ begin
     return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
+  if not p_succeeded and v_row.execution_attempt > 1 then
+    update public.action_proposals p
+    set execution_outcome_unknown = true
+    where p.id = p_id
+    returning * into v_row;
+    return jsonb_build_object('outcome', 'outcome_unknown', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
+  end if;
+
   perform set_config('pdot.deciding_proposal', p_id::text, true);
   update public.action_proposals p
   set status = case when p_succeeded then 'executed' else 'failed' end,
@@ -629,8 +651,8 @@ $$;
 -- 'account_changed' and no claim, because an event ID is unique only in one
 -- calendar, so an insert into another account could make a second event. The
 -- user then answers through settle_unknown_external_action.
--- send_email: 'outcome_unknown' (or 'account_changed') and no claim. P-Dot
--- never sends it again.
+-- send_email, or a row marked execution_outcome_unknown: 'outcome_unknown'
+-- (or 'account_changed') and no claim. P-Dot never runs it again.
 -- A row inside the lease gets 'busy'. Returns { outcome, proposal }.
 -- ---------------------------------------------------------------------------
 -- True only while the user's Google row has this subject and is connected.
@@ -675,6 +697,9 @@ begin
   if v_row.execution_started_at > now() - make_interval(secs => p_lease_seconds) then
     return jsonb_build_object('outcome', 'busy', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
+  if v_row.execution_outcome_unknown then
+    return jsonb_build_object('outcome', 'outcome_unknown', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
+  end if;
   if not public.external_action_account_unchanged(v_uid, v_row.execution_account_subject) then
     return jsonb_build_object('outcome', 'account_changed', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
@@ -683,7 +708,8 @@ begin
   end if;
 
   update public.action_proposals p
-  set execution_claim_id = gen_random_uuid(), execution_started_at = now()
+  set execution_claim_id = gen_random_uuid(), execution_started_at = now(),
+      execution_attempt = execution_attempt + 1
   where p.id = p_id
   returning * into v_row;
   return jsonb_build_object('outcome', 'claimed', 'claimId', v_row.execution_claim_id,
@@ -693,8 +719,8 @@ $$;
 
 -- The user's answer for an action whose outcome is unknown, for a row left
 -- 'executing' after its lease: any send_email row, and a
--- create_calendar_event row whose Google account changed (otherwise the
--- reclaim recovers it). p_done true stores 'executed' with
+-- create_calendar_event row whose Google account changed or whose outcome is
+-- marked unknown (otherwise the reclaim recovers it). p_done true stores 'executed' with
 -- { userConfirmed: true }; false stores 'failed' with the reason 'not_done'.
 -- It does not set the trust marker: a person answered, so decided_by_function
 -- and the log row's verified stay false.
@@ -724,7 +750,7 @@ begin
   if v_row.status <> 'executing' then
     return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
-  if p_done is null or (v_row.kind = 'create_calendar_event'
+  if p_done is null or (v_row.kind = 'create_calendar_event' and not v_row.execution_outcome_unknown
     and public.external_action_account_unchanged(v_uid, v_row.execution_account_subject)) then
     return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
