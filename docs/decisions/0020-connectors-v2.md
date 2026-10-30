@@ -72,7 +72,7 @@ GitHub: github.com/login/oauth, api.githubcopilot.com/mcp/readonly
 | Stored chat | The user's own row | The chat ID is sealed, bound to the user ID (`pdot:telegram_links:<user>`). A user can write the column, but only a value that the Worker sealed for that user opens. So a user cannot point the bot at another person's chat. | `src/server/telegram/seal.ts` |
 | Send | The browser | Same origin, account, body zod (text 1 to 4,000 characters, a UUID key), chat quota, `claim_telegram_send(key)` (one send for each key), then one `sendMessage` with plain text (no parse mode). The model cannot call it: there is no model tool. | `/api/connectors/telegram/send` |
 | GitHub client secret | Env | Only in the code exchange and the refresh body, to the token endpoint from discovery, which must be `https://github.com`. Never in the sealed state, the bundle, a log or the browser. | `src/server/mcp/oauth.ts`, `src/server/config.ts` |
-| GitHub tool arguments | The model | Decision 0016 rules. A search is `user_phrase`. A repository (`owner/name`) or a file link must be in the user's current message (`turn_ids`). | `src/server/mcp/catalog.ts`, `outbound.ts` |
+| GitHub tool arguments | The model | Decision 0016 rules. A search is `user_phrase`. A repository (`owner/name`) or a file link must be in the user's current message (`turn_ids`), or come from a typed field of a GitHub result in this turn. `github_my_work` takes only an enum. `github_find_repo` takes a name that must be a phrase of the user's message. P-Dot builds every search query in code. | `src/server/mcp/catalog.ts`, `github-tools.ts`, `outbound.ts` |
 
 ### Why the QR has no sign-in link
 
@@ -101,6 +101,20 @@ A one-time sign-in link for another device needs `auth.admin.generateLink`, whic
 | `github_search_issues` | `search_issues` | `{ query, perPage: 10 }` | `user_phrase`, 1 call |
 | `github_list_pull_requests` | `list_pull_requests` | `{ owner, repo, state: "open", perPage: 10 }` from `repo: "owner/name"` | `turn_ids`: `owner/name` or a `github.com/owner/name` link in the user's message |
 | `github_read_file` | `get_file_contents` | `{ owner, repo, path, ref }` from a `github.com/<owner>/<repo>/blob/<ref>/<path>` link | `turn_ids`: the link must be in the user's message |
+| `github_my_work` (added 2026-10-31) | `get_me`, then `search_pull_requests` or `search_issues` | `{}`, then `{ query, sort: "updated", order: "desc", perPage: 10 }`. The query is `is:open author:<login>` (`open_pull_requests`), `involves:<login>` (`recent_pull_requests`) or `involves:<login>` in issues (`recent_issues`) | No free text: `{ kind }` is an enum. The login must match the GitHub login form, else the tool stops |
+| `github_find_repo` (added 2026-10-31) | `get_me`, `search_repositories`, `list_pull_requests` | `{ query: "user:<login> fork:true", sort: "updated", order: "desc", perPage: 100 }`, then `{ owner, repo, state: "all", sort: "updated", direction: "desc", perPage: 20 }` for the match | `user_phrase` for `name`. P-Dot matches the name in code, with case, hyphens and spaces removed, so "PDot" finds "P-Dot". No match, or more than one partial match, gives a list of the user's repositories, and each becomes a `turn_ids` ID |
+
+### GitHub requests in plain words (added 2026-10-31)
+
+Problem (live, 2026-10-31): "Check if there are any open PRs on my github" made the model ask for owner and repository. "check for Open PRs on PDot repo and recent work done there" made a search that hit the limit, and the reply said that no public PDot repository exists. The real repository is `PATELOM925/P-Dot`. The first tools needed an exact `owner/name` or a phrase copied word for word.
+
+Approach: a catalog tool can now make several remote calls in an order written in code (`src/server/mcp/steps.ts`). The model gives only the tool's checked arguments. Each remote call goes through the same pin check. The same call with the same arguments runs once in a turn, so `get_me` is asked once. These rules apply:
+
+- **At most 3 GitHub calls in one turn**, over all GitHub tools (`maxRemoteCallsPerTurn`). A later call gets "The limit of 3 GitHub reads for this message is reached".
+- **Pins:** a catalog tool is ready only when every remote tool that it calls has a pin. A remote tool that several catalog tools call is pinned only when it takes the arguments of each of them.
+- **Results:** P-Dot parses the JSON with its own schemas and gives the model short lines (number, title, state, date, link). Bodies are not sent. A result that does not parse goes as text, cut as before.
+- **Existing connections:** a connection made before this change has no pins for `get_me`, `search_pull_requests` and `search_repositories`. It keeps working with the first three tools. The two new tools are marked `addedLater`. The Connectors card says "Connect GitHub again to use the new tools" with a Connect button. In chat, the prompt tells the model to say the same when the user asks for something that only the new tools can do. Connect again replaces the row and pins the new tools.
+- **Left out:** `list_commits` (a fourth call). Recent work is the recently closed or merged pull requests. Repositories of an organization are not searched.
 
 Changes to the shared MCP code, each one a no-op for Notion, Linear and Todoist:
 
@@ -135,6 +149,8 @@ Changes to the shared MCP code, each one a no-op for Notion, Linear and Todoist:
 | `tests/unit/telegram-webhook.test.ts` | Secret header: missing, wrong, other length, correct; fixed replies; `/start <code>` proof opens and holds the hash, not the code; bots and group chats ignored; no fetch; no message text in logs |
 | `tests/unit/telegram-routes.test.ts` | Link, confirm, unlink and send: not set up, anonymous, cross origin, expired proof, proof of another user, the approval gate (no send without a key and a linked chat, one send for each key), Telegram errors, write-fault sweep of the send route |
 | `tests/unit/mcp-github.test.ts` | A fake GitHub: Connect uses the env client ID and no CIMD, the secret goes only to the token endpoint, `iss` required, scope label stored, refresh sends the secret, tool argument rules for `owner/name` and file links |
+| `tests/unit/mcp-github-plain.test.ts` | A fake GitHub: "my open PRs" builds the query from the login; "PDot" finds P-Dot in 3 calls; a name that is not in the message calls nothing; a bad login stops; at most 3 calls in a turn; an older connection keeps its tools, gets no new tool and shows "Connect GitHub again" |
+| `tests/unit/nebius-tool-markup.test.ts` | Tool-call markup that a model writes as text is never shown, also when split across chunks; a whole block for an offered tool becomes a call that the normal zod check validates |
 | `tests/unit/connectors-config.test.ts` | Each new connector is "not set up" or hidden without its settings, and the page lists it under "Coming soon" |
 
 ## Design checklist
@@ -191,6 +207,9 @@ Telegram and GitHub also need `CONNECTOR_TOKEN_ENCRYPTION_KEY` (decision 0016). 
 - **L6.** `github_read_file` takes the first path part after `blob/` as the ref. A branch name with `/` reads the wrong file or fails.
 - **L7.** GitHub's `iss` callback parameter and its handling of `resource` are PLAUSIBLE until a real connect. A mismatch fails the connect closed.
 - **L8.** On a laptop without Telegram, the deep link opens the Telegram web page. The QR code on the card opens Telegram on the phone.
+- **L9.** `github_find_repo` looks at the user's 100 most recently updated repositories, and only those that the user owns. A repository of an organization or an older one is not found; the user can give `owner/name`.
+- **L10.** The tool lists of the hosted GitHub server were checked from the server's published tool snapshots on 2026-10-31, not with a live `tools/list`. If the hosted server differs, Connect pins fewer tools, and the card lists them under "Not available".
+- **L11.** "Open pull requests" in `github_my_work` are the ones that the user opened. Pull requests that others opened on the user's repositories show through `github_find_repo`.
 
 ## Sources
 
