@@ -4,26 +4,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useTransition } from "react";
 import type { Mode } from "@/types/api";
 import { setModeAction } from "./actions";
-
-// The draft of the chat box while the mode changes. The chat page is keyed by
-// mode, so a switch mounts a new chat, which takes the draft once. It stays in
-// this tab's memory only: never in the address, in storage or on the server.
-let carriedDraft: string | null = null;
-
-/** The draft that a mode switch carried to the new chat, or null. Does not clear it. */
-export function peekCarriedDraft(): string | null {
-  return carriedDraft;
-}
-
-/** Called once by the new chat after it took the draft. */
-export function clearCarriedDraft(): void {
-  carriedDraft = null;
-}
+import { beginChatModeSwitch, endChatModeSwitch } from "./switch-state";
 
 /**
  * Personal or Work, the same for the header switch and the chat "+" menu. It
- * sets the mode cookie. On /chat it opens a new chat, because a conversation
- * keeps its mode. `draft` moves to the new chat.
+ * sets the mode cookie. On /chat it opens a new chat with no conversation,
+ * because a conversation keeps its mode. `draft` moves to the new chat.
  */
 export function useModeSwitch(mode: Mode) {
   const router = useRouter();
@@ -33,16 +19,17 @@ export function useModeSwitch(mode: Mode) {
   const select = useCallback(
     (next: Mode, draft?: string) => {
       if (next === mode || pending) return;
-      carriedDraft = draft?.trim() ? draft : null;
+      const onChat = pathname === "/chat";
+      if (onChat) beginChatModeSwitch(next, draft);
       startTransition(async () => {
         try {
           await setModeAction(next);
         } catch (error) {
-          carriedDraft = null;
+          endChatModeSwitch();
           throw error;
         }
-        // A conversation opened via /chat?c=... belongs to one mode, so drop it when switching.
-        if (pathname === "/chat") router.replace("/chat");
+        // The new chat starts with no conversation; this also drops ?c= from the address.
+        if (onChat) router.replace("/chat");
       });
     },
     [mode, pending, pathname, router],
