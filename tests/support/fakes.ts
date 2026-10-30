@@ -12,6 +12,12 @@ import type { TaskRepository } from "@/server/db/tasks";
 import type { ContextRecordRepository, NewContextRecord } from "@/server/db/context-records";
 import { createBudgetedEmbedder, type Embedder } from "@/server/assistant/embed";
 import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
+import { actionPayloadSchema, actionSummarySchema } from "@/lib/schemas";
+import type { OwnDataServices } from "@/server/assistant/tools";
+import type { DocumentChunkMatch, MemoryMatch } from "@/server/db/retrieval";
+import type { NewMemory } from "@/server/db/memories";
+import type { NewActionProposal } from "@/server/db/action-proposals";
+import type { ActionProposalDTO, ActionStatus, MemoryDTO, MemoryStatus } from "@/types/api";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
@@ -338,6 +344,85 @@ export function testRouting(model = "nvidia/nemotron-3-super-120b-a12b") {
   });
 }
 
+/**
+ * The user's own data for the chat tools, scoped by user like RLS. Search
+ * returns the stored matches of the asked mode, at most `count`, as the
+ * database functions do. Proposals and memories are checked with the same
+ * schemas as the database limits.
+ */
+export class FakeOwnData {
+  memoryMatches: (MemoryMatch & { userId: string; mode: Mode })[] = [];
+  chunkMatches: (DocumentChunkMatch & { userId: string; mode: Mode })[] = [];
+  memories: (MemoryDTO & { userId: string })[] = [];
+  proposals: (ActionProposalDTO & { userId: string })[] = [];
+  searches: { kind: "memories" | "documents"; mode: Mode; count: number }[] = [];
+  failMatch = false;
+  private counter = 0;
+  /** Set by the service; the user whose session the calls run with. */
+  constructor(readonly userId: string, readonly embedder: OwnDataServices["embedder"]) {}
+
+  private id(): string {
+    this.counter += 1;
+    return `20000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`;
+  }
+
+  services(): OwnDataServices {
+    return {
+      embedder: this.embedder,
+      retrieval: {
+        matchMemories: async (_vector, mode, count) => {
+          this.searches.push({ kind: "memories", mode, count });
+          if (this.failMatch) throw new Error("match failed");
+          return this.memoryMatches.filter((m) => m.userId === this.userId && m.mode === mode).slice(0, Math.min(count, 20));
+        },
+        matchDocumentChunks: async (_vector, mode, count) => {
+          this.searches.push({ kind: "documents", mode, count });
+          if (this.failMatch) throw new Error("match failed");
+          return this.chunkMatches.filter((m) => m.userId === this.userId && m.mode === mode).slice(0, Math.min(count, 20));
+        },
+      },
+      memories: {
+        createMemory: async (userId: string, memory: NewMemory) => {
+          const row = {
+            id: this.id(),
+            mode: memory.mode,
+            content: memory.content,
+            status: memory.status,
+            source: memory.source,
+            sourceMessageId: memory.sourceMessageId,
+            createdAt: "2026-10-30T12:00:00.000Z",
+            updatedAt: "2026-10-30T12:00:00.000Z",
+            userId,
+          };
+          this.memories.push(row);
+          return row;
+        },
+        listMemories: async (userId: string, mode: Mode, status: MemoryStatus | undefined) =>
+          this.memories.filter((m) => m.userId === userId && m.mode === mode && (!status || m.status === status)),
+      },
+      proposals: {
+        createProposal: async (userId: string, proposal: NewActionProposal) => {
+          const row = {
+            id: this.id(),
+            conversationId: proposal.conversationId,
+            payload: actionPayloadSchema.parse(proposal.payload),
+            summary: actionSummarySchema.parse(proposal.summary),
+            status: "proposed" as const,
+            result: null,
+            createdAt: "2026-10-30T12:00:00.000Z",
+            decidedAt: null,
+            userId,
+          } as ActionProposalDTO & { userId: string };
+          this.proposals.push(row);
+          return row;
+        },
+        listProposals: async (userId: string, status: ActionStatus | undefined) =>
+          this.proposals.filter((p) => p.userId === userId && (!status || p.status === status)),
+      },
+    };
+  }
+}
+
 export interface FakeDepsOptions {
   repo?: MemoryRepository;
   quota?: FakeQuota;
@@ -350,6 +435,7 @@ export interface FakeDepsOptions {
   provider?: ModelProvider;
   routing?: RoutingConfig;
   contextRecords?: ContextRecordRepository;
+  ownData?: OwnDataServices;
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
@@ -386,6 +472,7 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
       },
     },
     ...(options.contextRecords ? { contextRecords: options.contextRecords } : {}),
+    ...(options.ownData ? { ownData: options.ownData } : {}),
     breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
     random: () => 0,
     now: () => new Date(Date.UTC(2026, 9, 14, 12, 30, 0)),
