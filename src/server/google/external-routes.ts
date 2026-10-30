@@ -159,14 +159,19 @@ export async function recoverExternal(
   // only when this request can call Google at once.
   const ready = await prepareExternalAction(deps(auth, requestId, "actions.recover"), "create_calendar_event");
   if (!ready.ok) {
-    return ready.reason === "unavailable" || ready.reason === "not_set_up"
-      ? errorResponse(503, "provider_unavailable", "Google did not answer. P-Dot did not check again. Try again in a few minutes.", requestId)
-      : errorResponse(
-          409,
-          "conflict",
-          "P-Dot cannot reach this Google account now. Connect Google again on the Connectors page, or tell P-Dot if it happened.",
-          requestId,
-        );
+    if (ready.reason === "unavailable" || ready.reason === "not_set_up") {
+      return errorResponse(503, "provider_unavailable", "Google did not answer. P-Dot did not check again. Try again in a few minutes.", requestId);
+    }
+    // The same account without the calendar scope: the user's answer is refused for it, so only a reconnect helps.
+    if (ready.reason === "scope_missing") {
+      return errorResponse(409, "reconnect_required", "Connect Google again to finish checking.", requestId);
+    }
+    return errorResponse(
+      409,
+      "conflict",
+      "P-Dot cannot reach this Google account now. Connect Google again on the Connectors page, or tell P-Dot if it happened.",
+      requestId,
+    );
   }
   const reclaimed = await proposals.reclaimExternal(proposalId, EXTERNAL_ACTION_LEASE_SECONDS);
   switch (reclaimed.outcome) {

@@ -380,6 +380,20 @@ describe("approving an external action", () => {
     expect(google.events.size).toBe(1);
   });
 
+  it("Check again without the calendar scope asks for a reconnect, not for the user's answer, and starts no lease", async () => {
+    const id = proposals.add(EVENT);
+    google.nextWrite = "lose_after_acting";
+    expect((await approve(id)).status).toBe(202);
+    now += LEASE_MS + 1000;
+    accounts.row!.scopes = ["https://www.googleapis.com/auth/gmail.send"];
+    const reclaim = vi.spyOn(proposals, "reclaimExternal");
+    const check = await recover(id);
+    expect(check.status).toBe(409);
+    expect((await check.json()).error).toMatchObject({ code: "reconnect_required", message: "Connect Google again to finish checking." });
+    expect(reclaim).not.toHaveBeenCalled();
+    expect(status(id)).toBe("executing");
+  });
+
   it("does not insert into another account after a reconnect: the user answers instead", async () => {
     const id = proposals.add(EVENT);
     google.nextWrite = "lose_after_acting";

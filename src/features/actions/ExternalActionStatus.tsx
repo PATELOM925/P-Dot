@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ApiError, errorMessage } from "@/lib/api-client";
 import { EXTERNAL_ACTION_LEASE_SECONDS } from "@/lib/limits";
@@ -26,6 +27,7 @@ export function ExternalActionStatus({
   const [askUser, setAskUser] = useState(kind === "send_email");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [reconnect, setReconnect] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const leaseOver = leaseRemainingMs(proposal.executionStartedAt, now, EXTERNAL_ACTION_LEASE_SECONDS) === 0;
 
@@ -40,6 +42,7 @@ export function ExternalActionStatus({
   async function recover(answer?: "done" | "not_done") {
     setBusy(true);
     setMessage(null);
+    setReconnect(false);
     try {
       const updated = await recoverAction(proposal.id, answer);
       if (updated.status === "executing") setMessage("P-Dot still does not know if this was done.");
@@ -47,6 +50,10 @@ export function ExternalActionStatus({
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         onUnauthorized?.();
+        return;
+      }
+      if (err instanceof ApiError && err.code === "reconnect_required") {
+        setReconnect(true);
         return;
       }
       if (err instanceof ApiError && err.status === 409 && err.code === "conflict" && !answer) setAskUser(true);
@@ -84,6 +91,11 @@ export function ExternalActionStatus({
             </button>
           </div>
         </>
+      )}
+      {reconnect && (
+        <p className="alert alert-warning small" role="status">
+          Connect Google again to finish checking. <Link href="/connectors#google">Open Connectors</Link>
+        </p>
       )}
       {message && (
         <p className="alert alert-warning small" role="status">
