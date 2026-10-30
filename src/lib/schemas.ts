@@ -34,21 +34,25 @@ export const modeSchema = z.enum(["personal", "work"]);
 /** "auto" lets the router choose; "deep" asks for the heavy tier. */
 const effortSchema = z.enum(EFFORTS).optional();
 
-/** Apps to read for one message (decision 0016): unique, at most all three. */
+/** Apps to read for one message (decision 0016): unique, at most all of them. */
 const connectorsSchema = z
   .array(z.enum(MCP_SERVER_IDS))
   .max(MCP_SERVER_IDS.length)
   .refine((ids) => new Set(ids).size === ids.length, "Each app can be listed once.")
   .optional();
 /**
- * At most one source for each message: web search, Google or connected apps
- * (decisions 0014 and 0016). Several apps together are one source.
+ * Web search, Google and connected apps can be on together (decision 0021).
+ * Deep research reads extracted pages and has its own reply format, so it
+ * takes no Google and no app.
  */
-const oneSource = (value: { webSearch: boolean; connectors?: unknown[]; useGoogle?: true }) =>
-  [value.webSearch, (value.connectors?.length ?? 0) > 0, value.useGoogle === true].filter(Boolean).length <= 1;
+const researchAlone = (value: { research?: true; connectors?: unknown[]; useGoogle?: true }) =>
+  value.research !== true || (value.useGoogle !== true && (value.connectors?.length ?? 0) === 0);
+const researchMixed = {
+  message: "Deep research cannot be used with Google or connected apps. Turn them off, or use Search the web.",
+  path: ["research"],
+};
 /** The browser's IANA time zone, so the reply reads "tomorrow at 6pm" in the user's time. */
 const timeZoneSchema = z.string().max(MAX_TIME_ZONE_CHARS).refine(isValidTimeZone, "Unknown time zone.").optional();
-const mixedSources = { message: "Use only one of web search, Google or connected apps for a message.", path: ["webSearch"] };
 
 /** Deep research is a kind of web search, so it needs web search on (decision 0018). */
 const researchNeedsWeb = (value: { webSearch: boolean; research?: true }) => value.research !== true || value.webSearch;
@@ -95,7 +99,7 @@ const sendSchema = z
     timeZone: timeZoneSchema,
   })
   .strict()
-  .refine(oneSource, mixedSources)
+  .refine(researchAlone, researchMixed)
   .refine(researchNeedsWeb, researchWithoutWeb)
   .refine(briefAlone, briefMixed);
 
@@ -111,7 +115,7 @@ const retrySchema = z
     timeZone: timeZoneSchema,
   })
   .strict()
-  .refine(oneSource, mixedSources)
+  .refine(researchAlone, researchMixed)
   .refine(researchNeedsWeb, researchWithoutWeb);
 
 export const chatRequestSchema: z.ZodType<ChatRequest> = z.discriminatedUnion("action", [

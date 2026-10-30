@@ -27,7 +27,8 @@ export interface ToolFlags {
    * The model may write its own web search query. False in a turn that offers
    * Google tools or app reads, and in a conversation that ever had a reply that
    * used Google or an app (decision 0014, decision 10). The first search with
-   * the user's message is apart.
+   * the user's message is apart: it also runs in a turn with Google or apps,
+   * before any private read (decision 0021).
    */
   webSearchTool: boolean;
   /** Set only when the user turned on "Use Google" for this message and the connection allows it. */
@@ -117,9 +118,10 @@ export interface ToolSpec<Args = unknown> {
   args: z.ZodType<Args>;
   kind: ToolKind;
   /**
-   * The outside source the tool reads, if any. At most one source runs in a
-   * turn (decisions 0014 and 0016): `checkToolCall` refuses a source tool in a
-   * turn whose offered tools span more than one source.
+   * The outside source the tool reads, if any. Google and apps can run in one
+   * turn, but the model-written web search never runs with them (decision
+   * 0021): `checkToolCall` refuses a source tool in a turn whose offered tools
+   * have `web` and a private source.
    */
   source?: ToolSource;
   /** One line for the system prompt when the tool is offered. */
@@ -149,6 +151,15 @@ export function selectTools(all: readonly ToolSpec[], flags: ToolFlags): ToolSpe
   return all.filter((spec) => spec.offered(flags));
 }
 
+/**
+ * True when the offered tools have the model-written web search together with
+ * a private source. Google and apps together are allowed (decision 0021).
+ */
+function webWithPrivate(offered: readonly ToolSpec[]): boolean {
+  const sources = new Set(offered.map((candidate) => candidate.source));
+  return sources.has("web") && (sources.has("google") || sources.has("connector"));
+}
+
 export type ToolCallResult =
   | { status: "ran"; spec: ToolSpec; query: string | undefined; outcome: ToolOutcome }
   | { status: "refused"; content: string };
@@ -165,8 +176,8 @@ export function checkToolCall(
 ): { ok: true; spec: ToolSpec; args: unknown } | { ok: false; content: string } {
   const spec = offered.find((candidate) => candidate.name === call.name);
   if (!spec) return { ok: false, content: "This tool is not available in this request. Nothing was done." };
-  if (spec.source && new Set(offered.map((candidate) => candidate.source).filter(Boolean)).size > 1) {
-    return { ok: false, content: "This request mixes outside sources, which is not allowed. Nothing was done." };
+  if (spec.source && webWithPrivate(offered)) {
+    return { ok: false, content: "This request offers web search with Google or an app, which is not allowed. Nothing was done." };
   }
   if ((callsSoFar.get(spec.name) ?? 0) >= spec.maxCallsPerTurn) {
     return { ok: false, content: `The limit for ${spec.name} in this turn is reached. Nothing was done. Answer with what you have.` };

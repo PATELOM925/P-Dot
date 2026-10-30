@@ -337,9 +337,11 @@ export async function prepareChatTurn(
     // Google (decision 0014, section 3): the connection read comes after the claim and before the hold.
     const google = await googleForTurn(deps, userId, request.useGoogle === true, pendingHistory.at(-1)?.content ?? "");
     const googleFlags = google?.flags ?? null;
-    // The schema refuses two sources in one request; this keeps the server safe also without it.
+    // Web search can run with Google and apps (decision 0021): the first search sends only the user's
+    // message, before any private read. Deep research and the brief stay web only; the schema refuses
+    // them with a private source, and this keeps the server safe also without it.
     const noPrivateSource = googleFlags === null && requestedApps.length === 0;
-    const searchWanted = request.webSearch && deps.search !== null && noPrivateSource;
+    const searchWanted = request.webSearch && deps.search !== null;
     const brief: BriefRequest | null = request.action === "send" && !request.conversationId && !answering ? (request.brief ?? null) : null;
     const research = deps.research ?? null;
     const retrieval: PreparedTurn["retrieval"] =
@@ -348,13 +350,16 @@ export async function prepareChatTurn(
           ? "brief"
           : null
         : searchWanted
-          ? request.research === true && research
+          ? request.research === true && research && noPrivateSource
             ? "deep"
             : "basic"
           : null;
     const format: ReplyFormat | undefined = retrieval === "deep" ? "research" : retrieval === "brief" ? "brief" : undefined;
-    // The model may write a web search only in a conversation that never read Google or an app.
-    const webSearchTool = googleFlags === null && requestedApps.length === 0 && !(await hadPrivateSourceReply(deps, userId, existing));
+    // The turn reads the web (or says why it cannot). A brief with a private source gets no search at all.
+    const webSearchOn = request.webSearch || (brief !== null && noPrivateSource);
+    // The model may write a web search only in a turn with no Google and no app, in a conversation
+    // that never read Google or an app. A mixed turn has only the first search with the user's words.
+    const webSearchTool = noPrivateSource && !(await hadPrivateSourceReply(deps, userId, existing));
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
     // which only makes the prompt smaller than the one this hold prices.
     // Memories go into every turn when the data services exist. The own-data tools only
@@ -394,7 +399,7 @@ export async function prepareChatTurn(
     const plan = deps.routing[route.tier];
     const promptBound = buildPromptMessages({
       history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
-      webSearch: (request.webSearch || brief !== null) && googleFlags === null ? "failed" : "off",
+      webSearch: webSearchOn ? "failed" : "off",
       results: [],
       now: deps.now(),
       timeZone: request.timeZone,
@@ -498,7 +503,7 @@ export async function prepareChatTurn(
         userMessage,
         repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
-        webSearch: (request.webSearch || brief !== null) && googleFlags === null,
+        webSearch: webSearchOn,
         retrieval,
         briefTopics,
         timeZone: request.timeZone ?? null,

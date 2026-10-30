@@ -8,7 +8,9 @@ import type { NewActionProposal } from "@/server/db/action-proposals";
 import { sealText, tokenAssociatedData } from "@/server/google/crypto";
 import type { CompletionChunk, ModelCallRequest, ModelProvider, ToolCall } from "@/server/providers/model";
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
+import { createConnectorServices } from "@/server/mcp/connector-turn";
 import { fakeGoogle, json, TOKEN_URL, type GoogleHandler } from "../support/fake-google";
+import { FakeMcpAccounts, TEST_KEY, fakeApp, fakeApps, seedConnection, type FakeApp } from "../support/fake-mcp";
 import { FakeOwnData, FakeSpend, MemoryRepository, fakeDeps, testEmbedder } from "../support/fakes";
 import { HISTORY_CHAR_BUDGET, HISTORY_MESSAGE_LIMIT } from "@/lib/limits";
 import { MAX_NEBIUS_HOLD_MICRO_USD, nebiusHoldMicroUsd } from "@/server/assistant/spend";
@@ -208,6 +210,8 @@ interface Options {
   google?: Record<string, GoogleHandler>;
   blocked?: "not_set_up" | "demo_session";
   repo?: MemoryRepository;
+  /** Connect Notion too, for turns with Google and an app (decision 0021). */
+  notion?: FakeApp;
 }
 
 async function setup(steps: Step[], options: Options = {}) {
@@ -237,6 +241,18 @@ async function setup(steps: Step[], options: Options = {}) {
     },
     fetch: google.fetch,
   };
+  if (options.notion) {
+    const mcpAccounts = new FakeMcpAccounts();
+    await seedConnection(mcpAccounts, options.notion, "notion", { userId: ALICE });
+    fake.deps.connectors = createConnectorServices({
+      repo: mcpAccounts,
+      key: TEST_KEY,
+      userId: ALICE,
+      anonymous: false,
+      fetch: fakeApps(options.notion),
+      log: () => undefined,
+    });
+  }
   const deps: AssistantDeps = {
     ...fake.deps,
     google: options.blocked ? null : services,
@@ -310,24 +326,51 @@ describe("offer rules", () => {
   });
 });
 
-describe("no web search where Google text can leak (decision 10)", () => {
-  it("a Google turn runs no first search, reserves no credit, and refuses web_search in a batch and in the next hop", async () => {
-    const { deps, requests, searches, spend, events } = await (async () => {
-      const s = await setup([
-        { calls: [call("gmail_read", { messageId: "m1" }, "c1"), call("web_search", { query: SENTINEL }, "c2")] },
-        { calls: [call("web_search", { query: SENTINEL }, "c3")] },
+describe("no web search where Google text can leak (decision 10, changed by decision 0021)", () => {
+  it("a Google turn with web search sends one search with the user's words before any Gmail read, and refuses web_search in a batch and in the next hop", async () => {
+    const message = "Summarize my latest invoice email.";
+    const s = await setup([
+      { calls: [call("gmail_read", { messageId: "m1" }, "c1"), call("web_search", { query: SENTINEL }, "c2")] },
+      { calls: [call("web_search", { query: SENTINEL }, "c3")] },
+      { text: "Done." },
+    ]);
+    const { events, turn } = await runTurn(s.deps, send(message, { webSearch: true }));
+    expect(s.searches).toEqual([message]);
+    expect(s.spend.reservations.filter((r) => r.provider === "tavily").map((r) => r.held)).toEqual([1]);
+    for (const request of s.requests) expect(request.tools?.map((t) => t.name) ?? []).not.toContain("web_search");
+    expect(toolResults(s.requests).filter((c) => c.includes("not available in this request"))).toHaveLength(2);
+    // The search ran before the first model call, so before any Gmail read.
+    const order = events.filter((e) => e.type === "search" || e.type === "status").map((e) => (e.type === "status" ? e.tool : e.type));
+    expect(order[0]).toBe("search");
+    expect(JSON.stringify(s.requests[0]!.messages)).not.toContain(SENTINEL);
+    expect(turn.route.reason).toBe("google_request");
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("Google and an app in one turn: both read, with web search first and no model-written search", async () => {
+    const notion = fakeApp("notion");
+    notion.onCall(() => ({ content: [{ type: "text", text: `{"results":[{"id":"p1","title":"Plan ${SENTINEL}"}]}` }] }));
+    const s = await setup(
+      [
+        { calls: [call("gmail_read", { messageId: "m1" }, "g1"), call("notion_search", { query: "invoice" }, "n1"), call("web_search", { query: SENTINEL }, "w1")] },
         { text: "Done." },
-      ]);
-      const r = await runTurn(s.deps, send("Summarize my latest invoice email.", { webSearch: true }));
-      return { ...s, events: r.events };
-    })();
-    void deps;
-    expect(searches).toEqual([]);
-    expect(spend.reservations.filter((r) => r.provider === "tavily")).toHaveLength(0);
-    expect(requests[0]!.tools?.map((t) => t.name)).not.toContain("web_search");
-    expect(toolResults(requests).filter((c) => c.includes("not available in this request"))).toHaveLength(2);
-    // Past the schema (which refuses this pair with 400), the server still runs no search and saves no search result.
-    expect(events.filter((e) => e.type === "search")).toEqual([]);
+      ],
+      { notion },
+    );
+    const message = "Check my invoice email and my Notion invoice page";
+    const { events, turn } = await runTurn(s.deps, send(message, { webSearch: true, connectors: ["notion"] }));
+    const names = s.requests[0]!.tools!.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["gmail_search", "gmail_read", "notion_search", "notion_fetch"]));
+    expect(names).not.toContain("web_search");
+    expect(s.requests[0]!.toolChoice).toBe("required");
+    const results = toolResults(s.requests);
+    expect(results[0]).toContain("untrusted");
+    expect(results[1]).toMatch(/^<untrusted_connector_data source="notion" tool="notion_search">/);
+    expect(results[2]).toContain("not available in this request");
+    expect(notion.toolCalls()).toEqual([{ name: "notion-search", arguments: { query: "invoice" } }]);
+    expect(s.searches).toEqual([message]);
+    expect(turn.route.reason).toBe("google_request");
+    expect(events.at(-1)?.type).toBe("done");
   });
 
   it("a later turn in that conversation offers no model-written search; a clean conversation keeps it", async () => {
