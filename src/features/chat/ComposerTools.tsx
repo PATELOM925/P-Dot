@@ -14,8 +14,10 @@ export interface ToolItem {
   /** Short name on the chip. */
   chip: string;
   chipClass: "chip-web" | "chip-deep" | "chip-app";
-  icon: "web" | "deep" | "app";
+  icon: "web" | "deep" | "app" | "google";
   on: boolean;
+  /** The tool cannot turn on here. With `href`, the row is a link to the page that sets it up. */
+  unavailable?: { href?: string };
 }
 
 function ToolIcon({ icon }: { icon: ToolItem["icon"] }) {
@@ -24,6 +26,14 @@ function ToolIcon({ icon }: { icon: ToolItem["icon"] }) {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
         <circle cx="12" cy="12" r="9" />
         <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
+      </svg>
+    );
+  }
+  if (icon === "google") {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="m3 7 9 6 9-6" />
       </svg>
     );
   }
@@ -79,24 +89,45 @@ export function ToolsMenu({
           role="menu"
           aria-label="Tools for this message"
           className="tools-menu"
-          onKeyDown={(event) => moveMenuFocus(event, '[role="menuitemcheckbox"]')}
+          onKeyDown={(event) => moveMenuFocus(event, '[role^="menuitem"]')}
         >
-          {items.map((item, index) => (
+          {items.map((item, index) =>
+            item.unavailable?.href ? (
+              <a
+                key={item.key}
+                role="menuitem"
+                className="tool-row"
+                data-tool={item.icon}
+                href={item.unavailable.href}
+                autoFocus={index === 0}
+              >
+                <ToolIcon icon={item.icon} />
+                <span className="tool-row-text">
+                  <span className="tool-row-title">{item.title}</span>
+                  <span className="tool-row-description">{item.description}</span>
+                </span>
+                <span className="tool-row-go" aria-hidden="true">
+                  ›
+                </span>
+              </a>
+            ) : (
             <button
               key={item.key}
               type="button"
               role="menuitemcheckbox"
               aria-checked={item.on}
+              aria-disabled={item.unavailable ? true : undefined}
               className="tool-row"
               data-tool={item.icon}
               autoFocus={index === 0}
               onKeyDown={(event) => {
                 if (event.key === " ") {
                   event.preventDefault();
-                  onToggle(item.key);
+                  if (!item.unavailable) onToggle(item.key);
                 }
               }}
               onClick={() => {
+                if (item.unavailable) return;
                 onToggle(item.key);
                 closeToTrigger();
               }}
@@ -108,7 +139,8 @@ export function ToolsMenu({
               </span>
               <span className="tool-switch" aria-hidden="true" />
             </button>
-          ))}
+            ),
+          )}
         </div>
       )}
       <button

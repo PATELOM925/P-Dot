@@ -41,6 +41,27 @@ describe("limitsFor", () => {
   });
 });
 
+describe("Google tools for a trial (decision 0014)", () => {
+  it("gives a trial no Google services, also when Google is set up; an account gets them", () => {
+    vi.stubEnv("GOOGLE_OAUTH_CLIENT_ID", "id");
+    vi.stubEnv("GOOGLE_OAUTH_CLIENT_SECRET", "secret");
+    vi.stubEnv("GOOGLE_TOKEN_ENCRYPTION_KEY", Buffer.from(new Uint8Array(32).fill(1)).toString("base64"));
+    try {
+      const { supabase } = recordingClient();
+      const trial = createAssistantDeps({ userId: "u", email: null, isAnonymous: true, supabase }, config);
+      expect(trial.google).toBeNull();
+      expect(trial.googleBlocked).toBe("demo_session");
+      const unknown = createAssistantDeps({ userId: "u", email: null, supabase }, config);
+      expect(unknown.google).toBeNull();
+      const account = createAssistantDeps({ userId: "u", email: "a@example.com", isAnonymous: false, supabase }, config);
+      expect(account.google).not.toBeNull();
+      expect(account.googleBlocked).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe("trial limits reach the database calls", () => {
   it("sends the trial caps to the quota and spend functions for chat", async () => {
     const { calls, supabase } = recordingClient();

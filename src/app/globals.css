@@ -1082,6 +1082,23 @@ textarea::placeholder {
   background: var(--surface-muted);
 }
 
+a.tool-row {
+  text-decoration: none;
+}
+
+.tool-row[aria-disabled="true"] {
+  cursor: default;
+}
+
+.tool-row[aria-disabled="true"] .tool-switch {
+  opacity: 0.6;
+}
+
+.tool-row-go {
+  font-size: 1.25rem;
+  color: var(--text-muted);
+}
+
 .tool-row-text {
   display: flex;
   flex-direction: column;

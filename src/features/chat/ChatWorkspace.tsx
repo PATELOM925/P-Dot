@@ -34,6 +34,7 @@ import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
+import { googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -93,11 +94,13 @@ const EMPTY_TITLES: Record<Mode, string> = {
 export function ChatWorkspace({
   initialConversationId,
   mode,
+  google = null,
   trial = false,
   connectedApps = [],
 }: {
   initialConversationId: string | null;
   mode: Mode;
+  google?: GoogleChatState;
   /** A trial user (decision 0015): limit errors say so. */
   trial?: boolean;
   /** Apps the user connected that chat can read. Read on the server. */
@@ -110,7 +113,9 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
-  // Apps to read for the next message only. The server refuses them together with web search.
+  // One message only; it turns off at Send. `toggleSource` keeps one kind of source on at a time.
+  const [useGoogle, setUseGoogle] = useState(false);
+  // Apps to read for the next message only.
   const [apps, setApps] = useState<McpServerId[]>([]);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
@@ -335,8 +340,16 @@ export function ChatWorkspace({
     const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
     const body: ChatRequest =
       action === "send"
-        ? { action, message: text, webSearch, effort, ...connectors, ...(activeId ? { conversationId: activeId } : { mode }) }
-        : { action, conversationId: activeId!, webSearch, effort, ...connectors };
+        ? {
+            action,
+            message: text,
+            webSearch,
+            effort,
+            ...connectors,
+            ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...(activeId ? { conversationId: activeId } : { mode }),
+          }
+        : { action, conversationId: activeId!, webSearch, effort, ...connectors, ...(useGoogle ? { useGoogle: true as const } : {}) };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
@@ -371,6 +384,7 @@ export function ChatWorkspace({
       // Stop dictating, so words heard after Send do not land in the next message.
       dictation.cancel();
       setDraft("");
+      setUseGoogle(false);
       setMessages((current) => [
         ...current,
         {
@@ -508,12 +522,15 @@ export function ChatWorkspace({
     }
   }
 
-  // The "+" menu: web search, Think harder, then each connected app. A new tool is one more item.
+  const googleItem = googleToolItem(google, useGoogle);
+  // The "+" menu: web search, Think harder, Google, then each connected app. A new tool is one more item.
   const tools: ToolItem[] = [
     {
       key: "web",
       title: "Search the web",
-      description: "Current pages, with sources.",
+      description: messages.some((m) => m.route?.reason === "google_request" || m.route?.reason === "connector_read")
+        ? "In this chat, only with your own words, because P-Dot read your Google or app data here."
+        : "Current pages, with sources.",
       chip: "Web search",
       chipClass: "chip-web",
       icon: "web",
@@ -528,6 +545,7 @@ export function ChatWorkspace({
       icon: "deep",
       on: effort === "deep",
     },
+    ...(googleItem ? [googleItem] : []),
     ...connectedApps.map(
       (app): ToolItem => ({
         key: `app:${app}`,
@@ -541,28 +559,26 @@ export function ChatWorkspace({
     ),
   ];
 
-  // Web search and apps do not go together in one message: turning one on turns the other off.
   function toggleTool(key: string) {
-    if (key === "web") {
-      const on = !webSearch;
-      setWebSearch(on);
-      if (on) setApps([]);
-    } else if (key === "deep") {
+    if (key === "deep") {
       effortVersion.current += 1;
       setEffort((current) => (current === "deep" ? "auto" : "deep"));
-    } else if (key.startsWith("app:")) {
-      const app = connectedApps.find((id) => `app:${id}` === key);
-      if (!app) return;
-      const on = !apps.includes(app);
-      setApps((current) => (on ? [...current.filter((a) => a !== app), app] : current.filter((a) => a !== app)));
-      if (on) setWebSearch(false);
+      return;
     }
+    if (key === "google" && google !== "connected") return;
+    const next = toggleSource({ webSearch, useGoogle, apps }, key, connectedApps);
+    setWebSearch(next.webSearch);
+    setUseGoogle(next.useGoogle);
+    setApps(next.apps);
   }
 
   function pickStarter(prompt: StarterPrompt) {
     setDraft(prompt.text);
     setWebSearch(prompt.webSearch);
-    if (prompt.webSearch) setApps([]);
+    if (prompt.webSearch) {
+      setUseGoogle(false);
+      setApps([]);
+    }
     effortVersion.current += 1;
     setEffort(prompt.effort);
     inputRef.current?.focus();

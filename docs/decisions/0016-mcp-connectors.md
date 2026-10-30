@@ -97,9 +97,9 @@ So text from memories, documents, earlier replies and app results cannot reach a
 
 Google tools (decision 0014, section 3, PR #30) and these connectors are exclusive for each message: at most one of "Search the web", "Use Google" or "Use <app>" (one or more apps) is on.
 
-- The request schema refuses a message with two of them (400). The chat UI turns the others off and disables them.
-- The conversation stop for the model-written `web_search` checks **both** route reasons, `google_request` and `connector_read`. A failed check counts as a match.
-- If PR #30 merges first, its `usedGoogle` check is extended to cover both reasons. If this code merges first, PR #30 adds `google_request` to this check.
+- The request schema refuses a message with two of them (400). The chat UI turns the others off.
+- `checkToolCall` refuses a call to a tool with a `source` tag when the offered tools of the turn span more than one source.
+- The conversation stop for the model-written `web_search` checks **both** route reasons, `google_request` and `connector_read`, through `hasPrivateSourceReply`. A failed check counts as a match.
 - A `gmail_search` query goes only to the user's own Google account, under the Google rules of decision 0014.
 
 ### Approval effects
