@@ -72,12 +72,17 @@ const EMPTY_HINTS: Record<Mode, string> = {
   work: "Ask about meetings, email, code, tasks, deadlines or work writing.",
 };
 
+/** What the "Use Google" item can do here (decision 0014). Null hides it: Google is not set up. */
+export type GoogleChatState = "connected" | "not_connected" | "trial" | null;
+
 export function ChatWorkspace({
   initialConversationId,
   mode,
+  google = null,
 }: {
   initialConversationId: string | null;
   mode: Mode;
+  google?: GoogleChatState;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
@@ -86,6 +91,8 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  // One message only; it turns off after the message is saved. Google and web search never run together.
+  const [useGoogle, setUseGoogle] = useState(false);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
@@ -247,8 +254,15 @@ export function ChatWorkspace({
 
     const body: ChatRequest =
       action === "send"
-        ? { action, message: text, webSearch, effort, ...(activeId ? { conversationId: activeId } : { mode }) }
-        : { action, conversationId: activeId!, webSearch, effort };
+        ? {
+            action,
+            message: text,
+            webSearch,
+            effort,
+            ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...(activeId ? { conversationId: activeId } : { mode }),
+          }
+        : { action, conversationId: activeId!, webSearch, effort, ...(useGoogle ? { useGoogle: true as const } : {}) };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
@@ -274,6 +288,7 @@ export function ChatWorkspace({
       // Stop dictating, so words heard after Send do not land in the next message.
       dictation.cancel();
       setDraft("");
+      setUseGoogle(false);
       setMessages((current) => [
         ...current,
         {
@@ -698,12 +713,51 @@ export function ChatWorkspace({
                     onKeyDown={(event) => event.key === "Escape" && setToolsOpen(false)}
                   >
                     <label className="tool-option">
-                      <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />
+                      <input
+                        type="checkbox"
+                        checked={webSearch}
+                        onChange={(event) => {
+                          setWebSearch(event.target.checked);
+                          if (event.target.checked) setUseGoogle(false);
+                        }}
+                      />
                       <span>
                         <strong>Search the web</strong>
-                        <span className="hint">Powered by Tavily</span>
+                        <span className="hint">
+                          {messages.some((m) => m.route?.reason === "google_request")
+                            ? "In this chat, P-Dot searches only with your own words, because it read your Google data here."
+                            : "Powered by Tavily"}
+                        </span>
                       </span>
                     </label>
+                    {google && (
+                      <label className="tool-option">
+                        <input
+                          type="checkbox"
+                          checked={useGoogle}
+                          disabled={google !== "connected"}
+                          aria-describedby="use-google-help"
+                          onChange={(event) => {
+                            setUseGoogle(event.target.checked);
+                            if (event.target.checked) setWebSearch(false);
+                          }}
+                        />
+                        <span>
+                          <strong>Use Google</strong>
+                          <span className="hint" id="use-google-help">
+                            {google === "connected" ? (
+                              "P-Dot can read your Gmail and calendar for this message. It asks before it sends or adds anything. Web search is off for this message."
+                            ) : google === "trial" ? (
+                              "Create an account to use Google."
+                            ) : (
+                              <>
+                                Google is not connected. <a href="/connectors#google">Connect Google</a>
+                              </>
+                            )}
+                          </span>
+                        </span>
+                      </label>
+                    )}
                   </div>
                 )}
                 <button
