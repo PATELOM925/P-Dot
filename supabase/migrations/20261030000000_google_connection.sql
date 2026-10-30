@@ -5,10 +5,12 @@
 --    user, under RLS, with save_connected_account to insert or replace it.
 -- 2. Two action kinds that act outside P-Dot, send_email and
 --    create_calendar_event, and the status 'executing'. The database cannot
---    call Google, so an approval claims the proposal ('executing'), the Worker
---    calls Google, and finish_external_action stores the outcome. A row stuck
---    in 'executing' leaves it through reclaim_external_action (calendar) or
---    settle_unknown_external_action (email, after the user answers).
+--    call Google, so an approval claims the proposal ('executing') for the
+--    Google account that is connected at that time, the Worker calls Google,
+--    and finish_external_action stores the outcome. A row stuck in
+--    'executing' leaves it through reclaim_external_action (calendar, same
+--    Google account only) or settle_unknown_external_action (the user's
+--    answer: always for email, and for an event whose account changed).
 --
 -- The code on main does not use the new objects. Its decisions on the older
 -- kinds work as before, and its proposal list skips a row that it cannot
@@ -21,6 +23,8 @@ create table if not exists public.connected_accounts (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   provider text not null check (provider in ('google')),
+  -- The provider's stable account ID (Google's `sub`). The address can change; this cannot.
+  account_subject text not null check (char_length(account_subject) between 1 and 255),
   account_email text not null check (char_length(account_email) between 3 and 320),
   scopes text[] not null check (cardinality(scopes) between 1 and 10 and array_position(scopes, null) is null),
   token_ciphertext text not null
@@ -58,33 +62,35 @@ create policy connected_accounts_delete_own on public.connected_accounts
 -- The owner may read the own ciphertext: the Worker reads it with the user's
 -- session, so a function would not keep it from the user. Only the Worker has
 -- the key. No API role may change the ID, the owner, the provider or the
--- creation time.
+-- creation time. A user who changes the own subject can only confuse the
+-- recovery of the own actions.
 revoke all on public.connected_accounts from anon, authenticated;
 grant select, insert, delete on public.connected_accounts to authenticated;
-grant update (account_email, scopes, token_ciphertext, status) on public.connected_accounts to authenticated;
+grant update (account_subject, account_email, scopes, token_ciphertext, status) on public.connected_accounts to authenticated;
 
 -- Inserts or replaces the caller's row for one provider in one statement and
 -- marks it connected. SECURITY INVOKER, so RLS and the column grants apply.
 create or replace function public.save_connected_account(
-  p_provider text, p_account_email text, p_scopes text[], p_token_ciphertext text
+  p_provider text, p_account_subject text, p_account_email text, p_scopes text[], p_token_ciphertext text
 )
 returns uuid
 language sql
 security invoker
 set search_path = ''
 as $$
-  insert into public.connected_accounts as a (user_id, provider, account_email, scopes, token_ciphertext, status)
-  values (auth.uid(), p_provider, p_account_email, p_scopes, p_token_ciphertext, 'connected')
+  insert into public.connected_accounts as a (user_id, provider, account_subject, account_email, scopes, token_ciphertext, status)
+  values (auth.uid(), p_provider, p_account_subject, p_account_email, p_scopes, p_token_ciphertext, 'connected')
   on conflict (user_id, provider) do update
-    set account_email = excluded.account_email,
+    set account_subject = excluded.account_subject,
+        account_email = excluded.account_email,
         scopes = excluded.scopes,
         token_ciphertext = excluded.token_ciphertext,
         status = 'connected'
   returning a.id;
 $$;
 
-revoke execute on function public.save_connected_account(text, text, text[], text) from public, anon;
-grant execute on function public.save_connected_account(text, text, text[], text) to authenticated;
+revoke execute on function public.save_connected_account(text, text, text, text[], text) from public, anon;
+grant execute on function public.save_connected_account(text, text, text, text[], text) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 2. External action kinds and the 'executing' status.
@@ -105,14 +111,48 @@ alter table public.action_proposals drop constraint if exists action_proposals_p
 alter table public.action_proposals add constraint action_proposals_payload_check
   check (jsonb_typeof(payload) = 'object' and pg_column_size(payload) <= 32768);
 
--- The claim of the request that calls Google. Set only while 'executing'.
+-- The claim of the request that calls Google, set only while 'executing'.
+-- Only the request that wins a claim learns its ID: decide_action_proposal and
+-- reclaim_external_action return it as `claimId`, every other answer leaves it
+-- out, and no API role can select the column. So a second click that gets
+-- 'already_decided' cannot call Google with the first request's claim.
+-- The Google account (its subject) and the target are fixed at the claim and
+-- kept after it, so a later recovery never acts in another account.
 alter table public.action_proposals
   add column if not exists execution_claim_id uuid,
-  add column if not exists execution_started_at timestamptz;
+  add column if not exists execution_started_at timestamptz,
+  add column if not exists execution_account_subject text,
+  add column if not exists execution_target text;
 
 alter table public.action_proposals add constraint action_proposals_execution_claim check (
   (status = 'executing') = (execution_claim_id is not null)
-  and (status <> 'executing' or execution_started_at is not null));
+  and (status <> 'executing' or (execution_started_at is not null
+    and execution_account_subject is not null and execution_target is not null))
+  and (execution_target is null or execution_target in ('gmail:me', 'calendar:primary')));
+
+-- No API role may read execution_claim_id. The app selects named columns,
+-- and main's code never names this one.
+revoke select on public.action_proposals from anon, authenticated;
+grant select (id, user_id, conversation_id, kind, payload, summary, status, result, created_at, decided_at,
+  decided_by_function, execution_started_at, execution_account_subject, execution_target)
+  on public.action_proposals to authenticated;
+
+-- The answer for a proposal that another decision claimed first. Unchanged
+-- from 20261021000000_memory_hardening.sql, except that it leaves out the claim.
+create or replace function public.decided_action_proposal(p_id uuid, p_user_id uuid)
+returns jsonb
+language sql
+stable
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'outcome', case when p.id is null then 'not_found' else 'already_decided' end,
+    'proposal', case when p.id is null then null else to_jsonb(p) - 'user_id' - 'execution_claim_id' end)
+  from (select 1) one
+  left join public.action_proposals p on p.id = p_id and p.user_id = p_user_id;
+$$;
+
+revoke execute on function public.decided_action_proposal(uuid, uuid) from public, anon, authenticated;
 
 -- Checks new rows and changes to the checked columns. Unchanged from
 -- 20261021000500_marker_unset_setting.sql, plus:
@@ -212,7 +252,7 @@ begin
       'error', 'execution_failed',
       'code', case when new.result ->> 'code' ~ '^[0-9A-Z]{5}$' then new.result ->> 'code' end,
       'reason', case when new.result ->> 'reason' in (
-        'not_connected', 'needs_reconnect', 'scope_missing', 'google_rejected', 'not_sent')
+        'not_connected', 'needs_reconnect', 'scope_missing', 'google_rejected', 'account_changed', 'not_done')
         then new.result ->> 'reason' end);
   elsif new.status <> 'rejected' then
     return new;
@@ -370,9 +410,13 @@ revoke execute on function public.normalize_action_payload(text, jsonb) from pub
 -- ---------------------------------------------------------------------------
 -- Decide an action proposal. Unchanged from
 -- 20261021000000_memory_hardening.sql for the older kinds. For an external
--- kind, an approval checks the payload and claims the row: 'executing', with
--- a new execution_claim_id. It answers outcome 'executing'. The Worker then
--- calls Google and calls finish_external_action with the claim.
+-- kind, an approval checks the payload and claims the row for the Google
+-- account that is connected now: 'executing', with a new execution_claim_id,
+-- that account's subject and the target. It answers outcome 'executing' and
+-- the claim as `claimId` (no other answer carries a claim). With
+-- no connected account, or one that needs a reconnect, it answers
+-- 'not_connected' and the row stays 'proposed'. The Worker then calls Google
+-- with that account only and calls finish_external_action with the claim.
 -- ---------------------------------------------------------------------------
 create or replace function public.decide_action_proposal(p_id uuid, p_decision text, p_payload jsonb default null)
 returns jsonb
@@ -386,6 +430,7 @@ declare
   v_payload jsonb;
   v_new_id uuid;
   v_result jsonb;
+  v_subject text;
 begin
   if v_uid is null then
     raise exception 'not signed in' using errcode = '42501';
@@ -396,11 +441,11 @@ begin
     return jsonb_build_object('outcome', 'not_found', 'proposal', null);
   end if;
   if v_row.status <> 'proposed' then
-    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
   if p_decision is null or p_decision not in ('approve', 'reject')
     or (p_decision = 'reject' and p_payload is not null) then
-    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   perform set_config('pdot.deciding_proposal', p_id::text, true);
@@ -414,29 +459,37 @@ begin
       return public.decided_action_proposal(p_id, v_uid);
     end if;
     perform set_config('pdot.deciding_proposal', '', true);
-    return jsonb_build_object('outcome', 'rejected', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'rejected', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   if p_payload is not null and (jsonb_typeof(p_payload) <> 'object' or p_payload ->> 'kind' is distinct from v_row.kind) then
-    return jsonb_build_object('outcome', 'kind_mismatch', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'kind_mismatch', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
   v_payload := public.normalize_action_payload(v_row.kind, coalesce(p_payload, v_row.payload));
   if v_payload is null then
-    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   if v_row.kind in ('send_email', 'create_calendar_event') then
+    select a.account_subject into v_subject from public.connected_accounts a
+     where a.user_id = v_uid and a.provider = 'google' and a.status = 'connected';
+    if v_subject is null then
+      return jsonb_build_object('outcome', 'not_connected', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
+    end if;
     -- The claim. Only one decision can move the row out of 'proposed'.
     update public.action_proposals p
     set status = 'executing', decided_at = now(), payload = v_payload,
-        execution_claim_id = gen_random_uuid(), execution_started_at = now()
+        execution_claim_id = gen_random_uuid(), execution_started_at = now(),
+        execution_account_subject = v_subject,
+        execution_target = case v_row.kind when 'send_email' then 'gmail:me' else 'calendar:primary' end
     where p.id = p_id and p.user_id = v_uid and p.status = 'proposed'
     returning * into v_row;
     if not found then
       return public.decided_action_proposal(p_id, v_uid);
     end if;
     perform set_config('pdot.deciding_proposal', '', true);
-    return jsonb_build_object('outcome', 'executing', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'executing', 'claimId', v_row.execution_claim_id,
+      'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   update public.action_proposals p
@@ -472,7 +525,7 @@ begin
     where p.id = p_id
     returning * into v_row;
     perform set_config('pdot.deciding_proposal', '', true);
-    return jsonb_build_object('outcome', 'failed', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'failed', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end;
 
   update public.action_proposals p
@@ -480,7 +533,7 @@ begin
   where p.id = p_id
   returning * into v_row;
   perform set_config('pdot.deciding_proposal', '', true);
-  return jsonb_build_object('outcome', 'executed', 'proposal', to_jsonb(v_row) - 'user_id');
+  return jsonb_build_object('outcome', 'executed', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
 end;
 $$;
 
@@ -494,6 +547,8 @@ grant execute on function public.decide_action_proposal(uuid, text, jsonb) to au
 -- p_succeeded true: p_result is { messageId } for send_email or { eventId }
 -- for create_calendar_event. false: { error: 'execution_failed', reason },
 -- with a reason from a fixed list. Store 'failed' only when Google did not act.
+-- Before it calls Google, the Worker checks that the connected account is the
+-- one in execution_account_subject; if not, it stores 'account_changed'.
 --
 -- Returns { outcome, proposal }. outcome: not_found, already_decided,
 -- stale_claim (another request holds the claim now), invalid, executed, failed.
@@ -522,10 +577,10 @@ begin
     return jsonb_build_object('outcome', 'not_found', 'proposal', null);
   end if;
   if v_row.status <> 'executing' then
-    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
   if p_claim_id is null or v_row.execution_claim_id is distinct from p_claim_id then
-    return jsonb_build_object('outcome', 'stale_claim', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'stale_claim', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   if p_result is null or jsonb_typeof(p_result) <> 'object' or p_succeeded is null then
@@ -544,11 +599,12 @@ begin
       v_valid := v_keys = array['error', 'reason']
         and p_result -> 'error' = '"execution_failed"'::jsonb
         and jsonb_typeof(p_result -> 'reason') = 'string'
-        and p_result ->> 'reason' in ('not_connected', 'needs_reconnect', 'scope_missing', 'google_rejected');
+        and p_result ->> 'reason' in ('not_connected', 'needs_reconnect', 'scope_missing', 'google_rejected', 'account_changed');
     end if;
   end if;
-  if not v_valid then
-    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id');
+  -- An empty object has no keys, so the checks above can give NULL.
+  if v_valid is not true then
+    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   perform set_config('pdot.deciding_proposal', p_id::text, true);
@@ -559,18 +615,39 @@ begin
   where p.id = p_id
   returning * into v_row;
   perform set_config('pdot.deciding_proposal', '', true);
-  return jsonb_build_object('outcome', v_row.status, 'proposal', to_jsonb(v_row) - 'user_id');
+  return jsonb_build_object('outcome', v_row.status, 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
 end;
 $$;
 
 -- ---------------------------------------------------------------------------
 -- Recovery of a row left 'executing' after its lease (decision 0014).
 --
--- create_calendar_event: a new claim ('claimed'). The Worker inserts the
--- event again with the same event ID, and Google refuses a second copy.
--- send_email: 'outcome_unknown' and no claim. P-Dot never sends it again.
+-- create_calendar_event: a new claim ('claimed') only while the same Google
+-- account (execution_account_subject) is still connected. The Worker inserts
+-- the event again with the same event ID in the same calendar, and Google
+-- refuses a second copy there. If the account changed or is not connected:
+-- 'account_changed' and no claim, because an event ID is unique only in one
+-- calendar, so an insert into another account could make a second event. The
+-- user then answers through settle_unknown_external_action.
+-- send_email: 'outcome_unknown' (or 'account_changed') and no claim. P-Dot
+-- never sends it again.
 -- A row inside the lease gets 'busy'. Returns { outcome, proposal }.
 -- ---------------------------------------------------------------------------
+-- True only while the user's Google row has this subject and is connected.
+create or replace function public.external_action_account_unchanged(p_user_id uuid, p_subject text)
+returns boolean
+language sql
+stable
+set search_path = ''
+as $$
+  select coalesce((
+    select a.account_subject = p_subject and a.status = 'connected'
+      from public.connected_accounts a
+     where a.user_id = p_user_id and a.provider = 'google'), false);
+$$;
+
+revoke execute on function public.external_action_account_unchanged(uuid, text) from public, anon, authenticated;
+
 create or replace function public.reclaim_external_action(p_id uuid, p_lease_seconds integer)
 returns jsonb
 language plpgsql
@@ -593,31 +670,37 @@ begin
     return jsonb_build_object('outcome', 'not_found', 'proposal', null);
   end if;
   if v_row.status <> 'executing' then
-    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
   if v_row.execution_started_at > now() - make_interval(secs => p_lease_seconds) then
-    return jsonb_build_object('outcome', 'busy', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'busy', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
+  end if;
+  if not public.external_action_account_unchanged(v_uid, v_row.execution_account_subject) then
+    return jsonb_build_object('outcome', 'account_changed', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
   if v_row.kind <> 'create_calendar_event' then
-    return jsonb_build_object('outcome', 'outcome_unknown', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'outcome_unknown', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   update public.action_proposals p
   set execution_claim_id = gen_random_uuid(), execution_started_at = now()
   where p.id = p_id
   returning * into v_row;
-  return jsonb_build_object('outcome', 'claimed', 'proposal', to_jsonb(v_row) - 'user_id');
+  return jsonb_build_object('outcome', 'claimed', 'claimId', v_row.execution_claim_id,
+    'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
 end;
 $$;
 
--- The user's answer for an email whose outcome is unknown. Only for a
--- send_email row left 'executing' after its lease. p_sent true stores
--- 'executed' with { userConfirmed: true }; false stores 'failed' with the
--- reason 'not_sent'. It does not set the trust marker: a person answered, so
--- decided_by_function and the log row's verified stay false.
+-- The user's answer for an action whose outcome is unknown, for a row left
+-- 'executing' after its lease: any send_email row, and a
+-- create_calendar_event row whose Google account changed (otherwise the
+-- reclaim recovers it). p_done true stores 'executed' with
+-- { userConfirmed: true }; false stores 'failed' with the reason 'not_done'.
+-- It does not set the trust marker: a person answered, so decided_by_function
+-- and the log row's verified stay false.
 -- Returns { outcome, proposal }: not_found, already_decided, busy, invalid,
 -- executed or failed.
-create or replace function public.settle_unknown_external_action(p_id uuid, p_lease_seconds integer, p_sent boolean)
+create or replace function public.settle_unknown_external_action(p_id uuid, p_lease_seconds integer, p_done boolean)
 returns jsonb
 language plpgsql
 security definer
@@ -639,23 +722,24 @@ begin
     return jsonb_build_object('outcome', 'not_found', 'proposal', null);
   end if;
   if v_row.status <> 'executing' then
-    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'already_decided', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
-  if v_row.kind <> 'send_email' or p_sent is null then
-    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id');
+  if p_done is null or (v_row.kind = 'create_calendar_event'
+    and public.external_action_account_unchanged(v_uid, v_row.execution_account_subject)) then
+    return jsonb_build_object('outcome', 'invalid', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
   if v_row.execution_started_at > now() - make_interval(secs => p_lease_seconds) then
-    return jsonb_build_object('outcome', 'busy', 'proposal', to_jsonb(v_row) - 'user_id');
+    return jsonb_build_object('outcome', 'busy', 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
   end if;
 
   update public.action_proposals p
-  set status = case when p_sent then 'executed' else 'failed' end,
-      result = case when p_sent then jsonb_build_object('userConfirmed', true)
-                    else jsonb_build_object('error', 'execution_failed', 'reason', 'not_sent') end,
+  set status = case when p_done then 'executed' else 'failed' end,
+      result = case when p_done then jsonb_build_object('userConfirmed', true)
+                    else jsonb_build_object('error', 'execution_failed', 'reason', 'not_done') end,
       execution_claim_id = null
   where p.id = p_id
   returning * into v_row;
-  return jsonb_build_object('outcome', v_row.status, 'proposal', to_jsonb(v_row) - 'user_id');
+  return jsonb_build_object('outcome', v_row.status, 'proposal', to_jsonb(v_row) - 'user_id' - 'execution_claim_id');
 end;
 $$;
 

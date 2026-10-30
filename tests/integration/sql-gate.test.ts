@@ -56,6 +56,8 @@ const PROTECTED_COLUMNS = [
   "provider",
   "execution_claim_id",
   "execution_started_at",
+  "execution_account_subject",
+  "execution_target",
 ];
 const PERMISSION_DENIED = "42501";
 const GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
@@ -121,8 +123,8 @@ async function seedOwner(gate: SqlGate, userId: string): Promise<Owned> {
   );
   await gate.admin("insert into tasks (user_id, mode, title) values ($1, 'personal', 'gate')", [userId]);
   await gate.admin(
-    `insert into connected_accounts (user_id, provider, account_email, scopes, token_ciphertext)
-     values ($1, 'google', 'gate@example.com', $2, $3)`,
+    `insert into connected_accounts (user_id, provider, account_subject, account_email, scopes, token_ciphertext)
+     values ($1, 'google', 'gate-subject', 'gate@example.com', $2, $3)`,
     [userId, [GMAIL_READ_SCOPE], CIPHERTEXT],
   );
   await gate.admin("insert into usage_windows (user_id, window_start, request_count) values ($1, now(), 1)", [userId]);
@@ -178,8 +180,8 @@ function insertFor(table: OwnedTable, owner: string, refs: Owned): [string, unkn
       return ["insert into reminders (user_id, mode, title, due_at) values ($1, 'personal', 'x', now())", [owner]];
     case "connected_accounts":
       return [
-        `insert into connected_accounts (user_id, provider, account_email, scopes, token_ciphertext)
-         values ($1, 'google', 'x@example.com', $2, $3)`,
+        `insert into connected_accounts (user_id, provider, account_subject, account_email, scopes, token_ciphertext)
+         values ($1, 'google', 'x-subject', 'x@example.com', $2, $3)`,
         [owner, [GMAIL_READ_SCOPE], CIPHERTEXT],
       ];
     case "context_records":

@@ -34,7 +34,7 @@ const PERMISSION_DENIED = "42501";
 
 let gate: SqlGate;
 
-type Answer = { outcome: string; proposal: (Record<string, unknown> & { status: string; execution_claim_id: string | null }) | null };
+type Answer = { outcome: string; claimId?: string; proposal: (Record<string, unknown> & { status: string }) | null };
 
 async function call(owner: string, sql: string, params: unknown[]): Promise<Answer> {
   const result = await gate.as<{ r: Answer }>(user(owner), `select ${sql} as r`, params);
@@ -45,7 +45,8 @@ async function call(owner: string, sql: string, params: unknown[]): Promise<Answ
 async function approveClaim(owner: string, id: string): Promise<string> {
   const answer = await call(owner, "public.decide_action_proposal($1, 'approve')", [id]);
   expect(answer.outcome).toBe("executing");
-  return answer.proposal!.execution_claim_id!;
+  expect(answer.proposal).not.toHaveProperty("execution_claim_id");
+  return answer.claimId!;
 }
 
 const finish = (owner: string, id: string, claim: string | null, succeeded: boolean, result: unknown) =>
@@ -74,8 +75,13 @@ async function logRows(id: string) {
   return result.rows;
 }
 
-const save = (owner: string, scopes: string[], ciphertext = CIPHERTEXT, email = "me@example.com") =>
-  gate.as<{ id: string }>(user(owner), "select public.save_connected_account('google', $1, $2, $3) as id", [email, scopes, ciphertext]);
+const save = (owner: string, scopes: string[], ciphertext = CIPHERTEXT, email = "me@example.com", subject = `sub-${owner}`) =>
+  gate.as<{ id: string }>(user(owner), "select public.save_connected_account('google', $1, $2, $3, $4) as id", [
+    subject,
+    email,
+    scopes,
+    ciphertext,
+  ]);
 
 describe.each(MODES)("Google connection and external actions with %s default grants", (defaults) => {
   let alice: string;
@@ -85,6 +91,7 @@ describe.each(MODES)("Google connection and external actions with %s default gra
     gate = await startSqlGate({ defaults });
     alice = await gate.createUser();
     bob = await gate.createUser();
+    await save(alice, [GMAIL_READ, GMAIL_SEND, CALENDAR]);
   });
 
   afterAll(async () => {
@@ -98,12 +105,18 @@ describe.each(MODES)("Google connection and external actions with %s default gra
       await gate.as(user(owner), "update connected_accounts set status = 'needs_reconnect' where user_id = $1", [owner]);
       const second = (await save(owner, [GMAIL_READ, GMAIL_SEND, CALENDAR], OTHER_CIPHERTEXT, "new@example.com")).rows[0]!.id;
       expect(second).toBe(first);
-      const rows = await gate.as<{ account_email: string; scopes: string[]; token_ciphertext: string; status: string }>(
+      const rows = await gate.as<{ account_subject: string; account_email: string; scopes: string[]; token_ciphertext: string; status: string }>(
         user(owner),
-        "select account_email, scopes, token_ciphertext, status from connected_accounts",
+        "select account_subject, account_email, scopes, token_ciphertext, status from connected_accounts",
       );
       expect(rows.rows).toEqual([
-        { account_email: "new@example.com", scopes: [GMAIL_READ, GMAIL_SEND, CALENDAR], token_ciphertext: OTHER_CIPHERTEXT, status: "connected" },
+        {
+          account_subject: `sub-${owner}`,
+          account_email: "new@example.com",
+          scopes: [GMAIL_READ, GMAIL_SEND, CALENDAR],
+          token_ciphertext: OTHER_CIPHERTEXT,
+          status: "connected",
+        },
       ]);
     });
 
@@ -114,10 +127,10 @@ describe.each(MODES)("Google connection and external actions with %s default gra
       expect(await errorCode(() => save(owner, [GMAIL_READ, null as unknown as string]))).toBe(CHECK_VIOLATION);
       expect(await errorCode(() => save(owner, [GMAIL_READ], "plain-refresh-token"))).toBe(CHECK_VIOLATION);
       expect(await errorCode(() => save(owner, [GMAIL_READ], `v1.${"A".repeat(16)}.${"B".repeat(40)}\nx`))).toBe(CHECK_VIOLATION);
+      expect(await errorCode(() => save(owner, [GMAIL_READ], CIPHERTEXT, "me@example.com", ""))).toBe(CHECK_VIOLATION);
     });
 
     it("keeps each user's row apart: no read, change, delete or save into another user's row", async () => {
-      await save(alice, [GMAIL_READ]);
       await save(bob, [CALENDAR], OTHER_CIPHERTEXT, "bob@example.com");
       const seen = await gate.as(user(alice), "select * from connected_accounts where user_id = $1", [bob]);
       expect(seen.rows).toEqual([]);
@@ -134,7 +147,7 @@ describe.each(MODES)("Google connection and external actions with %s default gra
         await errorCode(() =>
           gate.as(
             user(alice),
-            "insert into connected_accounts (user_id, provider, account_email, scopes, token_ciphertext) values ($1, 'google', 'x@example.com', $2, $3)",
+            "insert into connected_accounts (user_id, provider, account_subject, account_email, scopes, token_ciphertext) values ($1, 'google', 's', 'x@example.com', $2, $3)",
             [bob, [GMAIL_READ], CIPHERTEXT],
           ),
         ),
@@ -159,7 +172,7 @@ describe.each(MODES)("Google connection and external actions with %s default gra
     it("gives anon no access to the table or the function", async () => {
       expect(await errorCode(() => gate.as(anon, "select * from connected_accounts"))).toBe(PERMISSION_DENIED);
       expect(
-        await errorCode(() => gate.as(anon, "select public.save_connected_account('google', 'a@example.com', $1, $2)", [[GMAIL_READ], CIPHERTEXT])),
+        await errorCode(() => gate.as(anon, "select public.save_connected_account('google', 's', 'a@example.com', $1, $2)", [[GMAIL_READ], CIPHERTEXT])),
       ).toBe(PERMISSION_DENIED);
     });
 
@@ -270,11 +283,87 @@ describe.each(MODES)("Google connection and external actions with %s default gra
       ["a free-text reason", false, { error: "execution_failed", reason: "sam@example.com rejected it" }],
       ["a failure with no reason", false, { error: "execution_failed" }],
       ["not an object", true, ["abc"]],
-    ])("refuses %s and keeps the row executing", async (_name, succeeded, result) => {
+      ["an empty success", true, {}],
+      ["an empty failure", false, {}],
+      ["a JSON null success", true, null],
+      ["a JSON null failure", false, null],
+    ])("refuses %s for an event and keeps the row executing", async (_name, succeeded, result) => {
       const id = await propose(gate, alice, EVENT);
       const claim = await approveClaim(alice, id);
       expect((await finish(alice, id, claim, succeeded, result)).outcome).toBe("invalid");
       expect((await stored(id)).status).toBe("executing");
+    });
+
+    it.each([
+      ["an empty success", true, {}],
+      ["an empty failure", false, {}],
+      ["a JSON null success", true, null],
+    ])("refuses %s for an email and keeps the row executing", async (_name, succeeded, result) => {
+      const id = await propose(gate, alice, EMAIL);
+      const claim = await approveClaim(alice, id);
+      expect((await finish(alice, id, claim, succeeded, result)).outcome).toBe("invalid");
+      expect(await stored(id)).toMatchObject({ status: "executing", execution_claim_id: claim });
+    });
+
+    it("refuses an approval with no connected account, or one that needs a reconnect, and leaves the proposal waiting", async () => {
+      const owner = await gate.createUser();
+      const id = await propose(gate, owner, EMAIL);
+      expect((await decideAs(gate, owner, id, "approve")).outcome).toBe("not_connected");
+      await save(owner, [GMAIL_SEND]);
+      await gate.as(user(owner), "update connected_accounts set status = 'needs_reconnect' where user_id = $1", [owner]);
+      expect((await decideAs(gate, owner, id, "approve")).outcome).toBe("not_connected");
+      expect((await stored(id)).status).toBe("proposed");
+      expect((await decideAs(gate, owner, id, "reject")).outcome).toBe("rejected");
+    });
+
+    it("binds the claim to the connected Google account and the target, and keeps them after the finish", async () => {
+      const email = await propose(gate, alice, EMAIL);
+      const emailClaim = await approveClaim(alice, email);
+      const event = await propose(gate, alice, EVENT);
+      await approveClaim(alice, event);
+      const bound = await gate.admin<{ id: string; execution_account_subject: string; execution_target: string }>(
+        "select id, execution_account_subject, execution_target from action_proposals where id = any($1) order by kind",
+        [[email, event]],
+      );
+      expect(bound.rows).toEqual([
+        { id: event, execution_account_subject: `sub-${alice}`, execution_target: "calendar:primary" },
+        { id: email, execution_account_subject: `sub-${alice}`, execution_target: "gmail:me" },
+      ]);
+      expect((await finish(alice, email, emailClaim, false, { error: "execution_failed", reason: "account_changed" })).outcome).toBe("failed");
+      const kept = await gate.admin<{ execution_account_subject: string }>("select execution_account_subject from action_proposals where id = $1", [email]);
+      expect(kept.rows[0]!.execution_account_subject).toBe(`sub-${alice}`);
+    });
+
+    it("gives the claim only to the request that won it: no other answer and no select shows it", async () => {
+      const id = await propose(gate, alice, EVENT);
+      const claim = await approveClaim(alice, id);
+      const answers = [
+        await decideAs(gate, alice, id, "approve"),
+        await decideAs(gate, alice, id, "reject"),
+        await reclaim(alice, id),
+        await settleUnknown(alice, id, true),
+        await finish(alice, id, "00000000-0000-4000-8000-000000000000", true, { eventId: "abc" }),
+        await finish(alice, id, claim, true, {}),
+      ];
+      for (const answer of answers) expect(JSON.stringify(answer)).not.toContain(claim);
+      const helper = await gate.admin<{ r: unknown }>("select public.decided_action_proposal($1, $2) as r", [id, alice]);
+      expect(JSON.stringify(helper.rows[0]!.r)).not.toContain(claim);
+      expect(await errorCode(() => gate.as(user(alice), "select execution_claim_id from action_proposals where id = $1", [id]))).toBe(PERMISSION_DENIED);
+      expect(await errorCode(() => gate.as(user(alice), "select * from action_proposals where id = $1", [id]))).toBe(PERMISSION_DENIED);
+      expect(
+        await errorCode(() =>
+          gate.as(user(alice), "insert into action_proposals (user_id, kind, payload, summary) values ($1, 'create_task', $2::jsonb, 'x') returning execution_claim_id", [
+            alice,
+            JSON.stringify(TASK),
+          ]),
+        ),
+      ).toBe(PERMISSION_DENIED);
+      const visible = await gate.as<{ status: string; execution_target: string }>(
+        user(alice),
+        "select status, execution_target from action_proposals where id = $1",
+        [id],
+      );
+      expect(visible.rows).toEqual([{ status: "executing", execution_target: "calendar:primary" }]);
     });
 
     it("refuses a finish with a wrong or missing claim", async () => {
@@ -360,13 +449,55 @@ describe.each(MODES)("Google connection and external actions with %s default gra
       await ageClaim(id, LEASE + 1);
       const again = await reclaim(alice, id);
       expect(again.outcome).toBe("claimed");
-      const newClaim = again.proposal!.execution_claim_id!;
+      const newClaim = again.claimId!;
+      expect(again.proposal).not.toHaveProperty("execution_claim_id");
       expect(newClaim).not.toBe(oldClaim);
       expect((await reclaim(alice, id)).outcome).toBe("busy");
       expect((await finish(alice, id, oldClaim, true, { eventId: "abc" })).outcome).toBe("stale_claim");
       expect((await finish(alice, id, newClaim, true, { eventId: id.replaceAll("-", "") })).outcome).toBe("executed");
       expect((await stored(id)).decided_by_function).toBe(true);
       expect((await reclaim(alice, id)).outcome).toBe("already_decided");
+    });
+
+    it("an event whose Google account changed: no new claim, and the user's answer settles it", async () => {
+      const owner = await gate.createUser();
+      await save(owner, [CALENDAR], CIPHERTEXT, "a@example.com", "account-a");
+      const id = await propose(gate, owner, EVENT);
+      const claim = await approveClaim(owner, id);
+      await ageClaim(id, LEASE + 1);
+      // The response from account A was lost. The user connects account B.
+      await save(owner, [CALENDAR], OTHER_CIPHERTEXT, "b@example.com", "account-b");
+      expect((await reclaim(owner, id)).outcome).toBe("account_changed");
+      expect((await stored(id)).execution_claim_id).toBe(claim);
+      expect((await finish(owner, id, claim, false, { error: "execution_failed", reason: "account_changed" })).outcome).toBe("failed");
+
+      const second = await propose(gate, owner, EVENT);
+      await approveClaim(owner, second);
+      await ageClaim(second, LEASE + 1);
+      await gate.as(user(owner), "delete from connected_accounts where user_id = $1", [owner]);
+      expect((await reclaim(owner, second)).outcome).toBe("account_changed");
+      expect((await settleUnknown(owner, second, false)).outcome).toBe("failed");
+      expect(await stored(second)).toMatchObject({ result: { error: "execution_failed", reason: "not_done" }, decided_by_function: false });
+
+      const third = await propose(gate, owner, EVENT);
+      await save(owner, [CALENDAR], CIPHERTEXT, "a@example.com", "account-a");
+      await approveClaim(owner, third);
+      await ageClaim(third, LEASE + 1);
+      await gate.as(user(owner), "update connected_accounts set status = 'needs_reconnect' where user_id = $1", [owner]);
+      expect((await reclaim(owner, third)).outcome).toBe("account_changed");
+      await save(owner, [CALENDAR], CIPHERTEXT, "a@example.com", "account-a");
+      expect((await reclaim(owner, third)).outcome).toBe("claimed");
+    });
+
+    it("an email whose Google account changed: no claim, and the answer is about the earlier account", async () => {
+      const owner = await gate.createUser();
+      await save(owner, [GMAIL_SEND], CIPHERTEXT, "a@example.com", "account-a");
+      const id = await propose(gate, owner, EMAIL);
+      await approveClaim(owner, id);
+      await ageClaim(id, LEASE + 1);
+      await save(owner, [GMAIL_SEND], OTHER_CIPHERTEXT, "b@example.com", "account-b");
+      expect((await reclaim(owner, id)).outcome).toBe("account_changed");
+      expect((await settleUnknown(owner, id, true)).outcome).toBe("executed");
     });
 
     it("an email: never a new claim; the user's answer settles it as not verified", async () => {
@@ -385,10 +516,10 @@ describe.each(MODES)("Google connection and external actions with %s default gra
       await decideAs(gate, alice, notSent, "approve");
       await ageClaim(notSent, LEASE + 1);
       expect((await settleUnknown(alice, notSent, false)).outcome).toBe("failed");
-      expect(await stored(notSent)).toMatchObject({ result: { error: "execution_failed", reason: "not_sent" }, decided_by_function: false });
+      expect(await stored(notSent)).toMatchObject({ result: { error: "execution_failed", reason: "not_done" }, decided_by_function: false });
     });
 
-    it("settle_unknown_external_action refuses an event and leaves it for the reclaim", async () => {
+    it("settle_unknown_external_action refuses an event of the same account and leaves it for the reclaim", async () => {
       const id = await propose(gate, alice, EVENT);
       await decideAs(gate, alice, id, "approve");
       await ageClaim(id, LEASE + 1);
