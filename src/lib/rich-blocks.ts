@@ -11,10 +11,18 @@ export const MAX_RICH_BLOCK_CHARS = 6000;
 export const MAX_RICH_BLOCKS_PER_REPLY = 3;
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+/** A lone UTF-16 surrogate: not valid text, and `encodeURIComponent` throws on it. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** Removes control characters and lone surrogates, so every card string is well-formed text. */
+export function cleanCardText(value: string): string {
+  return value.replace(CONTROL, "").replace(LONE_SURROGATE, "").trim();
+}
+
 const text = (max: number) =>
   z
     .string()
-    .transform((value) => value.replace(CONTROL, "").trim())
+    .transform(cleanCardText)
     .pipe(z.string().min(1).max(max));
 const cite = z.array(z.int().min(1).max(50)).max(3).optional();
 const title = text(80).optional();

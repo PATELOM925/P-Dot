@@ -12,7 +12,13 @@ export function mapsSearchUrl(place: { name: string; area?: string; city?: strin
     .filter(Boolean)
     .join(", ");
   if (!query) return null;
-  const url = MAPS_SEARCH + encodeURIComponent(query);
+  let url: string;
+  try {
+    url = MAPS_SEARCH + encodeURIComponent(query);
+  } catch {
+    // A lone surrogate makes encodeURIComponent throw. No link then, and the card still shows.
+    return null;
+  }
   if (url.length > MAX_SAFE_URL_CHARS) return null;
   return toSafeHttpUrl(url);
 }
