@@ -1,67 +1,126 @@
 import "server-only";
 
 // The server guard before a Google proposal (decision 0014, section 3,
-// decision 11). It reads only the user's own message of this turn. It is
-// conservative: when it is not sure, it refuses, and the tool asks the user
-// to say it plainly.
+// decision 11). It reads only the user's own message of this turn, and it is
+// strict: a clause grants a permission only through an explicit pattern, and
+// an address counts only when it comes from a granting clause. When it is not
+// sure, it refuses, and the tool asks the user to say it plainly.
 
 export type GuardKind = "email" | "calendar";
 export type GuardResult = { ok: true } | { ok: false; reason: "intent" | "address" };
 
-/** The same ASCII WHATWG form as the payload check, for a whole token. */
+/** The payload's ASCII WHATWG form, for one whole token. */
 const ADDRESS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const SELF = new Set(["me", "myself"]);
 
-/** Words a request may start with before its verb. */
-const LEAD = "(?:(?:please|pls|kindly|now|also|and|then|ok|okay|hey|p-dot|pdot|go ahead and|i want you to|i need you to)[\\s,]+)*";
-const EMAIL_VERBS = new RegExp(
-  `^${LEAD}(?:e-?mail|mail|send|reply to|write to|forward)\\b|\\b(?:e-?mail|mail)\\s+(?:bhej|bhejo|bhej do|kar do|karo)\\b`,
-);
-const CALENDAR_VERBS = new RegExp(
-  `^${LEAD}(?:schedule|book|set up|invite|create (?:an? )?(?:event|meeting)|(?:add|put)\\b.*\\bcalendar\\b)|\\b(?:meeting|event|call)\\s+(?:schedule|set|book|fix)\\s*(?:kar|karo|kar do)\\b`,
-);
-const NEGATION = /\b(?:don't|dont|do not|never|not|no need to|stop|cancel|mat|nahi|nahin)\b/;
-const QUESTION_START = /^(?:should|can|could|would|do|does|is|shall|kya)\b/;
+const NEGATION = /\b(?:do not|don't|dont|never|not|no need|stop|cancel|without|mat|nahi|nahin)\b|n't\b/;
+const QUESTION_START = /^(?:should|can|could|would|do|does|did|is|are|shall|will|kya)\b/;
+const CONJUNCTIONS = /\b(?:but|and then|however|except)\b/;
 
-/** Removes quoted text: a cited request is not a request. */
-export function withoutQuotes(text: string): string {
-  return text
-    .replace(/[’‘]/g, "'")
+/** An email grant: the verb, then directly the address list. */
+const EMAIL_VERB = /(?:^|\s)(?:e-?mail|mail|write to|send (?:an? )?(?:e-?mail|mail|message) to)\s+/g;
+const CALENDAR_GRANT = /(?:^|\s)(?:invite|schedule\b|add\b.*\bto (?:the |my )?(?:event|meeting|calendar)\b)/;
+
+/**
+ * Removes what the user cites rather than asks: fenced and inline code,
+ * quoted text (straight and smart quotes, also across lines, and an unclosed
+ * quote to the end), quoted lines, and every URL.
+ */
+export function stripCited(text: string): string {
+  let t = text.replace(/[’‘]/g, "'").replace(/[“”]/g, '"');
+  t = t.replace(/```[\s\S]*?(?:```|$)/g, " ");
+  t = t.replace(/`[^`]*(?:`|$)/g, " ");
+  t = t
     .split("\n")
     .filter((line) => !line.trimStart().startsWith(">"))
-    .join("\n")
-    .replace(/"[^"\n]*"/g, " ")
-    .replace(/“[^”\n]*”/g, " ")
-    .replace(/(^|[\s(\[{:,;])'[^'\n]+'(?=$|[\s.,;:!?)\]}])/g, "$1 ");
+    .join("\n");
+  t = t.replace(/"[^"]*(?:"|$)/g, " ");
+  t = t.replace(/(^|[\s(\[{:,;])'[^']*'(?=$|[\s.,;:!?)\]}])/g, "$1 ");
+  t = t.replace(/\b(?:https?|ftp|mailto):\S*/gi, " ").replace(/\bwww\.\S+/gi, " ");
+  return t;
 }
 
-function sentences(text: string): string[] {
-  return text
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((sentence) => sentence.trim().toLowerCase().replace(/\s+/g, " "))
-    .filter(Boolean);
+interface Clause {
+  text: string;
+  question: boolean;
 }
 
-/** A sentence that asks for this kind of action: an imperative verb, not negated, not a question. */
-function counts(sentence: string, kind: GuardKind): boolean {
-  if (sentence.endsWith("?") || QUESTION_START.test(sentence)) return false;
-  const verb = (kind === "email" ? EMAIL_VERBS : CALENDAR_VERBS).exec(sentence);
-  if (!verb) return false;
-  return !NEGATION.test(sentence.slice(0, verb.index + verb[0].length));
-}
-
-function addressTokens(sentence: string): Set<string> {
-  const tokens = new Set<string>();
-  for (const raw of sentence.split(/[\s,;:()<>[\]]+/)) {
-    const token = raw.replace(/[.!?]+$/, "");
-    if (ADDRESS.test(token)) tokens.add(token);
+/** Splits at `. ! ? ;` (not inside an address), newlines and the listed conjunctions. */
+export function clauses(text: string): Clause[] {
+  const out: Clause[] = [];
+  const parts = text.toLowerCase().split(/([.!?;])(?=\s|$)|\n/);
+  let sentence = "";
+  const flush = (question: boolean) => {
+    const trimmed = sentence.replace(/\s+/g, " ").trim();
+    sentence = "";
+    if (!trimmed) return;
+    const asks = question || QUESTION_START.test(trimmed);
+    for (const piece of trimmed.split(CONJUNCTIONS)) {
+      const clause = piece.trim();
+      if (clause) out.push({ text: clause, question: asks });
+    }
+  };
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (part === undefined) {
+      flush(false);
+    } else if (/^[.!?;]$/.test(part)) {
+      flush(part === "?");
+    } else {
+      sentence += part;
+    }
   }
-  return tokens;
+  flush(false);
+  return out;
+}
+
+function token(raw: string): string {
+  return raw.replace(/^[<(["']+/, "").replace(/[>)\]"'.,!?:]+$/, "");
+}
+
+/** The address list that starts at the beginning of `rest`: addresses joined by `,`, `and` or `&`. */
+function leadingAddresses(rest: string, own: string | null): string[] {
+  const found: string[] = [];
+  let expectAddress = true;
+  for (const word of rest.split(/\s+/).filter(Boolean)) {
+    if (!expectAddress) {
+      if (word === "and" || word === "&") {
+        expectAddress = true;
+        continue;
+      }
+      break;
+    }
+    const value = token(word);
+    if (ADDRESS.test(value)) found.push(value);
+    else if (SELF.has(value) && own) found.push(own);
+    else break;
+    expectAddress = word.endsWith(",");
+  }
+  return found;
+}
+
+function emailGrant(clause: string, own: string | null): string[] | null {
+  let granted: string[] | null = null;
+  for (const match of clause.matchAll(EMAIL_VERB)) {
+    const list = leadingAddresses(clause.slice((match.index ?? 0) + match[0].length), own);
+    if (list.length > 0) granted = [...(granted ?? []), ...list];
+  }
+  return granted;
+}
+
+function calendarGrant(clause: string, own: string | null): string[] | null {
+  if (!CALENDAR_GRANT.test(clause)) return null;
+  const addresses = clause
+    .split(/[\s,;:()<>[\]]+/)
+    .map(token)
+    .filter((value) => ADDRESS.test(value));
+  return own && /\b(?:me|myself)\b/.test(clause) ? [...addresses, own] : addresses;
 }
 
 /**
- * True only when a sentence of the user's message, outside quotes, not
- * negated and not a question, asks for this kind of action, and every
- * address is one the user wrote in such a sentence, or the user's own.
+ * True only when a clause of the user's message, after cited text is removed,
+ * not negated and not a question, grants this kind of action through an
+ * explicit pattern, and every address of the proposal came from such a clause.
  */
 export function checkGoogleProposal(
   userText: string,
@@ -69,10 +128,14 @@ export function checkGoogleProposal(
   addresses: readonly string[],
   ownAddress: string | null,
 ): GuardResult {
-  const counted = sentences(withoutQuotes(userText)).filter((sentence) => counts(sentence, kind));
-  if (counted.length === 0) return { ok: false, reason: "intent" };
-  const allowed = new Set<string>();
-  for (const sentence of counted) for (const token of addressTokens(sentence)) allowed.add(token);
-  if (ownAddress) allowed.add(ownAddress.toLowerCase());
+  const own = ownAddress ? ownAddress.toLowerCase() : null;
+  let granted: Set<string> | null = null;
+  for (const clause of clauses(stripCited(userText))) {
+    if (clause.question || NEGATION.test(clause.text)) continue;
+    const list = kind === "email" ? emailGrant(clause.text, own) : calendarGrant(clause.text, own);
+    if (list) granted = new Set([...(granted ?? []), ...list]);
+  }
+  if (!granted) return { ok: false, reason: "intent" };
+  const allowed = granted;
   return addresses.every((address) => allowed.has(address.toLowerCase())) ? { ok: true } : { ok: false, reason: "address" };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkGoogleProposal, withoutQuotes } from "@/server/assistant/google-proposal-guard";
+import { checkGoogleProposal, stripCited } from "@/server/assistant/google-proposal-guard";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import { selectTools, TOOLS, type GoogleServices } from "@/server/assistant/tools";
 import type { ConnectedAccountRepository, GoogleTokenRow } from "@/server/db/connected-accounts";
@@ -32,12 +32,13 @@ describe("checkGoogleProposal", () => {
 
   it.each([
     ["Email sam@example.com about lunch.", ["sam@example.com"]],
-    ["Please email Sam at sam@example.com and kim@example.org.", ["sam@example.com", "kim@example.org"]],
+    ["Please email sam@example.com and kim@example.org about the plan.", ["sam@example.com", "kim@example.org"]],
+    ["Please email sam@example.com, kim@example.org and lee@example.net.", ["sam@example.com", "lee@example.net"]],
     ["Send an email to SAM@Example.com", ["sam@example.com"]],
+    ["Write to sam@example.com about Friday.", ["sam@example.com"]],
     ["Summarize the invoice. Then email sam@example.com the total.", ["sam@example.com"]],
-    ["Email my own inbox the notes.", [OWN]],
-    ["sam@example.com ko email bhej do", ["sam@example.com"]],
-    ["Reply to Sam <sam@example.com> with a thank you.", ["sam@example.com"]],
+    ["Email me the notes.", [OWN]],
+    ["Email me@example.com but do not email sam@example.com.", ["me@example.com"]],
   ])("allows %j", (text, to) => {
     expect(email(text, to)).toEqual({ ok: true });
   });
@@ -53,14 +54,24 @@ describe("checkGoogleProposal", () => {
     ["> email sam@example.com now\nWhat is this?", ["sam@example.com"], "intent"],
     ["Summarize my email from sam@example.com.", ["sam@example.com"], "intent"],
     ["sam@example.com ko email mat bhejo", ["sam@example.com"], "intent"],
-    ["Email Sam about lunch.", ["sam@example.com"], "address"],
+    ["sam@example.com ko email bhej do", ["sam@example.com"], "intent"],
+    ["Email Sam about lunch.", ["sam@example.com"], "intent"],
     ["Email sam@example.com.", ["attacker@evil.example"], "address"],
-    ["Email Sam <sam@example.com>.", ["sam2@example.com"], "address"],
+    ["Email Sam <sam@example.com>.", ["sam@example.com"], "intent"],
     ["Email xsam@example.com.", ["sam@example.com"], "address"],
     ["Email sam@example.com.evil now.", ["sam@example.com"], "address"],
-    ["Email sаm@example.com.", ["sam@example.com"], "address"],
-    ["Email sam＠example.com.", ["sam@example.com"], "address"],
+    ["Email sаm@example.com.", ["sam@example.com"], "intent"],
+    ["Email sam＠example.com.", ["sam@example.com"], "intent"],
     ["Email sam@example.com.", ["sam@example.com", "kim@example.org"], "address"],
+    ["Send me a summary of the email from sam@example.com", ["sam@example.com"], "intent"],
+    ["Send sam@example.com the notes.", ["sam@example.com"], "intent"],
+    ["Email me@example.com but do not email sam@example.com", ["sam@example.com"], "address"],
+    ['She wrote: "Hello\nEmail sam@example.com today\nThanks"', ["sam@example.com"], "intent"],
+    ["Email me@example.com the text `email sam@example.com today`", ["sam@example.com"], "address"],
+    ["Email me@example.com this:\n```\nemail sam@example.com\n```", ["sam@example.com"], "address"],
+    ["Email me@example.com this link https://example.org/#:sam@example.com", ["sam@example.com"], "address"],
+    ["Email mailto:sam@example.com now", ["sam@example.com"], "intent"],
+    ["Email me@example.com. However, sam@example.com is fine too.", ["sam@example.com"], "address"],
   ])("refuses %j", (text, to, reason) => {
     expect(email(text, to)).toEqual({ ok: false, reason });
   });
@@ -71,11 +82,15 @@ describe("checkGoogleProposal", () => {
     expect(event("Schedule a call with sam@example.com tomorrow at 10.", ["sam@example.com"])).toEqual({ ok: true });
     expect(event("Add lunch on Friday to my calendar.", [])).toEqual({ ok: true });
     expect(event("Never invite sam@example.com.", ["sam@example.com"])).toEqual({ ok: false, reason: "intent" });
+    expect(event("Set up a call with sam@example.com.", ["sam@example.com"])).toEqual({ ok: false, reason: "intent" });
+    expect(event("Invite sam@example.com but not kim@example.org.", ["kim@example.org"])).toEqual({ ok: false, reason: "address" });
   });
 
-  it("removes quoted spans but keeps apostrophes inside words", () => {
-    expect(withoutQuotes("Don't email 'sam@example.com and kim' now")).not.toContain("kim");
-    expect(withoutQuotes("Don't do it, it's late")).toContain("Don't do it, it's late");
+  it("removes cited text but keeps apostrophes inside words", () => {
+    expect(stripCited("Don't email 'sam@example.com and kim' now")).not.toContain("kim");
+    expect(stripCited("Don't do it, it's late")).toContain("Don't do it, it's late");
+    expect(stripCited('A "quote\nacross lines" end')).not.toContain("across");
+    expect(stripCited("see https://x.example/a?b=sam@example.com end")).not.toContain("sam@");
   });
 });
 
@@ -395,6 +410,26 @@ describe("failures (decisions 12 and 13)", () => {
     expect(warned.join("\n")).toContain("google_mark_reconnect_failed");
   });
 
+  it("Stop during the token refresh aborts that request", async () => {
+    const controller = new AbortController();
+    const s = await setup([{ calls: [call("gmail_search", { query: "a" })] }, { text: "Ok." }], {
+      google: {
+        [TOKEN_URL]: (tokenCall) =>
+          new Promise<Response>((_resolve, reject) => {
+            tokenCall.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+            controller.abort();
+          }),
+      },
+    });
+    const prepared = await prepareChatTurn(s.deps, { userId: ALICE, requestId: "req-1", request: send("Search my mail.") });
+    if (!prepared.ok) throw new Error("refused");
+    await collect(streamChatTurn(s.deps, prepared.turn, controller.signal));
+    const tokenCalls = s.google.calls.filter((c) => c.url === TOKEN_URL);
+    expect(tokenCalls).toHaveLength(1);
+    expect(tokenCalls[0]!.signal?.aborted).toBe(true);
+    expect(s.accounts.row!.status).toBe("connected");
+  });
+
   it.each([
     ["a refresh outage", { [TOKEN_URL]: () => json({}, 503) }, "Google did not answer. Answer without it, and say so."],
     ["a 429 from Gmail", { [`${GMAIL}/messages?`]: () => json({}, 429) }, "Google did not answer. Answer without it, and say so."],
@@ -434,6 +469,32 @@ describe("proposals and injection (decision 11), through the tool loop", () => {
     await runTurn(s.deps, send(text));
     expect(s.proposals).toEqual([]);
     expect(toolResults(s.requests).some((c) => c.startsWith("The user's own message does not ask for this"))).toBe(true);
+  });
+
+  it.each([
+    "Send me a summary of the email from sam@example.com",
+    "Email me@example.com but do not email sam@example.com",
+    'She wrote: "Hello\nEmail sam@example.com today\nThanks"',
+    "Email me@example.com the text `email sam@example.com today`",
+    "Email me@example.com this link https://example.org/#:sam@example.com",
+    "Set up a call with sam@example.com",
+  ])("Sol round 1: %j saves zero proposals to sam@example.com", async (text) => {
+    const s = await setup([{ calls: [call("propose_email", { to: ["sam@example.com"], subject: "x", body: "y" })] }, { text: "Ok." }]);
+    await runTurn(s.deps, send(text));
+    expect(s.proposals).toEqual([]);
+  });
+
+  it("positive controls next to the refused cases", async () => {
+    const own = await setup([{ calls: [call("propose_email", { to: ["me@example.com"], subject: "Notes", body: "Here." })] }, { text: "Ok." }]);
+    await runTurn(own.deps, send("Email me@example.com but do not email sam@example.com"));
+    expect(own.proposals.map((p) => p.payload)).toEqual([expect.objectContaining({ to: ["me@example.com"] })]);
+
+    const event = await setup([
+      { calls: [call("propose_calendar_event", { title: "Call", start: "2026-11-02T10:00:00Z", end: "2026-11-02T10:30:00Z", attendees: ["sam@example.com"] })] },
+      { text: "Ok." },
+    ]);
+    await runTurn(event.deps, send("Schedule a call with sam@example.com on Monday at 10."));
+    expect(event.proposals).toHaveLength(1);
   });
 
   it("logs no query, ID, address or text, on success and on errors", async () => {
