@@ -100,3 +100,33 @@ describe("routeRequest with a tool intent", () => {
     });
   });
 });
+
+describe("own data words about the user", () => {
+  it.each([
+    "What are the job roles I should apply to? Check it from my memory",
+    "check my memory",
+    "What do my memories say?",
+    "Tell me about me",
+    "Look at my resume and suggest roles",
+    "Which jobs fit my cv?",
+    "Use my profile",
+    "Given my background, what next?",
+    "What fits my experience?",
+    "Which roles match my skills?",
+    "Suggest a course based on me",
+    "What is a good laptop for someone like me?",
+  ])("offers the own-data tools for %j", (message) => {
+    expect(detectToolIntent(message)).toBe("own_data");
+  });
+
+  it.each([
+    "What is a resume?",
+    "How do I write a CV?",
+    "Tell me about medicine",
+    "What is memory in a computer?",
+    "Explain work experience letters",
+    "What skills does a nurse need?",
+  ])("offers no tool for the plain message %j", (message) => {
+    expect(detectToolIntent(message)).toBeNull();
+  });
+});
