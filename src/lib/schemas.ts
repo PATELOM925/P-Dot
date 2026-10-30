@@ -22,6 +22,7 @@ import {
   BRIEF_TOPIC_CHARS,
 } from "./limits";
 import { EFFORTS } from "./routing";
+import { MAX_TIME_ZONE_CHARS, isValidTimeZone } from "./time-zone";
 import type { ChatRequest } from "@/types/api";
 
 const conversationId = z.uuid();
@@ -43,6 +44,8 @@ const connectorsSchema = z
  */
 const oneSource = (value: { webSearch: boolean; connectors?: unknown[]; useGoogle?: true }) =>
   [value.webSearch, (value.connectors?.length ?? 0) > 0, value.useGoogle === true].filter(Boolean).length <= 1;
+/** The browser's IANA time zone, so the reply reads "tomorrow at 6pm" in the user's time. */
+const timeZoneSchema = z.string().max(MAX_TIME_ZONE_CHARS).refine(isValidTimeZone, "Unknown time zone.").optional();
 const mixedSources = { message: "Use only one of web search, Google or connected apps for a message.", path: ["webSearch"] };
 
 /** Deep research is a kind of web search, so it needs web search on (decision 0018). */
@@ -87,6 +90,7 @@ const sendSchema = z
     connectors: connectorsSchema,
     research: z.literal(true).optional(),
     brief: briefSchema.optional(),
+    timeZone: timeZoneSchema,
   })
   .strict()
   .refine(oneSource, mixedSources)
@@ -102,6 +106,7 @@ const retrySchema = z
     useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
     research: z.literal(true).optional(),
+    timeZone: timeZoneSchema,
   })
   .strict()
   .refine(oneSource, mixedSources)

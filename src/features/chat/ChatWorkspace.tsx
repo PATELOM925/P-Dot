@@ -34,7 +34,7 @@ import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
-import { googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
+import { autoSources, googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -44,10 +44,11 @@ import { StarterPrompts } from "./StarterPrompts";
 import type { StarterPrompt } from "./starter-prompts";
 import { readChatStream } from "./stream";
 import { toolStatusLine } from "./tool-status";
+import { browserTimeZone } from "@/lib/time-zone";
 import {
   STALL_LINE,
   STALL_MS,
-  TURN_STATE_LABELS,
+  turnStepLine,
   blocksRetry,
   canRetryLast,
   chatErrorView,
@@ -122,6 +123,8 @@ export function ChatWorkspace({
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
   const [apps, setApps] = useState<McpServerId[]>([]);
+  // True once the user picks or turns off a source for this draft: the auto pick then stays off.
+  const [autoOff, setAutoOff] = useState(false);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
@@ -335,25 +338,32 @@ export function ChatWorkspace({
     }
   }
 
+  // The sources the next message uses: the user's pick, or the source that the draft names.
+  const picked = { webSearch, useGoogle, apps, ...(research ? { research: true as const } : {}) };
+  const sources = autoOff ? picked : autoSources(draft, picked, google, connectedApps);
+
   async function submit(action: "send" | "retry") {
     if (sending) return;
     const text = draft.trim();
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
-    const sentApps = apps;
+    const sentApps = sources.apps;
     const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
+    const timeZone = browserTimeZone();
+    const zone = timeZone ? { timeZone } : {};
     const body: ChatRequest =
       action === "send"
         ? {
             action,
             message: text,
-            webSearch,
-            ...(research && webSearch ? { research: true as const } : {}),
+            webSearch: sources.webSearch,
+            ...(sources.research && sources.webSearch ? { research: true as const } : {}),
             effort,
             ...connectors,
-            ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...(sources.useGoogle ? { useGoogle: true as const } : {}),
             ...(activeId ? { conversationId: activeId } : { mode }),
+            ...zone,
           }
         : {
             action,
@@ -363,6 +373,7 @@ export function ChatWorkspace({
             effort,
             ...connectors,
             ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...zone,
           };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
@@ -404,6 +415,7 @@ export function ChatWorkspace({
         setResearch(false);
         setWebSearch(false);
       }
+      setAutoOff(false);
       starterToolsRef.current = false;
       setMessages((current) => [
         ...current,
@@ -561,7 +573,7 @@ export function ChatWorkspace({
     }
   }
 
-  const googleItem = googleToolItem(google, useGoogle);
+  const googleItem = googleToolItem(google, sources.useGoogle);
   // The "+" menu: web search, Think harder, Google, then each connected app. A new tool is one more item.
   const tools: ToolItem[] = [
     {
@@ -602,7 +614,7 @@ export function ChatWorkspace({
         chip: MCP_SERVER_NAMES[app],
         chipClass: "chip-app",
         icon: "app",
-        on: apps.includes(app),
+        on: sources.apps.includes(app),
       }),
     ),
   ];
@@ -615,7 +627,8 @@ export function ChatWorkspace({
       return;
     }
     if (key === "google" && google !== "connected") return;
-    const next = toggleSource({ webSearch, useGoogle, apps, ...(research ? { research: true as const } : {}) }, key, connectedApps);
+    const next = toggleSource(sources, key, connectedApps);
+    setAutoOff(true);
     setWebSearch(next.webSearch);
     setResearch(next.research === true);
     setUseGoogle(next.useGoogle);
@@ -906,11 +919,18 @@ export function ChatWorkspace({
             <article className="message message-assistant" aria-busy="true">
               <p className="message-author">P-Dot</p>
               <p className="turn-state" data-state={stalled ? "stalled" : "working"}>
-                {stalled ? STALL_LINE : TURN_STATE_LABELS.working}
+                {stalled
+                  ? STALL_LINE
+                  : turnStepLine({
+                      text: streaming.text,
+                      tool: streaming.tool,
+                      searching: webSearch && !streaming.search,
+                      deep: research,
+                      tier: streaming.tier,
+                    })}
               </p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
-              {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
-              {streaming.text ? (
+              {streaming.text && (
                 <AssistantReply
                   text={streaming.text}
                   sources={streaming.search?.sources ?? []}
@@ -918,18 +938,6 @@ export function ChatWorkspace({
                   showSources={streaming.search?.status === "used"}
                   streaming
                 />
-              ) : (
-                <div className="message-content">
-                  <span className="muted">
-                    {webSearch && !streaming.search
-                      ? research
-                        ? "Searching the web (deep)…"
-                        : "Searching the web…"
-                      : streaming.tier === "heavy"
-                        ? "Thinking harder…"
-                        : "Thinking…"}
-                  </span>
-                </div>
               )}
             </article>
           )}
@@ -1000,6 +1008,7 @@ export function ChatWorkspace({
               onChange={(event) => {
                 const value = event.target.value;
                 setDraft(value);
+                if (!value.trim()) setAutoOff(false);
                 if (!value.trim() && starterToolsRef.current) {
                   starterToolsRef.current = false;
                   setWebSearch(false);

@@ -1,3 +1,4 @@
+import { normalizeReplyText } from "@/lib/reply-text";
 import type { EvalCase } from "./dataset";
 
 /** What one run of one case produced: from a canned mock output, or from a live model. */
@@ -8,15 +9,10 @@ export interface EvalObservation {
   completionTokens: number;
 }
 
-/** Matches the server's reply fixes (normalizeReplyText), so a check reads what the user would see. */
-function normalize(text: string): string {
-  return text.replace(/[  ]/g, " ").replace(/【(\d{1,3})】/g, "[$1]");
-}
-
 /** The failed checks of one case. An empty list is a pass. */
 export function gradeEvalCase(testCase: EvalCase, observed: EvalObservation): string[] {
   const failures: string[] = [];
-  const output = normalize(observed.output);
+  const output = normalizeReplyText(observed.output);
   const { assertions } = testCase;
 
   if (testCase.expectedTool === "web_search" && observed.toolCalled !== "web_search") {

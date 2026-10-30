@@ -39,10 +39,11 @@ import {
 } from "./executor";
 import { PROMPT_VERSION, buildPromptMessages, type ReplyFormat } from "./prompt";
 import { briefSearch, deepResearch, type ResearchServices } from "./research";
-import { normalizeReplyText } from "./reply-text";
+import { createReplyNormalizer } from "@/lib/reply-text";
 import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
-import { detectToolIntent } from "./tool-intent";
+import { detectToolIntent, type ToolIntent } from "@/lib/tool-intent";
+import { forcedToolChoice, removeFalseClaims } from "./claim-guard";
 import {
   BRIEF_RESULTS_MAX_BYTES,
   budgetRefusal,
@@ -159,12 +160,16 @@ export interface PreparedTurn {
   retrieval: "basic" | "deep" | "brief" | null;
   /** The brief's topics that have a held credit, in order. Empty for other turns. */
   briefTopics: string[];
+  /** The user's IANA time zone from the browser, or null. */
+  timeZone: string | null;
   /** True when search was requested but the Tavily budget refused it. */
   searchBudgetExhausted: boolean;
   /** The tier for this reply and why the router chose it. */
   route: RouteDecision;
   /** Which tools this turn offers. Fixed before the hold, so the hold prices them. */
   toolFlags: ToolFlags;
+  /** What the message asks for, from the rules in tool-intent.ts. Null for a plain message. */
+  toolIntent: ToolIntent | null;
   /** Google for this turn: the connection's flags and address, or why it is off. Null when not asked for. */
   google: TurnGoogle | null;
   /** The Nebius hold pays for the first attempt, on any model of the tier. */
@@ -374,11 +379,13 @@ export async function prepareChatTurn(
       webSearch: (request.webSearch || brief !== null) && googleFlags === null ? "failed" : "off",
       results: [],
       now: deps.now(),
+      timeZone: request.timeZone,
       mode,
       toolGuidance: toolsBound.map((tool) => tool.guidance),
       serverNote: google?.note,
       format,
       tier: route.tier,
+      privateSources: privateSourcesNote(request.useGoogle === true || requestedApps.length > 0, googleFlags !== null || connectorTools.size > 0),
     });
     const retrievalBytes =
       retrieval === "basic"
@@ -476,6 +483,7 @@ export async function prepareChatTurn(
         webSearch: (request.webSearch || brief !== null) && googleFlags === null,
         retrieval,
         briefTopics,
+        timeZone: request.timeZone ?? null,
         searchBudgetExhausted,
         route,
         toolFlags: {
@@ -485,6 +493,7 @@ export async function prepareChatTurn(
           google: googleFlags,
           connectors: connectorTools,
         },
+        toolIntent,
         google,
         holds,
       },
@@ -602,6 +611,16 @@ export async function* streamChatTurn(
   }
 }
 
+/**
+ * The prompt line about Google and the apps. Asked for and on: the tools are on
+ * now. Not asked for: say how to turn them on. Asked for but off: the server
+ * note of that turn explains why, so no line.
+ */
+function privateSourcesNote(asked: boolean, on: boolean): "on" | "off" | undefined {
+  if (on) return "on";
+  return asked ? undefined : "off";
+}
+
 async function* runChatTurn(
   deps: AssistantDeps,
   turn: PreparedTurn,
@@ -620,6 +639,9 @@ async function* runChatTurn(
     userMessage: turn.userMessage,
     route: turn.route,
   };
+
+  // Memory retrieval runs while the web search runs, so the reply does not wait for the two in turn.
+  const memoryLookup = retrieveMemories(deps, turn, signal);
 
   // 1. Optional web retrieval. Search is never called unless requested.
   let webSearch: WebSearchStatus = "off";
@@ -679,22 +701,10 @@ async function* runChatTurn(
     }
   }
 
-  // Active memories of this mode, top MEMORY_CONTEXT_COUNT. A failure means a reply without memories.
-  let memories: MemoryMatch[] = [];
-  if (deps.ownData) {
-    try {
-      const [vector] = await deps.ownData.embedder.embed([turn.userMessage.content], signal);
-      if (vector) {
-        const found = await deps.ownData.retrieval.matchMemories(vector, turn.conversation.mode, MEMORY_CONTEXT_COUNT);
-        memories = found.slice(0, MEMORY_CONTEXT_COUNT);
-      }
-    } catch (error) {
-      if (signal.aborted) {
-        deps.log("info", "chat_client_aborted", { ...logBase, stage: "memories" });
-        return;
-      }
-      deps.log("warn", "memory_retrieval_failed", { ...logBase, kind: error instanceof Error ? error.name : "unknown" });
-    }
+  const memories = await memoryLookup;
+  if (memories === "aborted") {
+    deps.log("info", "chat_client_aborted", { ...logBase, stage: "memories" });
+    return;
   }
   const memoryIds = new Set(memories.map((memory) => memory.id));
   const documentChunkIds = new Set<string>();
@@ -710,12 +720,17 @@ async function* runChatTurn(
     webSearch,
     results,
     now: deps.now(),
+    timeZone: turn.timeZone,
     mode: turn.conversation.mode,
     toolGuidance: tools.map((tool) => tool.guidance),
     memories,
     serverNote: turn.google?.note,
     format: turn.retrieval === "deep" ? "research" : turn.retrieval === "brief" ? "brief" : undefined,
     tier: turn.route.tier,
+    privateSources: privateSourcesNote(
+      turn.google !== null || turn.route.reason === "connector_read",
+      turn.toolFlags.google !== null || (turn.toolFlags.connectors?.size ?? 0) > 0,
+    ),
   });
   const plan = deps.routing[turn.route.tier];
   const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null) : null;
@@ -741,6 +756,9 @@ async function* runChatTurn(
   // commit rule of the executor (no model switch after the first visible
   // token) holds for the whole turn, not only for one hop.
   let textModel: string | null = null;
+  // A message that asks to remember, or to add a task or a reminder, must get a tool call in the first hop.
+  let forced = forcedToolChoice(turn.toolIntent, tools, turn.userMessage.content);
+  let proposalsRun = 0;
 
   for (let hop = 0; hop <= MAX_TOOL_HOPS; hop += 1) {
     // Tools are off on the last pass, so the turn always ends with a reply.
@@ -784,11 +802,22 @@ async function* runChatTurn(
     let calls: ToolCall[] = [];
     let hopText = "";
     let hopFinished = false;
+    const normalizer = createReplyNormalizer();
+    const accept = (normalized: string): string => {
+      let text = normalized;
+      // Text from two hops is kept apart, so it does not run together.
+      if (!hopText && content && text) text = `\n\n${text.trimStart()}`;
+      text = text.slice(0, MAX_ASSISTANT_CHARS - content.length);
+      hopText += text;
+      content += text;
+      return text;
+    };
     try {
       for await (const chunk of executeRouted({
         plan: { ...plan, deadlineMs: remainingMs, ...(textModel ? { models: [textModel] } : {}) },
         messages: hopMessages,
         tools: offered,
+        ...(hop === 0 && forced ? { toolChoice: forced } : {}),
         provider: deps.provider,
         budget,
         breaker: deps.breaker,
@@ -806,15 +835,8 @@ async function* runChatTurn(
           calls = chunk.calls;
           continue;
         }
-        let text = normalizeReplyText(chunk.text);
-        // Text from two hops is kept apart, so it does not run together.
-        if (!hopText && content && text) text = `\n\n${text.trimStart()}`;
-        text = text.slice(0, MAX_ASSISTANT_CHARS - content.length);
-        if (text) {
-          hopText += text;
-          content += text;
-          yield { type: "delta", text };
-        }
+        const text = accept(normalizer.push(chunk.text));
+        if (text) yield { type: "delta", text };
         if (content.length >= MAX_ASSISTANT_CHARS) {
           truncated = true;
           break;
@@ -825,6 +847,13 @@ async function* runChatTurn(
       if (signal.aborted) {
         deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
         return;
+      }
+      // A model that refuses a forced tool choice gets the same hop again with "auto".
+      if (hop === 0 && forced && !content && error instanceof ProviderError && error.kind === "invalid_request") {
+        deps.log("warn", "tool_choice_refused", { ...logBase, hop });
+        forced = null;
+        hop -= 1;
+        continue;
       }
       if (error instanceof BudgetExhaustedError) {
         yield { type: "error", code: "budget_exhausted", message: budgetRefusal(error.limit, deps.now()).message, retryable: false };
@@ -862,6 +891,8 @@ async function* runChatTurn(
       return;
     }
     logRoute(deps, logBase, turn.route, report, hop);
+    const tail = accept(normalizer.flush());
+    if (tail) yield { type: "delta", text: tail };
     fallback ||= report.fallback;
     // A hop cut at the length limit has no usage, so the turn's sum must not look whole.
     if (!hopFinished) usages.push(null);
@@ -904,6 +935,8 @@ async function* runChatTurn(
             connectors,
           });
           result = outcome.content;
+          deps.log("info", "tool_ran", { ...logBase, tool: spec.name, hop, ok: true });
+          if (spec.kind === "propose") proposalsRun += 1;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);
           for (const id of outcome.documentChunkIds ?? []) documentChunkIds.add(id);
           if (outcome.sources && outcome.sources.length > 0) {
@@ -916,10 +949,23 @@ async function* runChatTurn(
             return;
           }
           deps.log("warn", "tool_failed", { ...logBase, tool: spec.name, hop });
+          deps.log("info", "tool_ran", { ...logBase, tool: spec.name, hop, ok: false });
           result = "The tool failed. Nothing was done. Answer without it, and say so.";
         }
       }
       messages.push({ role: "tool", toolCallId: call.id, content: result });
+    }
+  }
+
+  // Only a turn that asked for a task, a reminder or a memory can have a false
+  // "I added it" claim. In other turns the same words are a drafted email or a
+  // recap of an earlier card, so the reply stays as the model wrote it.
+  const actionAsked = turn.toolIntent === "task_request" || turn.toolIntent === "memory_request";
+  if (proposalsRun === 0 && actionAsked) {
+    const guarded = removeFalseClaims(content, actionAsked);
+    if (guarded.removed) {
+      deps.log("warn", "false_claim_removed", { ...logBase, intent: turn.toolIntent ?? "none" });
+      content = guarded.text.slice(0, MAX_ASSISTANT_CHARS);
     }
   }
 
@@ -1007,6 +1053,32 @@ async function* runChatTurn(
     turn.conversation.title === titleFromMessage(turn.userMessage.content)
   ) {
     yield* makeTitle(deps, turn, signal, settle);
+  }
+}
+
+/** A message this short ("hi", "thanks!", "ok cool") gets no memory lookup: it costs an embedding call before the reply. */
+const MEMORY_LOOKUP_MIN_CHARS = 12;
+
+/**
+ * Active memories of the mode, top MEMORY_CONTEXT_COUNT. Never throws: a failure
+ * means a reply without memories, and a Stop gives "aborted".
+ */
+async function retrieveMemories(deps: AssistantDeps, turn: PreparedTurn, signal: AbortSignal): Promise<MemoryMatch[] | "aborted"> {
+  const text = turn.userMessage.content.trim();
+  if (!deps.ownData || (text.length < MEMORY_LOOKUP_MIN_CHARS && text.split(/\s+/).length <= 2)) return [];
+  try {
+    const [vector] = await deps.ownData.embedder.embed([text], signal);
+    if (!vector) return [];
+    const found = await deps.ownData.retrieval.matchMemories(vector, turn.conversation.mode, MEMORY_CONTEXT_COUNT);
+    return found.slice(0, MEMORY_CONTEXT_COUNT);
+  } catch (error) {
+    if (signal.aborted) return "aborted";
+    deps.log("warn", "memory_retrieval_failed", {
+      requestId: turn.requestId,
+      route: "chat",
+      kind: error instanceof Error ? error.name : "unknown",
+    });
+    return [];
   }
 }
 

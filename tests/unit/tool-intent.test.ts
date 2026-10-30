@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { routeRequest } from "@/server/assistant/router";
-import { detectToolIntent } from "@/server/assistant/tool-intent";
+import { detectToolIntent } from "@/lib/tool-intent";
 import { routeSummary } from "@/lib/routing";
 
 describe("detectToolIntent", () => {
@@ -34,6 +34,11 @@ describe("detectToolIntent", () => {
     ["Summarize the document I uploaded", "own_data"],
     ["What does my resume say", "own_data"],
     ["What's in the pdf I added?", "own_data"],
+    ["In my trip notes document, what time is my dinner on day 2?", "own_data"],
+    ["what does my trip notes say about the hotel", "own_data"],
+    ["According to my notes, when is the flight?", "own_data"],
+    ["based on my lease file, when does it end", "own_data"],
+    ["from my Goa trip plan doc, list the hotels", "own_data"],
   ] as const)("finds %j as %s", (message, intent) => {
     expect(detectToolIntent(message)).toBe(intent);
   });
@@ -55,6 +60,8 @@ describe("detectToolIntent", () => {
     "remind me what the capital is",
     "Remind me who won the 2011 World Cup",
     "Write down the steps to make tea",
+    "What notes does a C major chord have?",
+    "Explain the notes of a perfume",
   ])("finds no intent in %j", (message) => {
     expect(detectToolIntent(message)).toBeNull();
   });

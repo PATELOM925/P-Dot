@@ -1,8 +1,8 @@
 import "server-only";
 import type { ProviderName } from "./errors";
-import { streamChatCompletion, type ChatMessage, type CompletionChunk, type ToolDefinition } from "./nebius/client";
+import { streamChatCompletion, type ChatMessage, type CompletionChunk, type ToolChoice, type ToolDefinition } from "./nebius/client";
 
-export type { ChatMessage, CompletionChunk, TokenUsage, ToolCall, ToolDefinition } from "./nebius/client";
+export type { ChatMessage, CompletionChunk, TokenUsage, ToolCall, ToolChoice, ToolDefinition } from "./nebius/client";
 
 /** One call to one model. The executor builds one for each attempt. */
 export interface ModelCallRequest {
@@ -15,6 +15,8 @@ export interface ModelCallRequest {
   timeoutMs: number;
   /** Functions the model may call in this call. None: tools are off. */
   tools?: ToolDefinition[];
+  /** Missing: "auto". */
+  toolChoice?: ToolChoice;
 }
 
 /**
@@ -44,7 +46,13 @@ export function createNebiusProvider(
           thinkingBudgetTokens: request.thinkingBudgetTokens,
         },
         request.messages,
-        { signal, totalTimeoutMs: request.timeoutMs, fetchImpl: options.fetchImpl, tools: request.tools },
+        {
+          signal,
+          totalTimeoutMs: request.timeoutMs,
+          fetchImpl: options.fetchImpl,
+          tools: request.tools,
+          toolChoice: request.toolChoice,
+        },
       ),
   };
 }

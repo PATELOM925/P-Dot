@@ -92,14 +92,44 @@ function openAccess(context: ToolContext): Promise<GoogleAccessOutcome> {
 }
 
 /**
+ * 403 labels that mean the Google project or a rate limit, not the user's
+ * grant: the Gmail or Calendar API is off in the project, or a quota is used up.
+ */
+const NOT_A_GRANT_403 = new Set([
+  "accessNotConfigured",
+  "SERVICE_DISABLED",
+  "rateLimitExceeded",
+  "userRateLimitExceeded",
+  "dailyLimitExceeded",
+  "quotaExceeded",
+  "RESOURCE_EXHAUSTED",
+]);
+
+/**
  * Runs one Google read. Maps every failure to a tool result (the LLD error
  * table); only an abort throws. A credential that ended stops the turn's
  * Google tools, and the reconnect write is awaited under `waitUntil`.
+ * Each failure logs its kind, status and error label, never Google text.
  */
-async function googleRead(context: ToolContext, read: (access: GoogleAccess) => Promise<string>): Promise<ToolOutcome> {
+async function googleRead(
+  context: ToolContext,
+  tool: string,
+  read: (access: GoogleAccess) => Promise<string>,
+): Promise<ToolOutcome> {
   const turn = turnOf(context);
-  if (turn.stopped) return { content: ENDED };
-  if (turn.textLeft <= 0) return { content: LIMIT };
+  const failed = (kind: string, content: string, error?: GoogleApiError, level: "warn" | "error" = "warn"): ToolOutcome => {
+    context.services.log(level, "google_tool_failed", {
+      requestId: context.requestId,
+      route: "chat",
+      tool,
+      kind,
+      status: error?.status ?? undefined,
+      label: error?.label ?? undefined,
+    });
+    return { content };
+  };
+  if (turn.stopped) return failed("stopped", ENDED);
+  if (turn.textLeft <= 0) return failed("text_limit", LIMIT);
   let opened: GoogleAccessOutcome;
   try {
     opened = await openAccess(context);
@@ -107,35 +137,31 @@ async function googleRead(context: ToolContext, read: (access: GoogleAccess) => 
     if (context.signal.aborted) throw error;
     // The token row could not be read: an outage, not an ended credential.
     turnOf(context).access = null;
-    context.services.log("warn", "google_tool_failed", { requestId: context.requestId, route: "chat", kind: "token_read" });
-    return { content: UNAVAILABLE };
+    return failed("token_read", UNAVAILABLE);
   }
-  if (!opened.ok) return { content: opened.content };
+  if (!opened.ok) return failed(opened.content === NOT_CONNECTED ? "not_connected" : "ended", opened.content);
   try {
     return { content: await read(opened.access) };
   } catch (error) {
     if (context.signal.aborted) throw error;
     if (error instanceof GoogleReconnectNeededError) {
       turn.stopped = true;
-      return { content: ENDED };
+      return failed("reconnect_needed", ENDED);
     }
     if (error instanceof GoogleApiError && error.status === 401) {
       turn.stopped = true;
       const write = opened.access.reportUnauthorized?.() ?? Promise.resolve(false);
       context.services.waitUntil(write);
       await write;
-      return { content: ENDED };
+      return failed(error.kind, ENDED, error);
     }
-    if (error instanceof GoogleScopeMissingError || (error instanceof GoogleApiError && error.status === 403)) {
-      return { content: NO_SCOPE };
+    if (error instanceof GoogleScopeMissingError) return failed("scope_missing", NO_SCOPE);
+    if (error instanceof GoogleApiError && error.status === 403) {
+      if (error.label && NOT_A_GRANT_403.has(error.label)) return failed(error.kind, UNAVAILABLE, error, "error");
+      return failed(error.kind, NO_SCOPE, error);
     }
-    if (error instanceof RangeError) return { content: BAD_ARGS };
-    context.services.log("warn", "google_tool_failed", {
-      requestId: context.requestId,
-      route: "chat",
-      kind: error instanceof GoogleApiError ? error.kind : "unknown",
-    });
-    return { content: UNAVAILABLE };
+    if (error instanceof RangeError) return failed("bad_args", BAD_ARGS);
+    return failed(error instanceof GoogleApiError ? error.kind : "unknown", UNAVAILABLE, error instanceof GoogleApiError ? error : undefined);
   }
 }
 
@@ -166,7 +192,7 @@ export const gmailSearchTool: ToolSpec<z.infer<typeof searchArgs>> = {
   offered: (flags) => flags.google?.read === true,
   statusQuery: ({ query }) => query,
   run: ({ query, max }, context) =>
-    googleRead(context, async (access) => {
+    googleRead(context, "gmail_search", async (access) => {
       const found = await gmailSearch(access, query, max ?? GMAIL_TOOL_SEARCH_MAX, context.signal);
       if (found.length === 0) return "Gmail found no matching messages.";
       const lines = found.map(
@@ -192,7 +218,7 @@ export const gmailReadTool: ToolSpec<z.infer<typeof readArgs>> = {
   offered: (flags) => flags.google?.read === true,
   statusQuery: () => undefined,
   run: ({ messageId }, context) =>
-    googleRead(context, async (access) => {
+    googleRead(context, "gmail_read", async (access) => {
       const message = await gmailRead(access, messageId, context.signal);
       const body = bounded(message.text, GMAIL_TOOL_READ_MAX_CHARS);
       const text = [
@@ -228,7 +254,7 @@ export const calendarListTool: ToolSpec<z.infer<typeof listArgs>> = {
   offered: (flags) => flags.google?.calendar === true,
   statusQuery: () => undefined,
   run: ({ from, to, max }, context) =>
-    googleRead(context, async (access) => {
+    googleRead(context, "calendar_list_events", async (access) => {
       const events = await calendarListEvents(access, { from: new Date(from), to: new Date(to), maxResults: max }, context.signal);
       if (events.length === 0) return "The calendar has no events in this time.";
       const lines = events.map(

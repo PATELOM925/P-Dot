@@ -1,8 +1,23 @@
 import type { ApiErrorCode } from "@/types/api";
 
-/** After this long with no stream event, "Working" changes to a plain "no update" line. */
-export const STALL_MS = 15_000;
-export const STALL_LINE = "No update for 15 seconds. You can wait or press Stop.";
+/** After this long with no stream event, the step line changes to a plain "no update" line. */
+export const STALL_MS = 30_000;
+export const STALL_LINE = "No update for 30 seconds. You can wait or press Stop.";
+
+/** The step a streaming reply is on, from its stream events. */
+export function turnStepLine(step: {
+  text: string;
+  tool?: string;
+  searching: boolean;
+  /** Deep research (decision 0018). */
+  deep?: boolean;
+  tier?: string;
+}): string {
+  if (step.tool) return step.tool;
+  if (step.text) return "Writing the reply…";
+  if (step.searching) return step.deep ? "Searching the web (deep)…" : "Searching the web…";
+  return step.tier === "heavy" ? "Thinking harder…" : "Thinking…";
+}
 
 /**
  * One state for each reply turn (spec D1). "working" only while events arrive;

@@ -120,6 +120,8 @@ export type ChatRequest =
       research?: true;
       /** The morning brief (decision 0018): a new conversation with news for each topic. No other source. */
       brief?: BriefRequest;
+      /** The browser's IANA time zone, for example "Asia/Kolkata". */
+      timeZone?: string;
     }
   | {
       action: "retry";
@@ -129,6 +131,7 @@ export type ChatRequest =
       connectors?: McpServerId[];
       useGoogle?: true;
       research?: true;
+      timeZone?: string;
     };
 
 /** The topics of a morning brief and the user's local date for its title. */

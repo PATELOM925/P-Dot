@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { googleToolItem, toggleSource, type MessageSources } from "@/features/chat/composer-sources";
+import { autoSources, googleToolItem, toggleSource, type MessageSources } from "@/features/chat/composer-sources";
 import type { McpServerId } from "@/lib/connectors";
 
 const CONNECTED: McpServerId[] = ["notion", "linear"];
@@ -80,5 +80,84 @@ describe("toggleSource with deep research", () => {
     expect(toggleSource(research, "web", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [] });
     expect(toggleSource(research, "research", CONNECTED)).toEqual(NONE);
     expect(toggleSource({ ...NONE, webSearch: true }, "research", CONNECTED).research).toBe(true);
+  });
+});
+
+describe("autoSources", () => {
+  const ALL: McpServerId[] = ["notion", "linear", "todoist"];
+  const GOOGLE = { ...NONE, useGoogle: true };
+  const auto = (message: string, picked = NONE, google: "connected" | "not_connected" | "trial" | null = "connected", apps = ALL) =>
+    autoSources(message, picked, google, apps);
+
+  it.each([
+    "Check my latest emails",
+    "Any new email from Sam?",
+    "Read my e-mail",
+    "What is in my inbox?",
+    "Search Gmail for the invoice",
+    "Do I have unread messages?",
+    "Is there mail from the bank?",
+    "Who emailed me today?",
+    "What is on my calendar tomorrow?",
+    "What meetings do I have this week?",
+    "Show my agenda for Monday",
+    "Am I free on Friday afternoon?",
+    "Find free time next week",
+    "Any free slot on Tuesday?",
+    "Am I busy at 3pm?",
+    "What's on today?",
+    "List my events for this week",
+    "Schedule a meeting with Sam on Monday at 10",
+    "Set up a call with the design team",
+    "Send an email to Bob about the launch",
+  ])("turns Google on for %j", (message) => {
+    expect(auto(message)).toEqual(GOOGLE);
+  });
+
+  it.each([
+    ["Can u check my notion ?", ["notion"]],
+    ["What is open in Linear?", ["linear"]],
+    ["Show my linear issues", ["linear"]],
+    ["What is due in Todoist today?", ["todoist"]],
+    ["Compare my Notion notes with my Todoist tasks", ["notion", "todoist"]],
+  ])("turns on the app that %j names", (message, apps) => {
+    expect(auto(message)).toEqual({ ...NONE, apps });
+  });
+
+  it("prefers the named app to Google", () => {
+    expect(auto("Check my email and my Notion page")).toEqual({ ...NONE, apps: ["notion"] });
+  });
+
+  it("turns on only an app the user connected", () => {
+    expect(auto("Can u check my notion ?", NONE, "connected", ["linear"])).toEqual(NONE);
+    expect(auto("Can u check my notion ?", NONE, "connected", [])).toEqual(NONE);
+  });
+
+  it.each([
+    "What are the courses I had taken from York university",
+    "Explain linear algebra in simple words",
+    "Is this in linear time?",
+    "I like the notion of a short work week",
+    "Remind me to mail the package",
+    "Add a task to email Sam",
+    "Remember that my work email is sam@example.com",
+    "Give me ideas, e.g. for dinner",
+    "What are current events in Toronto?",
+    "",
+  ])("turns nothing on for %j", (message) => {
+    expect(auto(message)).toEqual(NONE);
+  });
+
+  it("keeps a manual pick, also when the message names another source", () => {
+    const web = { ...NONE, webSearch: true };
+    expect(auto("Check my latest emails", web)).toBe(web);
+    const linear: MessageSources = { ...NONE, apps: ["linear"] };
+    expect(auto("Can u check my notion ?", linear)).toBe(linear);
+    expect(auto("Can u check my notion ?", GOOGLE)).toBe(GOOGLE);
+  });
+
+  it.each(["not_connected", "trial", null] as const)("does not turn Google on when Google is %s", (google) => {
+    expect(auto("Check my latest emails", NONE, google)).toEqual(NONE);
+    expect(auto("Can u check my notion ?", NONE, google)).toEqual({ ...NONE, apps: ["notion"] });
   });
 });
