@@ -40,7 +40,11 @@ export const webSearchTool: ToolSpec<z.infer<typeof args>> = {
       return { content: "Web search was not used: P-Dot reached its search limit. Answer without new web sources." };
     }
     let results;
+    let sent = false;
     try {
+      // Stop during the credit hold: no search is sent, so the credit goes back.
+      if (signal.aborted) throw new ProviderError("tavily", "aborted");
+      sent = true;
       results = await services.search(query, signal);
     } catch (error) {
       if (signal.aborted) throw error;
@@ -51,6 +55,15 @@ export const webSearchTool: ToolSpec<z.infer<typeof args>> = {
         kind: error instanceof ProviderError ? error.kind : "unknown",
       });
       return { content: "Web search failed. Answer without new web sources, and say so." };
+    } finally {
+      // A search that was sent keeps its credit (decision 0006). An unsent one is settled at 0.
+      if (!sent) {
+        const giveBack = services.spend.settle(credit.id, 0).catch(() => {
+          services.log("warn", "spend_settle_failed", { requestId: context.requestId, route: "chat", provider: "tavily" });
+        });
+        services.waitUntil(giveBack);
+        await giveBack;
+      }
     }
     const known = new Set(context.sources.map((source) => source.url));
     const fresh = results.filter((result) => !known.has(result.url));

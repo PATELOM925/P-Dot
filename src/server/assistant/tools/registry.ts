@@ -28,6 +28,8 @@ export interface ToolServices {
   spend: SpendGuard;
   search: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
   log: Logger;
+  /** Keeps cleanup (a spend settle) running after the client disconnects. */
+  waitUntil: (work: Promise<unknown>) => void;
 }
 
 export interface ToolContext {
