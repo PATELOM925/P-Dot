@@ -17,9 +17,47 @@ const NEGATION = /\b(?:do not|don't|dont|never|not|no need|stop|cancel|without|m
 const QUESTION_START = /^(?:should|can|could|would|do|does|did|is|are|shall|will|kya)\b/;
 const CONJUNCTIONS = /\b(?:but|and then|however|except)\b/;
 
-/** An email grant: the verb, then directly the address list. */
-const EMAIL_VERB = /(?:^|\s)(?:e-?mail|mail|write to|send (?:an? )?(?:e-?mail|mail|message) to)\s+/g;
-const CALENDAR_GRANT = /(?:^|\s)(?:invite|schedule\b|add\b.*\bto (?:the |my )?(?:event|meeting|calendar)\b)/;
+/**
+ * A clause grants only as an imperative that starts with the intent verb. The
+ * only words allowed before the verb are "please" and the names "p-dot" or
+ * "pdot", each with an optional comma. "Explain how to email…", "Tell me
+ * whether to email…" or "I want to email…" grant nothing.
+ */
+const LEAD = "^(?:(?:please|p-dot|pdot),?\\s+)*";
+const EMAIL_START = new RegExp(`${LEAD}(?:e-?mail|mail|write to|send (?:an? )?(?:e-?mail|mail|message) to)\\s+`);
+const CALENDAR_START = new RegExp(`${LEAD}(?:invite\\b|schedule\\b|add\\b.*\\bto (?:the |my )?(?:event|meeting|calendar)\\b)`);
+
+/** A quote opener, and the characters that close it. */
+const QUOTES: Record<string, readonly string[]> = { "'": ["'", "’"], '"': ['"', "”"], "‘": ["’", "'"], "“": ["”", '"'] };
+
+/**
+ * Removes quoted spans and fails closed. An opener is a quote character at
+ * the start or after whitespace, `:` or `(`; an apostrophe inside a word
+ * (don't, Sam's) is not one. A closer is a matching quote that no letter or
+ * digit follows. An opener with no closer quotes everything to the end.
+ */
+function withoutQuotes(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    const closers = QUOTES[ch];
+    if (closers && (i === 0 || /[\s:(]/.test(text[i - 1]!))) {
+      let end = -1;
+      for (let j = i + 1; j < text.length; j += 1) {
+        if (closers.includes(text[j]!) && !/[\p{L}\p{N}]/u.test(text[j + 1] ?? "")) {
+          end = j;
+          break;
+        }
+      }
+      if (end === -1) return `${out} `;
+      out += " ";
+      i = end;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
 
 /**
  * Removes what the user cites rather than asks: fenced and inline code,
@@ -27,17 +65,16 @@ const CALENDAR_GRANT = /(?:^|\s)(?:invite|schedule\b|add\b.*\bto (?:the |my )?(?
  * quote to the end), quoted lines, and every URL.
  */
 export function stripCited(text: string): string {
-  let t = text.replace(/[’‘]/g, "'").replace(/[“”]/g, '"');
-  t = t.replace(/```[\s\S]*?(?:```|$)/g, " ");
+  let t = text.replace(/```[\s\S]*?(?:```|$)/g, " ");
   t = t.replace(/`[^`]*(?:`|$)/g, " ");
   t = t
     .split("\n")
     .filter((line) => !line.trimStart().startsWith(">"))
     .join("\n");
-  t = t.replace(/"[^"]*(?:"|$)/g, " ");
-  t = t.replace(/(^|[\s(\[{:,;])'[^']*'(?=$|[\s.,;:!?)\]}])/g, "$1 ");
+  t = withoutQuotes(t);
   t = t.replace(/\b(?:https?|ftp|mailto):\S*/gi, " ").replace(/\bwww\.\S+/gi, " ");
-  return t;
+  // A smart apostrophe inside a word (don’t) reads as a plain one for the negation check.
+  return t.replace(/[’‘]/g, "'");
 }
 
 interface Clause {
@@ -100,16 +137,14 @@ function leadingAddresses(rest: string, own: string | null): string[] {
 }
 
 function emailGrant(clause: string, own: string | null): string[] | null {
-  let granted: string[] | null = null;
-  for (const match of clause.matchAll(EMAIL_VERB)) {
-    const list = leadingAddresses(clause.slice((match.index ?? 0) + match[0].length), own);
-    if (list.length > 0) granted = [...(granted ?? []), ...list];
-  }
-  return granted;
+  const match = EMAIL_START.exec(clause);
+  if (!match) return null;
+  const list = leadingAddresses(clause.slice(match[0].length), own);
+  return list.length > 0 ? list : null;
 }
 
 function calendarGrant(clause: string, own: string | null): string[] | null {
-  if (!CALENDAR_GRANT.test(clause)) return null;
+  if (!CALENDAR_START.test(clause)) return null;
   const addresses = clause
     .split(/[\s,;:()<>[\]]+/)
     .map(token)
