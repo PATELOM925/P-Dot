@@ -379,8 +379,11 @@ export function ChatWorkspace({
         }
       }
     } finally {
-      setSending(false);
-      if (abortRef.current === controller) abortRef.current = null;
+      // An earlier send whose stream ends late (a title after done) must not free a newer send.
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setSending(false);
+      }
     }
   }
 
