@@ -58,12 +58,15 @@ import {
   MAX_TOOL_CALLS_PER_HOP,
   MAX_TOOL_HOPS,
   selectTools,
+  newGoogleTurn,
   TOOLS,
   toToolDefinition,
+  type GoogleServices,
   type OwnDataServices,
   type ToolFlags,
   type ToolSpec,
 } from "./tools";
+import { googleForTurn, type TurnGoogle } from "./google-turn";
 import type { MemoryMatch } from "@/server/db/retrieval";
 
 export interface AssistantDeps {
@@ -98,6 +101,10 @@ export interface AssistantDeps {
   ownData?: OwnDataServices | null;
   /** Make a title with the model for a new conversation, after the reply. Off when missing. */
   titles?: boolean;
+  /** The Google tools' services. Null or missing when Google is not set up or the session is anonymous. */
+  google?: GoogleServices | null;
+  /** Why Google is off for this request, for the note to the model when the user asked for it. */
+  googleBlocked?: "not_set_up" | "demo_session" | null;
 }
 
 /** A Nebius hold made before the stream starts and settled when it ends. */
@@ -139,6 +146,10 @@ export interface PreparedTurn {
   route: RouteDecision;
   /** Which tools this turn offers. Fixed before the hold, so the hold prices them. */
   toolFlags: ToolFlags;
+  /** Google for this turn: the connection's flags and address, or why it is off. Null when not asked for. */
+  google: TurnGoogle | null;
+  /** True when the user asked for web search, but Google won (decision 0014, decision 10). */
+  searchOffForGoogle: boolean;
   /** The Nebius hold pays for the first attempt, on any model of the tier. */
   holds: TurnHolds;
 }
@@ -281,7 +292,20 @@ export async function prepareChatTurn(
     const mode = existing?.mode ?? (request.action === "send" ? (request.mode ?? "personal") : "personal");
     const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
     if (request.action === "send" && !answering) pendingHistory.push({ role: "user", content: request.message });
-    const searchWanted = request.webSearch && deps.search !== null;
+    // Google (decision 0014, section 3): the connection read comes after the claim and before the hold.
+    const google = await googleForTurn(deps, userId, request.useGoogle === true);
+    const googleFlags = google?.flags ?? null;
+    // A conversation that ever had a Google reply never gets a model-written search (decision 10).
+    let usedGoogle = false;
+    if (existing && !googleFlags) {
+      try {
+        usedGoogle = await deps.repo.usedGoogle(userId, existing.id);
+      } catch {
+        usedGoogle = true;
+      }
+    }
+    const searchWanted = request.webSearch && deps.search !== null && googleFlags === null;
+    const webSearchTool = googleFlags === null && !usedGoogle;
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
     // which only makes the prompt smaller than the one this hold prices.
     // Memories go into every turn when the data services exist. The own-data tools only
@@ -289,25 +313,25 @@ export async function prepareChatTurn(
     const ownData = Boolean(deps.ownData);
     const latest = pendingHistory.at(-1)?.content ?? "";
     const toolIntent = ownData ? detectToolIntent(latest) : null;
-    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted, ownData: toolIntent !== null });
-    const route = withToolTier(
-      routeRequest({
-        message: latest,
-        historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
-        webSearch: request.webSearch,
-        effort: request.effort ?? "auto",
-        toolIntent,
-      }),
-      toolsBound.length > 0,
-    );
+    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted, ownData: toolIntent !== null, webSearchTool, google: googleFlags });
+    const routed = routeRequest({
+      message: latest,
+      historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
+      webSearch: request.webSearch && googleFlags === null,
+      effort: request.effort ?? "auto",
+      toolIntent,
+    });
+    // Every turn that offers a Google tool stores google_request, before any other reason (decision 10).
+    const route = withToolTier(googleFlags ? { ...routed, reason: "google_request" } : routed, toolsBound.length > 0);
     const plan = deps.routing[route.tier];
     const promptBound = buildPromptMessages({
       history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
-      webSearch: request.webSearch ? "failed" : "off",
+      webSearch: request.webSearch && googleFlags === null ? "failed" : "off",
       results: [],
       now: deps.now(),
       mode,
       toolGuidance: toolsBound.map((tool) => tool.guidance),
+      serverNote: google?.note,
     });
     const toolDefinitionsBound = toolsBound.map(toToolDefinition);
     // The first attempt can run on any model of the tier (the breaker can skip
@@ -384,10 +408,17 @@ export async function prepareChatTurn(
         userMessage,
         repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
-        webSearch: request.webSearch,
+        webSearch: request.webSearch && googleFlags === null,
         searchBudgetExhausted,
         route,
-        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted, ownData: toolIntent !== null },
+        toolFlags: {
+          webSearch: searchWanted && !searchBudgetExhausted,
+          ownData: toolIntent !== null,
+          webSearchTool,
+          google: googleFlags,
+        },
+        google,
+        searchOffForGoogle: request.webSearch && googleFlags !== null,
         holds,
       },
     };
@@ -503,6 +534,10 @@ async function* runChatTurn(
   // 1. Optional web retrieval. Search is never called unless requested.
   let webSearch: WebSearchStatus = "off";
   let results: WebSearchResult[] = [];
+  if (turn.searchOffForGoogle) {
+    // Google wins over web search, so private text cannot leave through a search query (decision 0014, decision 10).
+    yield { type: "search", status: "failed", sources: [], message: "Web search was off for this message, because it uses Google." };
+  }
   if (turn.webSearch) {
     if (turn.searchBudgetExhausted) {
       webSearch = "failed";
@@ -579,8 +614,10 @@ async function* runChatTurn(
     mode: turn.conversation.mode,
     toolGuidance: tools.map((tool) => tool.guidance),
     memories,
+    serverNote: turn.google?.note,
   });
   const plan = deps.routing[turn.route.tier];
+  const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null) : null;
   // One deadline for all hops and tool runs, so a turn stays inside the reply claim lease (decision 0012).
   const deadlineAt = Date.now() + plan.deadlineMs;
   const toolSignal = AbortSignal.any([signal, AbortSignal.timeout(plan.deadlineMs)]);
@@ -762,6 +799,7 @@ async function* runChatTurn(
             earlierAttemptWrote,
             signal: toolSignal,
             sources,
+            google: googleTurn,
           });
           result = outcome.content;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);

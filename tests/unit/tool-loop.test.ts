@@ -131,7 +131,7 @@ describe("tool loop", () => {
     const nebius = spend.reservations.filter((r) => r.provider === "nebius");
     expect(nebius).toHaveLength(2);
     expect(nebius.every((r) => r.settled !== null)).toBe(true);
-    const tools = selectTools(TOOLS, { webSearch: true, ownData: false }).map(toToolDefinition);
+    const tools = selectTools(TOOLS, { webSearch: true, ownData: false, webSearchTool: true, google: null }).map(toToolDefinition);
     expect(nebius[1]!.held).toBe(nebiusHoldMicroUsd(SUPER, requests[1]!.messages, 1024, 0, tools));
     expect(nebius[1]!.held).toBeGreaterThan(nebiusHoldMicroUsd(SUPER, requests[1]!.messages, 1024));
   });

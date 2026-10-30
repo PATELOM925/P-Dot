@@ -103,6 +103,8 @@ export interface PromptInput {
   toolGuidance?: string[];
   /** Active memories retrieved for the latest message. They go in the final user turn, never in the system message. */
   memories?: { content: string }[];
+  /** One line that the server writes (never retrieved text), for example why Google is not available. */
+  serverNote?: string;
 }
 
 /**
@@ -125,7 +127,7 @@ export function buildPromptMessages(input: PromptInput): ChatMessage[] {
   const hasEarlierReply = input.history.some((message) => message.role === "assistant");
   const continuation =
     hasEarlierReply && latest?.role === "user" && isContinuationRequest(latest.content) ? CONTINUATION_NOTE : null;
-  const system = [`${BASE_SYSTEM_PROMPT}\n${rules}`, MODE_SCOPE[input.mode], `Today's date (UTC) is ${date}.`, note, continuation]
+  const system = [`${BASE_SYSTEM_PROMPT}\n${rules}`, MODE_SCOPE[input.mode], `Today's date (UTC) is ${date}.`, note, continuation, input.serverNote]
     .filter(Boolean)
     .join("\n\n");
 

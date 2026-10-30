@@ -102,6 +102,11 @@ export interface ConversationRepository {
    * returned as is: the caller cannot tell which of the two came first.
    */
   nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }): Promise<string | null>;
+  /**
+   * True when the conversation has any reply that used Google (route reason
+   * `google_request`), with no history window (decision 0014, decision 10).
+   */
+  usedGoogle(userId: string, conversationId: string): Promise<boolean>;
   findMessageByClientRequest(userId: string, key: string): Promise<KeyedMessage | null>;
   findConversationByClientRequest(
     userId: string,
@@ -374,6 +379,19 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
         .maybeSingle();
       if (error) throw repositoryError("nextUserMessageAt", error);
       return data ? createdAtRow.parse(data).created_at : null;
+    },
+
+    async usedGoogle(userId, conversationId) {
+      const { data, error } = await supabase
+        .from("messages")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("conversation_id", conversationId)
+        .eq("role", "assistant")
+        .eq("route_reason", "google_request")
+        .limit(1);
+      if (error) throw repositoryError("usedGoogle", error);
+      return Array.isArray(data) && data.length > 0;
     },
 
     async findMessageByClientRequest(userId, key) {

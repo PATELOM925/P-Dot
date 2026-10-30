@@ -7,6 +7,9 @@ import { createContextRecordRepository } from "@/server/db/context-records";
 import { createMemoryRepository } from "@/server/db/memories";
 import { createRetrievalRepository } from "@/server/db/retrieval";
 import { createConversationRepository } from "@/server/db/conversations";
+import { createConnectedAccountRepository } from "@/server/db/connected-accounts";
+import { getGoogleConfig } from "@/server/config";
+import { googleFetch } from "@/server/google/connect-flow";
 import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
@@ -27,6 +30,17 @@ const breaker = createCircuitBreaker(BREAKER_DEFAULTS);
 export function createAssistantDeps(auth: AuthContext, config: AssistantConfig): AssistantDeps {
   const tavily = config.tavily;
   const spend = createSpendGuard(auth.supabase, config.spend);
+  // Google tools need a real account and the Google settings (decision 0014). The flag comes from the verified JWT.
+  const googleConfig = getGoogleConfig();
+  const google =
+    googleConfig.status === "ready" && auth.isAnonymous !== true
+      ? {
+          config: googleConfig.config,
+          accounts: createConnectedAccountRepository(auth.supabase),
+          proposals: createActionProposalRepository(auth.supabase),
+          fetch: googleFetch,
+        }
+      : null;
   return {
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
@@ -40,6 +54,8 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
     titles: true,
+    google,
+    googleBlocked: google ? null : auth.isAnonymous === true ? "demo_session" : "not_set_up",
     ownData: {
       embedder: createBudgetedEmbedder({
         settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },

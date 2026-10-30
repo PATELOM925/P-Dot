@@ -119,6 +119,12 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
+  async usedGoogle(userId: string, conversationId: string) {
+    return this.messages.some(
+      (m) => m.userId === userId && m.conversationId === conversationId && m.role === "assistant" && m.route?.reason === "google_request",
+    );
+  }
+
   async nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }) {
     return (
       this.messages
