@@ -2,16 +2,20 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { GoogleCard } from "@/features/connectors/GoogleCard";
 import { googleCardState, googleOutcomeMessage } from "@/features/connectors/google";
+import { McpCard } from "@/features/connectors/McpCard";
+import { mcpCardState, mcpOutcomeMessage } from "@/features/connectors/mcp";
 import { builtInStatus } from "@/features/connectors/status";
+import { MCP_SERVER_IDS } from "@/lib/connectors";
 import { DOCUMENT_LIST_LIMIT, MEMORY_LIST_LIMIT, REMINDER_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
 import { MODE_LABELS } from "@/lib/mode";
 import { requireAuth, type AuthContext } from "@/server/auth/session";
-import { getGoogleConfig } from "@/server/config";
-import { createConnectedAccountRepository } from "@/server/db/connected-accounts";
+import { getGoogleConfig, getMcpConfig } from "@/server/config";
+import { createConnectedAccountRepository, createMcpAccountRepository } from "@/server/db/connected-accounts";
 import { createDocumentRepository } from "@/server/db/documents";
 import { createMemoryRepository } from "@/server/db/memories";
 import { createReminderRepository } from "@/server/db/reminders";
 import { createTaskRepository } from "@/server/db/tasks";
+import { listConnections, type McpConnectionView } from "@/server/mcp/health";
 import { getMode } from "@/server/mode";
 import type { Mode } from "@/types/api";
 
@@ -50,19 +54,32 @@ async function loadGoogleConnection(auth: AuthContext) {
   }
 }
 
+/** The MCP app rows without tokens, or "load_failed" for every card. A failure here never breaks the rest of the page. */
+async function loadMcpConnections(auth: AuthContext, key: Uint8Array): Promise<McpConnectionView[] | "load_failed"> {
+  try {
+    return await listConnections(createMcpAccountRepository(auth.supabase), key, auth.userId);
+  } catch {
+    return "load_failed";
+  }
+}
+
 interface ConnectorsPageProps {
-  searchParams: Promise<{ google?: string | string[] }>;
+  searchParams: Promise<{ google?: string | string[]; mcp?: string | string[]; app?: string | string[] }>;
 }
 
 export default async function ConnectorsPage({ searchParams }: ConnectorsPageProps) {
   const auth = await requireAuth("/connectors");
   const mode = await getMode();
   const configured = getGoogleConfig().status === "ready";
-  const [status, google] = await Promise.all([
+  const mcpConfig = getMcpConfig();
+  const [status, google, mcpViews] = await Promise.all([
     loadBuiltInStatus(auth, mode),
     configured && !auth.isAnonymous ? loadGoogleConnection(auth) : Promise.resolve(null),
+    mcpConfig.status === "ready" && !auth.isAnonymous ? loadMcpConnections(auth, mcpConfig.encryptionKey) : Promise.resolve([]),
   ]);
-  const googleMessage = googleOutcomeMessage((await searchParams).google);
+  const params = await searchParams;
+  const googleMessage = googleOutcomeMessage(params.google);
+  const mcpMessage = mcpOutcomeMessage(params.mcp, params.app);
 
   // P-Dot's own lists and files. The first three are the only things an approved action can change (decision 0009).
   const builtIn = [
@@ -128,11 +145,24 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           <h2 id="accounts-heading">Your accounts</h2>
           <p className="muted">
             Accounts you connect. P-Dot reads them only for a message where you allow it, and it asks before it sends or
-            adds anything. Replies do not use Google yet; that step is still being built.
+            adds anything. In chat, turn on Notion, Linear or Todoist in the + menu to let P-Dot read it for one message.
+            Replies do not use Google yet; that step is still being built.
           </p>
         </div>
         <div className="card-grid">
           <GoogleCard state={googleCardState(configured, google, auth.isAnonymous === true)} message={googleMessage} />
+          {MCP_SERVER_IDS.map((app) => (
+            <McpCard
+              key={app}
+              app={app}
+              state={mcpCardState(
+                mcpConfig.status === "ready",
+                mcpViews === "load_failed" ? "load_failed" : (mcpViews.find((view) => view.server === app) ?? null),
+                auth.isAnonymous === true,
+              )}
+              message={params.app === app ? mcpMessage : null}
+            />
+          ))}
         </div>
       </section>
 
