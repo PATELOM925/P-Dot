@@ -11,7 +11,7 @@ import { parseRetryAfterMs } from "./client";
  */
 export const EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B";
 
-const EMBEDDING_TIMEOUT_MS = 20_000;
+export const EMBEDDING_TIMEOUT_MS = 20_000;
 
 export interface EmbeddingSettings {
   apiKey: string;

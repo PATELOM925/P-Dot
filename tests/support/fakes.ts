@@ -12,6 +12,12 @@ import type { TaskRepository } from "@/server/db/tasks";
 import type { ContextRecordRepository, NewContextRecord } from "@/server/db/context-records";
 import { createBudgetedEmbedder, type Embedder } from "@/server/assistant/embed";
 import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
+import { actionPayloadSchema, actionSummarySchema } from "@/lib/schemas";
+import type { OwnDataServices } from "@/server/assistant/tools";
+import type { DocumentChunkMatch, MemoryMatch } from "@/server/db/retrieval";
+import type { NewMemory } from "@/server/db/memories";
+import type { NewActionProposal } from "@/server/db/action-proposals";
+import type { ActionProposalDTO, MemoryDTO } from "@/types/api";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
@@ -54,8 +60,11 @@ export class MemoryRepository implements ConversationRepository {
     return `00000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`;
   }
 
+  /** Rows saved with a server-picked ID still get a later time than the rows before them. */
+  private ticks = 0;
+
   private timestamp(): string {
-    return new Date(Date.UTC(2026, 9, 14, 12, 0, this.counter)).toISOString();
+    return new Date(Date.UTC(2026, 9, 14, 12, 0, this.counter + this.ticks)).toISOString();
   }
 
   async getConversation(userId: string, id: string) {
@@ -88,9 +97,9 @@ export class MemoryRepository implements ConversationRepository {
     return { id: conversation.id, title, mode, updatedAt: conversation.updatedAt };
   }
 
-  async renameConversation(userId: string, id: string, title: string) {
+  async renameConversation(userId: string, id: string, title: string, ifTitle?: string) {
     const found = this.conversations.find((c) => c.id === id && c.userId === userId);
-    if (!found) return null;
+    if (!found || (ifTitle !== undefined && found.title !== ifTitle)) return null;
     found.title = title;
     return { id: found.id, title: found.title, mode: found.mode, updatedAt: found.updatedAt };
   }
@@ -110,6 +119,22 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
+  async nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }) {
+    return (
+      this.messages
+        .filter(
+          (m) =>
+            m.userId === userId &&
+            m.conversationId === conversationId &&
+            m.role === "user" &&
+            m.id !== message.id &&
+            m.createdAt >= message.createdAt,
+        )
+        .map((m) => m.createdAt)
+        .sort()[0] ?? null
+    );
+  }
+
   async insertMessage(userId: string, message: NewMessage) {
     if (this.failInsertForRole === message.role) throw new Error("insert failed");
     const owner = this.conversations.find((c) => c.id === message.conversationId);
@@ -126,6 +151,7 @@ export class MemoryRepository implements ConversationRepository {
         throw new Error("duplicate key value violates unique constraint messages_reply_to_key");
       }
     }
+    if (message.id) this.ticks += 1;
     const stored: StoredMessage = {
       id: message.id ?? this.nextId(),
       role: message.role,
@@ -338,6 +364,98 @@ export function testRouting(model = "nvidia/nemotron-3-super-120b-a12b") {
   });
 }
 
+/**
+ * The user's own data for the chat tools, scoped by user like RLS. Search
+ * returns the stored matches of the asked mode, at most `count`, as the
+ * database functions do. Proposals and memories are checked with the same
+ * schemas as the database limits.
+ */
+export class FakeOwnData {
+  memoryMatches: (MemoryMatch & { userId: string; mode: Mode })[] = [];
+  chunkMatches: (DocumentChunkMatch & { userId: string; mode: Mode })[] = [];
+  memories: (MemoryDTO & { userId: string })[] = [];
+  proposals: (ActionProposalDTO & { userId: string })[] = [];
+  searches: { kind: "memories" | "documents"; mode: Mode; count: number }[] = [];
+  failMatch = false;
+  private counter = 0;
+  /**
+   * `clock` gives the database time of a new row. Pass the conversation
+   * repository's latest message time, so rows sort with the messages.
+   */
+  constructor(
+    readonly userId: string,
+    readonly embedder: OwnDataServices["embedder"],
+    readonly clock: () => string = () => "2026-10-30T12:00:00.000Z",
+  ) {}
+
+  private id(): string {
+    this.counter += 1;
+    return `20000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`;
+  }
+
+  services(): OwnDataServices {
+    return {
+      embedder: this.embedder,
+      retrieval: {
+        matchMemories: async (_vector, mode, count) => {
+          this.searches.push({ kind: "memories", mode, count });
+          if (this.failMatch) throw new Error("match failed");
+          return this.memoryMatches.filter((m) => m.userId === this.userId && m.mode === mode).slice(0, Math.min(count, 20));
+        },
+        matchDocumentChunks: async (_vector, mode, count) => {
+          this.searches.push({ kind: "documents", mode, count });
+          if (this.failMatch) throw new Error("match failed");
+          return this.chunkMatches.filter((m) => m.userId === this.userId && m.mode === mode).slice(0, Math.min(count, 20));
+        },
+      },
+      memories: {
+        createMemory: async (userId: string, memory: NewMemory) => {
+          const row = {
+            id: this.id(),
+            mode: memory.mode,
+            content: memory.content,
+            status: memory.status,
+            source: memory.source,
+            sourceMessageId: memory.sourceMessageId,
+            createdAt: this.clock(),
+            updatedAt: this.clock(),
+            userId,
+          };
+          this.memories.push(row);
+          return row;
+        },
+        hasAssistantMemoryFrom: async (userId: string, messageId: string) =>
+          this.memories.some((m) => m.userId === userId && m.sourceMessageId === messageId && m.source === "assistant"),
+      },
+      proposals: {
+        createProposal: async (userId: string, proposal: NewActionProposal) => {
+          const row = {
+            id: this.id(),
+            conversationId: proposal.conversationId,
+            payload: actionPayloadSchema.parse(proposal.payload),
+            summary: actionSummarySchema.parse(proposal.summary),
+            status: "proposed" as const,
+            result: null,
+            createdAt: this.clock(),
+            decidedAt: null,
+            userId,
+          } as ActionProposalDTO & { userId: string };
+          this.proposals.push(row);
+          return row;
+        },
+        hasProposalBetween: async (userId: string, conversationId: string, from: string, before: string | null) =>
+          this.proposals.some(
+            (p) =>
+              p.userId === userId &&
+              p.conversationId === conversationId &&
+              p.createdAt >= from &&
+              (before === null || p.createdAt < before),
+          ),
+      },
+    };
+  }
+}
+
 export interface FakeDepsOptions {
   repo?: MemoryRepository;
   quota?: FakeQuota;
@@ -350,6 +468,7 @@ export interface FakeDepsOptions {
   provider?: ModelProvider;
   routing?: RoutingConfig;
   contextRecords?: ContextRecordRepository;
+  ownData?: OwnDataServices;
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
@@ -386,6 +505,7 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
       },
     },
     ...(options.contextRecords ? { contextRecords: options.contextRecords } : {}),
+    ...(options.ownData ? { ownData: options.ownData } : {}),
     breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
     random: () => 0,
     now: () => new Date(Date.UTC(2026, 9, 14, 12, 30, 0)),
