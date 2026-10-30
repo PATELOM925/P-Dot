@@ -105,10 +105,12 @@ export async function googleRequest<T>(
   init: RequestInit,
   timeoutMs: number,
   schema: z.ZodType<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   let response: Response;
+  const timeout = AbortSignal.timeout(timeoutMs);
   try {
-    response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+    response = await fetchImpl(url, { ...init, signal: signal ? AbortSignal.any([timeout, signal]) : timeout, redirect: "error" });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
     throw new GoogleApiError(name === "TimeoutError" || name === "AbortError" ? "timeout" : "network", null);

@@ -75,7 +75,12 @@ function summary(message: z.infer<typeof messageSchema>): GmailSummary {
   };
 }
 
-export async function gmailSearch(access: GoogleAccess, query: string, maxResults = GMAIL_SEARCH_MAX_RESULTS): Promise<GmailSummary[]> {
+export async function gmailSearch(
+  access: GoogleAccess,
+  query: string,
+  maxResults = GMAIL_SEARCH_MAX_RESULTS,
+  signal?: AbortSignal,
+): Promise<GmailSummary[]> {
   requireScope(access, GMAIL_READ_SCOPE);
   const q = query.trim();
   if (q.length === 0 || q.length > GMAIL_QUERY_MAX_CHARS) throw new RangeError("query length");
@@ -86,12 +91,15 @@ export async function gmailSearch(access: GoogleAccess, query: string, maxResult
     { method: "GET" },
     READ_TIMEOUT_MS,
     listSchema,
+    signal,
   );
   const ids = (list.messages ?? []).slice(0, max).map((m) => m.id);
   const metadata = new URLSearchParams({ format: "metadata" });
   for (const name of ["From", "To", "Subject", "Date"]) metadata.append("metadataHeaders", name);
   const messages = await Promise.all(
-    ids.map((id) => authorizedRequest(access, `${BASE}/messages/${id}?${metadata}`, { method: "GET" }, READ_TIMEOUT_MS, messageSchema)),
+    ids.map((id) =>
+      authorizedRequest(access, `${BASE}/messages/${id}?${metadata}`, { method: "GET" }, READ_TIMEOUT_MS, messageSchema, signal),
+    ),
   );
   return messages.map(summary);
 }
@@ -142,10 +150,17 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-export async function gmailRead(access: GoogleAccess, messageId: string): Promise<GmailMessage> {
+export async function gmailRead(access: GoogleAccess, messageId: string, signal?: AbortSignal): Promise<GmailMessage> {
   requireScope(access, GMAIL_READ_SCOPE);
   if (!MESSAGE_ID.test(messageId)) throw new RangeError("message id");
-  const message = await authorizedRequest(access, `${BASE}/messages/${messageId}?format=full`, { method: "GET" }, READ_TIMEOUT_MS, messageSchema);
+  const message = await authorizedRequest(
+    access,
+    `${BASE}/messages/${messageId}?format=full`,
+    { method: "GET" },
+    READ_TIMEOUT_MS,
+    messageSchema,
+    signal,
+  );
   const plain = findPart(message.payload, "text/plain");
   const html = plain ? null : findPart(message.payload, "text/html");
   const raw = plain ? decodeBody(plain.body!.data!) : html ? htmlToText(decodeBody(html.body!.data!)) : "";

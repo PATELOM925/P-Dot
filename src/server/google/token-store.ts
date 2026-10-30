@@ -25,6 +25,13 @@ export interface GoogleAccess {
   readonly fetch: FetchLike;
   /** A valid access token. Refreshes when there is none or it ends within 60 seconds. */
   accessToken(): Promise<string>;
+  /**
+   * Marks the connection `needs_reconnect`, only while the row still has the
+   * ciphertext this access opened. Never throws; true when the write worked.
+   * The write is registered with `waitUntil`, so the end of the response does
+   * not cut it off (decision 0014, decision 13).
+   */
+  reportUnauthorized?(): Promise<boolean>;
 }
 
 export type GoogleAccessResult =
@@ -40,6 +47,8 @@ export interface GoogleAccessDeps {
   userId: string;
   requestId: string;
   now?: () => number;
+  /** Keeps the `needs_reconnect` write running after the response ends. */
+  waitUntil?: (work: Promise<unknown>) => void;
 }
 
 export async function openGoogleAccess(deps: GoogleAccessDeps): Promise<GoogleAccessResult> {
@@ -49,12 +58,17 @@ export async function openGoogleAccess(deps: GoogleAccessDeps): Promise<GoogleAc
   if (!row) return { ok: false, reason: "not_connected" };
   if (row.status === "needs_reconnect") return { ok: false, reason: "needs_reconnect" };
 
-  const markDead = async () => {
-    try {
-      await repo.markGoogleNeedsReconnect(userId, row.tokenCiphertext);
-    } catch {
-      logEvent("warn", "google_mark_reconnect_failed", { requestId });
-    }
+  let marking: Promise<boolean> | null = null;
+  const markDead = (): Promise<boolean> => {
+    marking ??= repo.markGoogleNeedsReconnect(userId, row.tokenCiphertext).then(
+      () => true,
+      () => {
+        logEvent("warn", "google_mark_reconnect_failed", { requestId });
+        return false;
+      },
+    );
+    deps.waitUntil?.(marking);
+    return marking;
   };
 
   const refreshToken = await openText(config.encryptionKey, row.tokenCiphertext, tokenAssociatedData(userId, "google"));
@@ -89,6 +103,7 @@ export async function openGoogleAccess(deps: GoogleAccessDeps): Promise<GoogleAc
       subject: row.subject,
       scopes: row.scopes,
       fetch: deps.fetch,
+      reportUnauthorized: markDead,
       accessToken() {
         if (cached && cached.expiresAt - EARLY_REFRESH_MS > now()) return Promise.resolve(cached.token);
         pending ??= refresh().finally(() => {
