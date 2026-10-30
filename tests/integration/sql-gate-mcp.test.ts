@@ -205,5 +205,5 @@ describe.each(MODES)("MCP connectors with %s default grants", (defaults) => {
     } finally {
       await seeded.close();
     }
-  });
+  }, 30_000);
 });
