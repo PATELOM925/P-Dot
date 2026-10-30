@@ -1,26 +1,13 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
-import { useTransition } from "react";
-import { setModeAction } from "@/features/mode/actions";
+import { useModeSwitch } from "@/features/mode/useModeSwitch";
 import { MODE_LABELS } from "@/lib/mode";
 import type { Mode } from "@/types/api";
 
 const MODES: Mode[] = ["personal", "work"];
 
 export function ModeToggle({ mode }: { mode: Mode }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const [pending, startTransition] = useTransition();
-
-  function select(next: Mode) {
-    if (next === mode || pending) return;
-    startTransition(async () => {
-      await setModeAction(next);
-      // A conversation opened via /chat?c=... belongs to one mode, so drop it when switching.
-      if (pathname === "/chat") router.replace("/chat");
-    });
-  }
+  const { select, pending } = useModeSwitch(mode);
 
   return (
     <div role="group" aria-label="Workspace mode" className="mode-toggle">

@@ -1,32 +1,38 @@
 import { describe, expect, it } from "vitest";
 import { autoSources, googleToolItem, toggleSource, type MessageSources } from "@/features/chat/composer-sources";
 import type { McpServerId } from "@/lib/connectors";
+import { chatRequestSchema } from "@/lib/schemas";
 
 const CONNECTED: McpServerId[] = ["notion", "linear"];
 const NONE: MessageSources = { webSearch: false, useGoogle: false, apps: [] };
 
-describe("toggleSource", () => {
-  it("turning Google on turns web search and the apps off", () => {
-    expect(toggleSource({ ...NONE, webSearch: true }, "google", CONNECTED)).toEqual({ webSearch: false, useGoogle: true, apps: [] });
-    expect(toggleSource({ ...NONE, apps: ["notion", "linear"] }, "google", CONNECTED)).toEqual({ webSearch: false, useGoogle: true, apps: [] });
-  });
+/** The request the composer sends for these sources, checked by the server schema. */
+const accepted = (sources: MessageSources) =>
+  chatRequestSchema.safeParse({
+    action: "send",
+    message: "hi",
+    webSearch: sources.webSearch,
+    ...(sources.research && sources.webSearch ? { research: true } : {}),
+    ...(sources.useGoogle ? { useGoogle: true } : {}),
+    ...(sources.apps.length > 0 ? { connectors: sources.apps } : {}),
+  }).success;
 
-  it("turning web search or an app on turns Google off", () => {
-    const google = { ...NONE, useGoogle: true };
-    expect(toggleSource(google, "web", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [] });
-    expect(toggleSource(google, "app:notion", CONNECTED)).toEqual({ webSearch: false, useGoogle: false, apps: ["notion"] });
-  });
-
-  it("keeps several apps together and turns web search off for an app", () => {
-    const one = toggleSource({ ...NONE, webSearch: true }, "app:notion", CONNECTED);
-    expect(one).toEqual({ webSearch: false, useGoogle: false, apps: ["notion"] });
-    expect(toggleSource(one, "app:linear", CONNECTED).apps).toEqual(["notion", "linear"]);
+describe("toggleSource (decision 0021)", () => {
+  it("keeps web search, Google and apps on together", () => {
+    let state = toggleSource(NONE, "web", CONNECTED);
+    state = toggleSource(state, "google", CONNECTED);
+    state = toggleSource(state, "app:notion", CONNECTED);
+    state = toggleSource(state, "app:linear", CONNECTED);
+    expect(state).toEqual({ webSearch: true, useGoogle: true, apps: ["notion", "linear"] });
   });
 
   it("turns one source off and keeps the rest", () => {
+    const all: MessageSources = { webSearch: true, useGoogle: true, apps: ["notion", "linear"] };
+    expect(toggleSource(all, "google", CONNECTED)).toEqual({ ...all, useGoogle: false });
+    expect(toggleSource(all, "web", CONNECTED)).toEqual({ ...all, webSearch: false });
+    expect(toggleSource(all, "app:notion", CONNECTED)).toEqual({ ...all, apps: ["linear"] });
     expect(toggleSource({ ...NONE, useGoogle: true }, "google", CONNECTED)).toEqual(NONE);
     expect(toggleSource({ ...NONE, webSearch: true }, "web", CONNECTED)).toEqual(NONE);
-    expect(toggleSource({ ...NONE, apps: ["notion", "linear"] }, "app:notion", CONNECTED)).toEqual({ ...NONE, apps: ["linear"] });
   });
 
   it("ignores an app that is not connected", () => {
@@ -34,15 +40,20 @@ describe("toggleSource", () => {
     expect(toggleSource(state, "app:todoist", CONNECTED)).toBe(state);
   });
 
-  it("never gives two kinds of source", () => {
-    const keys = ["web", "google", "app:notion", "app:linear"];
-    let state = NONE;
-    for (let round = 0; round < 3; round += 1) {
-      for (const key of keys) {
-        state = toggleSource(state, key, CONNECTED);
-        expect([state.webSearch, state.useGoogle, state.apps.length > 0].filter(Boolean).length).toBeLessThanOrEqual(1);
-      }
-    }
+  it("every state the toggles can reach is a request the server accepts", () => {
+    const keys = ["web", "research", "google", "app:notion", "app:linear"];
+    const seen = new Set<string>();
+    const walk = (state: MessageSources) => {
+      const id = JSON.stringify(state);
+      if (seen.has(id)) return;
+      seen.add(id);
+      expect(accepted(state)).toBe(true);
+      if (state.research) expect(state.useGoogle || state.apps.length > 0).toBe(false);
+      for (const key of keys) walk(toggleSource(state, key, CONNECTED));
+    };
+    walk(NONE);
+    // Web, Google and 2 apps on or off (2 orders for both apps), plus deep research alone.
+    expect(seen.size).toBe(2 * 2 * 5 + 1);
   });
 });
 
@@ -80,6 +91,11 @@ describe("toggleSource with deep research", () => {
     expect(toggleSource(research, "web", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [] });
     expect(toggleSource(research, "research", CONNECTED)).toEqual(NONE);
     expect(toggleSource({ ...NONE, webSearch: true }, "research", CONNECTED).research).toBe(true);
+  });
+
+  it("turns every private source off when deep research turns on over a mixed pick", () => {
+    const all: MessageSources = { webSearch: true, useGoogle: true, apps: ["notion", "linear"] };
+    expect(toggleSource(all, "research", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [], research: true });
   });
 });
 
@@ -130,8 +146,25 @@ describe("autoSources", () => {
     expect(auto(message)).toEqual({ ...NONE, apps });
   });
 
-  it("prefers the named app to Google", () => {
-    expect(auto("Check my email and my Notion page")).toEqual({ ...NONE, apps: ["notion"] });
+  it.each([
+    ["Check my email and my Notion page", ["notion"]],
+    ["Compare my calendar with my Todoist tasks", ["todoist"]],
+    ["Any unread email about the issues in my Linear board?", ["linear"]],
+    ["Schedule a meeting about my Notion plan", ["notion"]],
+  ])("turns on Google and the app for %j (decision 0021)", (message, apps) => {
+    expect(auto(message)).toEqual({ ...NONE, useGoogle: true, apps });
+  });
+
+  it.each([
+    ["Find my meeting notes in Notion", ["notion"]],
+    ["Add a task in Todoist to email Sam", ["todoist"]],
+    ["Remind me to mail the Notion export", ["notion"]],
+  ])("turns on only the app for %j, with a weak Google word or a task", (message, apps) => {
+    expect(auto(message)).toEqual({ ...NONE, apps });
+  });
+
+  it("never turns web search on by itself", () => {
+    expect(auto("Check my email, my Notion and the latest news").webSearch).toBe(false);
   });
 
   it("turns on only an app the user connected", () => {

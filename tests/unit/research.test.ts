@@ -150,13 +150,16 @@ describe("request exclusivity", () => {
     expect(parse({ ...brief, brief: { topics: ["a"], date: "<b>today</b>" } })).toBe(false);
   });
 
-  it("runs no research when a request with an app reaches the server without the schema", async () => {
+  it("runs no deep research when a request with an app reaches the server without the schema, only the first search with the user's words", async () => {
     const research = fakeResearch();
     const spend = new FakeSpend();
-    const { deps } = setup(research, { spend });
-    await runTurn(deps, { ...deep, connectors: ["notion"] } as ChatRequest);
+    const { deps, searches } = setup(research, { spend });
+    const { prepared } = await runTurn(deps, { ...deep, connectors: ["notion"] } as ChatRequest);
+    expect(prepared.ok && prepared.turn.retrieval).toBe("basic");
     expect(research.searches).toEqual([]);
-    expect(spend.counted("tavily")).toBe(0);
+    expect(research.extracts).toEqual([]);
+    expect(searches).toEqual([deep.action === "send" ? deep.message : ""]);
+    expect(spend.reservations.filter((r) => r.provider === "tavily").map((r) => r.held)).toEqual([1]);
   });
 });
 
