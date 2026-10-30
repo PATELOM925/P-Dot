@@ -9,6 +9,13 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Deep research in chat and a morning brief on the Today page** ([decision 0018](docs/decisions/0018-tavily-research-and-brief.md)). ([PR #37](https://github.com/PATELOM925/P-Dot/pull/37))
+  - Problem: web search gave 5 short excerpts and a reply with no fixed shape, which is not enough for a question that needs a comparison. The Today page had a "Daily brief" panel that did nothing.
+  - Resolution:
+    - "Deep research" in the "+" menu runs one advanced Tavily search (up to 8 results, the news topic for recent events), reads the top 3 pages with Tavily extract, and asks for a cited brief: a short answer, key findings, what sources disagree on and limits. Status lines show each step.
+    - "Make today's brief" on the Today page searches today's news for up to 3 topics and writes 5 cited bullets. The brief is saved as a new conversation, "Brief for <local date>", with "What was sent". Topics stay in the browser; an empty field shows active memories of the mode first.
+    - Each Tavily call holds its own credits through the spend guard: 2 for the advanced search, 1 for the extract, 1 for each brief topic. A call that was not sent gives its credit back.
+    - Page text is untrusted: it goes in the delimited results block, never in the system message, at most 3 pages of 3,000 characters. Both features are exclusive with Google and connected apps. No migration.
 - **The README describes what is live.** Problem: the status line and the hackathon section still called live features planned or not built. Resolution: the status line and the tool paragraph now list the features merged on 2026-10-30. ([PR #33](https://github.com/PATELOM925/P-Dot/pull/33))
 - **Rich answers: citation chips, a sources row, cards and a calm scroll** ([decision 0017](docs/decisions/0017-rich-answers.md)). Problem: sources were a long list after every reply, `[n]` marks were plain text, places came as raw lists, and each new token pulled the reader to the bottom. Resolution: `[n]` is a chip that opens the matching source; sources are one line ("N sources · M cited") that opens to a numbered list; strict-JSON `pdot-*` blocks show as cards, with places offered only when web search found sources and Maps links that P-Dot builds; the list follows a reply only at the bottom and shows "Jump to latest" otherwise. Also the empty chat copy, the approval setup as one line above the first card, and 44 px touch targets. ([PR #32](https://github.com/PATELOM925/P-Dot/pull/32))
 - **Chat UX fixes: the composer, safe Markdown, reply states and phone navigation.** ([PR #27](https://github.com/PATELOM925/P-Dot/pull/27))
