@@ -251,4 +251,10 @@ describe("rich block rules", () => {
     const used = buildPromptMessages(input("used", [{ title: "Bars", url: "https://www.blogto.com/bars", excerpt: "Walrus Pub" }]));
     expect(system(used)).toContain("pdot-places");
   });
+
+  it("puts the places rule before the table rule and says not to use a table for places", () => {
+    const text = system(buildPromptMessages(input("used", [{ title: "Cafes", url: "https://www.yelp.ca/x", excerpt: "Union Coffee" }])));
+    expect(text.indexOf("pdot-places")).toBeLessThan(text.indexOf("pdot-table"));
+    expect(text).toContain("cafes, bars, restaurants, shops, things to see), put the places the sources name in this block, not in a table or a list");
+  });
 });

@@ -29,7 +29,7 @@ export const searchDocumentsTool: ToolSpec<z.infer<typeof query>> = {
   description: "Search the documents the user added to P-Dot in this mode. Returns matching parts with their document titles.",
   args: query,
   kind: "read",
-  guidance: "search_documents: search the user's own documents when the question is about something they may have added.",
+  guidance: "search_documents: search the user's own documents when the question is about something they may have added. Search before you say that you cannot see a document.",
   maxCallsPerTurn: 2,
   offered: (flags) => flags.ownData,
   statusQuery: ({ query }) => query,

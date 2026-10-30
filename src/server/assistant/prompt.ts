@@ -22,7 +22,7 @@ const BLOCKS_RULE = `- You may add one fenced block when it makes the answer eas
   Otherwise use short paragraphs and lists. Do not use a block for one or two items.`;
 
 /** Offered only when web search found sources: places without sources would be made up. */
-const PLACES_RULE = `- When the user asks for places (bars, food, shops, things to see), list the places the sources name in
+const PLACES_RULE = `- When the user asks for places (cafes, bars, restaurants, shops, things to see), put the places the sources name in this block, not in a table or a list:
   \`\`\`pdot-places {"title","items":[{"name","kind","area","city","note","cite":[n]}]}\`\`\`
   Use only names and details from the sources, and cite each place. Do not write addresses, ratings, hours or links.`;
 
@@ -132,7 +132,7 @@ export interface PromptInput {
  * Changes when the system prompt or the prompt layout changes. Stored with
  * each "what was sent" record, so a record can be read against the prompt it used.
  */
-export const PROMPT_VERSION = "2026-10-30.3";
+export const PROMPT_VERSION = "2026-10-30.4";
 
 /** Today in the user's time zone, so relative times ("tomorrow at 6pm") mean the user's time. */
 function dateLine(now: Date, timeZone: string | null | undefined): string {
@@ -146,7 +146,7 @@ export function buildPromptMessages(input: PromptInput): ChatMessage[] {
   const guidance = input.toolGuidance ?? [];
   const toolRules = guidance.length > 0 ? [TOOLS_RULE, ...guidance.map((line) => `- ${line}`)].join("\n") : NO_TOOLS_RULE;
   const placesOffered = input.webSearch === "used" && input.results.length > 0;
-  const rules = [toolRules, BLOCKS_RULE, ...(placesOffered ? [PLACES_RULE] : [])].join("\n");
+  const rules = [toolRules, ...(placesOffered ? [PLACES_RULE] : []), BLOCKS_RULE].join("\n");
   const latest = input.history.at(-1);
   const hasEarlierReply = input.history.some((message) => message.role === "assistant");
   const continuation =
