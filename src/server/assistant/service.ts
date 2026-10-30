@@ -3,8 +3,10 @@ import {
   HISTORY_CHAR_BUDGET,
   HISTORY_MESSAGE_LIMIT,
   MAX_ASSISTANT_CHARS,
+  DOCUMENT_CONTEXT_MAX_DOCUMENTS,
   MEMORY_CONTEXT_COUNT,
   REPLY_CLAIM_LEASE_SECONDS,
+  RETRIEVAL_MATCH_COUNT,
 } from "@/lib/limits";
 import type {
   ApiErrorCode,
@@ -13,6 +15,7 @@ import type {
   ChatStreamEvent,
   ConversationSummary,
   MessageDTO,
+  Mode,
   SourceRef,
   WebSearchStatus,
 } from "@/types/api";
@@ -47,6 +50,7 @@ import { forcedToolChoice, removeFalseClaims } from "./claim-guard";
 import {
   BRIEF_RESULTS_MAX_BYTES,
   budgetRefusal,
+  DOCUMENT_BLOCK_MAX_BYTES,
   MEMORY_BLOCK_MAX_BYTES,
   RESEARCH_RESULTS_MAX_BYTES,
   nebiusHoldMicroUsd,
@@ -74,6 +78,14 @@ import {
 } from "./tools";
 import { googleForTurn, type TurnGoogle } from "./google-turn";
 import type { MemoryMatch } from "@/server/db/retrieval";
+import {
+  NO_DOCUMENTS,
+  fullDocumentContext,
+  matchedDocumentContext,
+  planDocumentContext,
+  type DocumentContext,
+  type DocumentPlan,
+} from "./document-context";
 import type { ConnectorServices, ConnectorTurn } from "@/server/mcp/connector-turn";
 
 export interface AssistantDeps {
@@ -172,6 +184,8 @@ export interface PreparedTurn {
   toolIntent: ToolIntent | null;
   /** Google for this turn: the connection's flags and address, or why it is off. Null when not asked for. */
   google: TurnGoogle | null;
+  /** The user's ready documents of this mode go into the turn: in full, or by search. Null: none. */
+  documents: DocumentPlan | null;
   /** The Nebius hold pays for the first attempt, on any model of the tier. */
   holds: TurnHolds;
 }
@@ -348,6 +362,8 @@ export async function prepareChatTurn(
     const latest = pendingHistory.at(-1)?.content ?? "";
     // A brief message holds the topics, which can be memory text such as "Remind me to ...": not a request.
     const toolIntent = ownData && !brief ? detectToolIntent(latest) : null;
+    // The user's documents go into every turn, so a question about them never needs the words "my documents".
+    const documents = ownData && !brief ? await planDocuments(deps, userId, mode, requestId) : null;
     const connectorTools =
       requestedApps.length > 0 && deps.connectors ? await deps.connectors.available(requestedApps) : new Map();
     const toolsBound = selectTools(TOOLS, {
@@ -365,7 +381,7 @@ export async function prepareChatTurn(
         effort: request.effort ?? "auto",
         toolIntent,
       }),
-      toolsBound.length > 0 || retrieval === "deep" || retrieval === "brief",
+      toolsBound.length > 0 || retrieval === "deep" || retrieval === "brief" || documents !== null,
     );
     // The reply of a turn that reads a private source is marked in its own row, before any read, so the
     // conversation never gets a model-written search again (decision 0014, decision 10; decision 0016).
@@ -407,7 +423,7 @@ export async function prepareChatTurn(
             model,
             promptBound,
             plan.maxOutputTokens,
-            retrievalBytes + (ownData ? MEMORY_BLOCK_MAX_BYTES : 0),
+            retrievalBytes + (ownData ? MEMORY_BLOCK_MAX_BYTES : 0) + (documents ? DOCUMENT_BLOCK_MAX_BYTES : 0),
             toolDefinitionsBound,
           ),
         ),
@@ -496,6 +512,7 @@ export async function prepareChatTurn(
         },
         toolIntent,
         google,
+        documents,
         holds,
       },
     };
@@ -508,7 +525,21 @@ export async function prepareChatTurn(
 }
 
 /**
- * A turn that offers tools runs on the standard tier at least (decision 0013):
+ * The plan for the user's documents in this turn. One read of titles and
+ * sizes, no text. A failed read means a turn without documents.
+ */
+async function planDocuments(deps: AssistantDeps, userId: string, mode: Mode, requestId: string): Promise<DocumentPlan | null> {
+  if (!deps.ownData) return null;
+  try {
+    return planDocumentContext(await deps.ownData.retrieval.readyDocuments(userId, mode, DOCUMENT_CONTEXT_MAX_DOCUMENTS + 1));
+  } catch {
+    deps.log("warn", "document_list_failed", { requestId, route: "chat" });
+    return null;
+  }
+}
+
+/**
+ * A turn that offers tools or document context runs on the standard tier at least (decision 0013):
  * tool hops need a model that calls tools well, and the standard tier has no
  * hedge. "Think harder" keeps the heavy tier. The reason stays the router's.
  */
@@ -641,8 +672,8 @@ async function* runChatTurn(
     route: turn.route,
   };
 
-  // Memory retrieval runs while the web search runs, so the reply does not wait for the two in turn.
-  const memoryLookup = retrieveMemories(deps, turn, signal);
+  // Memory and document retrieval run while the web search runs, so the reply does not wait for the two in turn.
+  const ownLookup = retrieveOwnContext(deps, turn, signal);
 
   // 1. Optional web retrieval. Search is never called unless requested.
   let webSearch: WebSearchStatus = "off";
@@ -702,13 +733,14 @@ async function* runChatTurn(
     }
   }
 
-  const memories = await memoryLookup;
-  if (memories === "aborted") {
+  const own = await ownLookup;
+  if (own === "aborted") {
     deps.log("info", "chat_client_aborted", { ...logBase, stage: "memories" });
     return;
   }
+  const { memories, documents } = own;
   const memoryIds = new Set(memories.map((memory) => memory.id));
-  const documentChunkIds = new Set<string>();
+  const documentChunkIds = new Set<string>(documents.chunkIds);
 
   // 2. Inference over a bounded context window, on the routed tier. When tools
   // are offered, up to MAX_TOOL_HOPS hops can call them, then one final pass
@@ -725,6 +757,7 @@ async function* runChatTurn(
     mode: turn.conversation.mode,
     toolGuidance: tools.map((tool) => tool.guidance),
     memories,
+    documents: documents.sources,
     serverNote: turn.google?.note,
     format: turn.retrieval === "deep" ? "research" : turn.retrieval === "brief" ? "brief" : undefined,
     tier: turn.route.tier,
@@ -1061,26 +1094,62 @@ async function* runChatTurn(
 const MEMORY_LOOKUP_MIN_CHARS = 12;
 
 /**
- * Active memories of the mode, top MEMORY_CONTEXT_COUNT. Never throws: a failure
- * means a reply without memories, and a Stop gives "aborted".
+ * Active memories of the mode, top MEMORY_CONTEXT_COUNT, and the user's
+ * documents by the turn's plan: in full (one read, no embedding), or the best
+ * search matches from the same embedding the memories use. Never throws: a
+ * failure means a reply without that part, and a Stop gives "aborted".
  */
-async function retrieveMemories(deps: AssistantDeps, turn: PreparedTurn, signal: AbortSignal): Promise<MemoryMatch[] | "aborted"> {
+async function retrieveOwnContext(
+  deps: AssistantDeps,
+  turn: PreparedTurn,
+  signal: AbortSignal,
+): Promise<{ memories: MemoryMatch[]; documents: DocumentContext } | "aborted"> {
+  const own = deps.ownData;
+  if (!own) return { memories: [], documents: NO_DOCUMENTS };
+  const mode = turn.conversation.mode;
+  const plan = turn.documents;
+  const failed = (event: string, error: unknown) =>
+    deps.log("warn", event, { requestId: turn.requestId, route: "chat", kind: error instanceof Error ? error.name : "unknown" });
+
+  const fullLookup =
+    plan?.kind === "full"
+      ? fullDocumentContext(own.retrieval, turn.userId, plan.documents).catch((error: unknown) => {
+          failed("document_context_failed", error);
+          return NO_DOCUMENTS;
+        })
+      : Promise.resolve(NO_DOCUMENTS);
+
   const text = turn.userMessage.content.trim();
-  if (!deps.ownData || (text.length < MEMORY_LOOKUP_MIN_CHARS && text.split(/\s+/).length <= 2)) return [];
-  try {
-    const [vector] = await deps.ownData.embedder.embed([text], signal);
-    if (!vector) return [];
-    const found = await deps.ownData.retrieval.matchMemories(vector, turn.conversation.mode, MEMORY_CONTEXT_COUNT);
-    return found.slice(0, MEMORY_CONTEXT_COUNT);
-  } catch (error) {
-    if (signal.aborted) return "aborted";
-    deps.log("warn", "memory_retrieval_failed", {
-      requestId: turn.requestId,
-      route: "chat",
-      kind: error instanceof Error ? error.name : "unknown",
-    });
-    return [];
+  let vector: number[] | undefined;
+  if (text.length >= MEMORY_LOOKUP_MIN_CHARS || text.split(/\s+/).length > 2) {
+    try {
+      [vector] = await own.embedder.embed([text], signal);
+    } catch (error) {
+      if (signal.aborted) return "aborted";
+      failed("memory_retrieval_failed", error);
+    }
   }
+
+  const memoryLookup = vector
+    ? own.retrieval.matchMemories(vector, mode, MEMORY_CONTEXT_COUNT).then(
+        (found) => found.slice(0, MEMORY_CONTEXT_COUNT),
+        (error: unknown) => {
+          failed("memory_retrieval_failed", error);
+          return [];
+        },
+      )
+    : Promise.resolve([]);
+  const documentLookup =
+    vector && plan?.kind === "search"
+      ? own.retrieval.matchDocumentChunks(vector, mode, RETRIEVAL_MATCH_COUNT).then(matchedDocumentContext, (error: unknown) => {
+          failed("document_context_failed", error);
+          return NO_DOCUMENTS;
+        })
+      : fullLookup;
+
+  const [memories, documents] = await Promise.all([memoryLookup, documentLookup]);
+  if (signal.aborted) return "aborted";
+  return { memories, documents };
 }
 
 /**

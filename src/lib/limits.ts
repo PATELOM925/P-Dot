@@ -110,6 +110,16 @@ export const ACTION_LOG_LIMIT = 200;
 export const MEMORY_CONTEXT_COUNT = 4;
 /** Matches returned by similarity search (the database caps it at 20). */
 export const RETRIEVAL_MATCH_COUNT = 5;
+/** Ready documents of a mode whose total size is at most this go into every chat turn in full, with no search. */
+export const DOCUMENT_FULL_CONTEXT_CHARS = 12_000;
+/** The most document text one chat turn takes, in full or from search. */
+export const DOCUMENT_CONTEXT_MAX_CHARS = 16_000;
+/** The most documents one chat turn reads in full. More than this: search. */
+export const DOCUMENT_CONTEXT_MAX_DOCUMENTS = 20;
+/** The most document parts one chat turn reads when the documents go in full. */
+export const DOCUMENT_CONTEXT_MAX_CHUNKS = 40;
+/** A search match below this similarity is noise and stays out of the turn. Low, so the best parts still come along. */
+export const DOCUMENT_MATCH_MIN_SIMILARITY = 0.1;
 /** Embedding size. Must match vector(1024) in the database. */
 export const EMBEDDING_DIMENSIONS = 1_024;
 /** Texts per embedding request. */

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { DM_Sans } from "next/font/google";
 import Script from "next/script";
 import { EARLY_INSTALL_SCRIPT, PwaSetup } from "@/features/pwa/PwaSetup";
+import { THEME_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -29,7 +30,11 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={dmSans.variable}>
+    // The theme script sets data-theme on <html> before React loads.
+    <html lang="en" className={dmSans.variable} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
       <body>
         <Script id="pwa-early-install" strategy="beforeInteractive">
           {EARLY_INSTALL_SCRIPT}

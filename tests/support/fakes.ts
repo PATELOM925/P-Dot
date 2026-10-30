@@ -390,7 +390,11 @@ export class FakeOwnData {
   memories: (MemoryDTO & { userId: string })[] = [];
   proposals: (ActionProposalDTO & { userId: string })[] = [];
   searches: { kind: "memories" | "documents"; mode: Mode; count: number }[] = [];
+  /** Ready documents, each with its parts in order. */
+  documents: { id: string; title: string; charCount: number; userId: string; mode: Mode; chunks: string[] }[] = [];
+  documentReads: { kind: "list" | "chunks"; userId: string }[] = [];
   failMatch = false;
+  failDocuments = false;
   private counter = 0;
   /**
    * `clock` gives the database time of a new row. Pass the conversation
@@ -420,6 +424,22 @@ export class FakeOwnData {
           this.searches.push({ kind: "documents", mode, count });
           if (this.failMatch) throw new Error("match failed");
           return this.chunkMatches.filter((m) => m.userId === this.userId && m.mode === mode).slice(0, Math.min(count, 20));
+        },
+        readyDocuments: async (userId, mode, limit) => {
+          this.documentReads.push({ kind: "list", userId });
+          if (this.failDocuments) throw new Error("list failed");
+          return this.documents
+            .filter((d) => d.userId === userId && d.mode === mode)
+            .slice(0, limit)
+            .map(({ id, title, charCount }) => ({ id, title, charCount }));
+        },
+        documentChunks: async (userId, documentIds, limit) => {
+          this.documentReads.push({ kind: "chunks", userId });
+          if (this.failDocuments) throw new Error("chunks failed");
+          return this.documents
+            .filter((d) => d.userId === userId && documentIds.includes(d.id))
+            .flatMap((d) => d.chunks.map((content, index) => ({ id: `${d.id}-c${index}`, documentId: d.id, content })))
+            .slice(0, limit);
         },
       },
       memories: {

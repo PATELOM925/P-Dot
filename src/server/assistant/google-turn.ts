@@ -17,9 +17,10 @@ export interface TurnGoogle {
 /** The exact words the reply must give when a scope the message needs is missing (live test, 2026-10-30). */
 export const CALENDAR_OFF_REPLY = "Calendar access is off. Open Connectors, connect Google again and tick Calendar.";
 export const SEND_OFF_REPLY = "Send email access is off. Open Connectors, connect Google again and tick Send email.";
+export const GMAIL_OFF_REPLY = "Gmail access is off. Open Connectors, connect Google again and tick Gmail.";
 
-const missingNote = (reply: string, what: string) =>
-  `The user's Google connection does not allow ${what}. Do not search Gmail instead. Tell the user: "${reply}"`;
+const missingNote = (reply: string, what: string, noGmail = false) =>
+  `The user's Google connection does not allow ${what}.${noGmail ? " Do not search Gmail instead." : ""} Tell the user: "${reply}"`;
 
 const note = (reason: string) =>
   `The user turned on Google for this message, but Google is not available now (${reason}). Tell the user, and answer without Google.`;
@@ -65,9 +66,10 @@ export async function googleForTurn(
 function missingScopeNote(flags: GoogleToolFlags, message: string): { note: string | null; calendarOnly: boolean } {
   const words = googleWords(message);
   if (words.calendar && !flags.calendar) {
-    return { note: missingNote(CALENDAR_OFF_REPLY, "the calendar"), calendarOnly: !words.mail };
+    return { note: missingNote(CALENDAR_OFF_REPLY, "the calendar", !words.mail), calendarOnly: !words.mail };
   }
   if (words.send && !flags.send) return { note: missingNote(SEND_OFF_REPLY, "sending email"), calendarOnly: false };
+  if (words.mail && !words.send && !flags.read) return { note: missingNote(GMAIL_OFF_REPLY, "reading Gmail"), calendarOnly: false };
   return { note: null, calendarOnly: false };
 }
 

@@ -8,6 +8,7 @@ import { usePopover } from "@/components/ui/usePopover";
 import { signOutAction } from "@/features/auth/actions";
 import { WaitingApprovalsBadge } from "@/features/actions/WaitingApprovalsBadge";
 import { useKeyboardOpen } from "./useKeyboardOpen";
+import { ThemeToggle } from "./ThemeToggle";
 
 // Same order as the top nav. Six tabs do not fit a phone, so Activity, Settings and Devices go in "More".
 const TABS = [
@@ -100,6 +101,9 @@ export function BottomNav({ trial }: { trial: boolean }) {
                   </Link>
                 </li>
               ))}
+              <li>
+                <ThemeToggle variant="row" />
+              </li>
               <li>
                 <form action={signOutAction}>
                   <button type="submit" className="sheet-row sheet-row-button">

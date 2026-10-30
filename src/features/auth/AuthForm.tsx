@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { usePageShowKey } from "@/lib/page-show";
 import { initialAuthFormState, type AuthFormState } from "./types";
 
 export interface AuthField {
@@ -19,7 +20,12 @@ interface AuthFormProps {
   hidden?: Record<string, string>;
 }
 
-export function AuthForm({ action, fields, submitLabel, pendingLabel, hidden }: AuthFormProps) {
+/** Remounts the form when Back shows the page from the back/forward cache, so the button is not stuck pending. */
+export function AuthForm(props: AuthFormProps) {
+  return <AuthFormBody key={usePageShowKey()} {...props} />;
+}
+
+function AuthFormBody({ action, fields, submitLabel, pendingLabel, hidden }: AuthFormProps) {
   const [state, formAction, pending] = useActionState(action, initialAuthFormState);
   const errorId = "auth-form-error";
 
