@@ -41,6 +41,8 @@ const sendSchema = z
       .max(MAX_MESSAGE_CHARS, `Message must be at most ${MAX_MESSAGE_CHARS} characters.`),
     webSearch: z.boolean(),
     effort: effortSchema,
+    // Only sent when the "Use Google" toggle is on (decision 0014), so an older server still accepts a send without it.
+    useGoogle: z.literal(true).optional(),
   })
   .strict();
 
@@ -50,6 +52,7 @@ const retrySchema = z
     conversationId,
     webSearch: z.boolean(),
     effort: effortSchema,
+    useGoogle: z.literal(true).optional(),
   })
   .strict();
 

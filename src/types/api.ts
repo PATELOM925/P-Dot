@@ -15,7 +15,12 @@ export type AssistantToolName =
   | "search_memories"
   | "propose_task"
   | "propose_reminder"
-  | "save_memory";
+  | "save_memory"
+  | "gmail_search"
+  | "gmail_read"
+  | "calendar_list_events"
+  | "propose_email"
+  | "propose_calendar_event";
 
 /** Outcome of web search for an assistant reply. */
 export type WebSearchStatus = "off" | "used" | "no_results" | "failed";
@@ -90,8 +95,8 @@ export interface ApiErrorBody {
 
 /** Request body for POST /api/chat. */
 export type ChatRequest =
-  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean; effort?: Effort }
-  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort };
+  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean; effort?: Effort; useGoogle?: true }
+  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort; useGoogle?: true };
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once
