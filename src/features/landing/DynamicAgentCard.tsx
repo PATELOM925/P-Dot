@@ -524,8 +524,9 @@ export function DynamicAgentCard() {
 
       <div className="agent-foot">
         <p className="small muted">
-          Illustrative example of the planned design; automations and connectors are not available yet. AI can make
-          mistakes, so P-Dot will show each step and check with you first.
+          Illustrative example. Today P-Dot can read Gmail, Calendar, Notion, Linear and Todoist when you ask. Phone
+          calls, Telegram and scheduled routines are not available yet. P-Dot asks before each action, and AI can make
+          mistakes.
         </p>
       </div>
     </section>
