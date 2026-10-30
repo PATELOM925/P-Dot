@@ -9,6 +9,13 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Sign in with Google, and connect Google for Gmail and Calendar** ([decision 0014](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #25](https://github.com/PATELOM925/P-Dot/pull/25))
+  - Problem: a user can sign in only with an email and a password, and P-Dot cannot read the user's Gmail or calendar or act there after approval.
+  - Resolution:
+    - "Continue with Google" on the login and signup pages uses Supabase OAuth with PKCE and a new `/auth/callback` route. Every failure gives one message, so it does not show whether an account exists.
+    - Connect and Disconnect on the Connectors page run a separate Google consent. The state and the PKCE verifier are in a sealed httpOnly cookie bound to the user. The refresh token is stored sealed with AES-256-GCM under a Worker key, bound to the user and the provider. Disconnect revokes the token at Google, then deletes the row.
+    - `src/server/google/` has the token store and the Gmail and Calendar calls with plain fetch, timeouts and zod, for the tool loop to use later. The Connectors page has a Google card with each state and a status message that takes focus.
+    - `/api/health` reports `google`. The settings are optional; when they are missing, Google shows "Not set up".
 - **Database step for Google sign-in and the Google connection** ([decision 0014](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #23](https://github.com/PATELOM925/P-Dot/pull/23))
   - Problem: P-Dot cannot store a connection to a user's Google account, and an action that acts outside P-Dot (send an email, create an event) has no safe path. The database cannot call Google, so the decision function cannot run such an action in its own transaction, and a retry must never send twice.
   - Resolution:
