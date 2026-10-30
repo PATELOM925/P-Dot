@@ -24,7 +24,10 @@
 - New route `GET /auth/callback`. It calls `exchangeCodeForSession(code)` and redirects to `next`. On any error (no code, a Google error, an exchange error) it redirects to `/login?error=oauth`. The login page then shows one message: "Google sign-in did not finish. Try again." The message is the same for every cause, so it does not show whether an account exists.
 - Scopes: we do not pass `scopes`. The Supabase Google provider asks for `email` and `profile` only ([source](https://github.com/supabase/auth/blob/master/internal/api/provider/google.go)). Sign-in never asks for Gmail or Calendar.
 - The proxy does not protect `/auth/callback`, so a signed-out browser reaches it. It is not in the "signed out only" list either, so a signed-in browser that links Google also reaches it. A test checks both.
-- **Account linking.** Supabase links a new identity to an existing user with the same email address, and removes unconfirmed identities of that user ([identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking)). On 2026-10-19 "Confirm email" was turned off (DEPLOYMENT.md), so a password sign-up is confirmed without proof that the person owns the address. See "Risks".
+- **Account linking.** Supabase links a new identity to an existing user with the same email address, and removes unconfirmed identities of that user ([identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking)). So a Google sign-in joins only an account whose email is confirmed (PLAUSIBLE: from Supabase's page, not tested here). On 2026-10-19 "Confirm email" was turned off (DEPLOYMENT.md). While it is off, a password sign-up is marked confirmed without proof that the person owns the address, and that account stays linkable after the setting is turned on again. So:
+  - The owner keeps "Confirm email" **on** from now on and does not turn it off again.
+  - The hackathon judges use a demo account that the owner makes in the dashboard, or Google sign-in.
+  - **Owner gate before the Google provider is turned on:** list the accounts made while "Confirm email" was off (DEPLOYMENT.md, One-time setup, item 7). The owner keeps only accounts of known people who control that mailbox, and deletes or resets the others, before any Google sign-in, also by test users.
 - Previews: `SITE_URL` is the production address, so Google sign-in from a Preview returns to production, where the PKCE cookie does not exist. The sign-in fails with the usual message. Use production or localhost.
 
 ## 2. Connect Google
@@ -35,7 +38,7 @@
 2. The route makes a random `state` (32 bytes) and a PKCE `code_verifier` (32 bytes). Google documents PKCE (S256) for installed apps; a web client sends it too, and the state check and the client secret protect the flow also if Google ignores it. It seals `{ userId, state, verifier, expiresAt }` with AES-GCM (the same key as the tokens, a different associated data label) and puts the result in the cookie `pdot_google_oauth`: httpOnly, Secure (not on localhost), SameSite=Lax, path `/api/connectors/google`, 10 minutes. Then it answers 303 to Google's authorization URL with `response_type=code`, `client_id`, `redirect_uri`, `scope`, `state`, `code_challenge` (S256), `access_type=offline` and `prompt=consent`. `prompt=consent` makes Google send a refresh token on every connect.
 3. Google returns to `GET /api/connectors/google/callback`. The route always deletes the cookie. It checks, in this order: a valid session; a cookie that opens with the key and has not expired; the same user ID as the session; the same `state` (constant-time compare). Any failure redirects to `/connectors?google=error` and calls nothing.
 4. The route exchanges the code at `https://oauth2.googleapis.com/token` with the verifier, the client ID and the client secret, with a 10-second timeout. Zod checks the answer: `access_token`, `expires_in`, `refresh_token`, `scope` and `id_token`.
-5. The route reads `email` from the ID token. It does not check the signature: the token came straight from Google's token endpoint over TLS with the client secret, which [Google's OpenID documentation](https://developers.google.com/identity/openid-connect/openid-connect) allows. The address is used only to show "Connected as", never as an identifier.
+5. The route reads `sub` and `email` from the ID token. It does not check the signature: the token came straight from Google's token endpoint over TLS with the client secret, which [Google's OpenID documentation](https://developers.google.com/identity/openid-connect/openid-connect) allows. `sub` is the stable account ID (stored as `account_subject`). The address is used only to show "Connected as", never as an identifier.
 6. The route keeps only the scopes from the list below that Google granted. The user can clear a box on Google's screen. If no data scope is left, the route stores nothing and shows "You did not allow access to Gmail or Calendar."
 7. The route encrypts the refresh token and calls `save_connected_account` once. It drops the access token. Then it redirects to `/connectors?google=connected`.
 
@@ -64,12 +67,13 @@ Migration `20261030000000_google_connection.sql` adds `public.connected_accounts
 | --- | --- |
 | `id`, `user_id`, `created_at`, `updated_at` | As in other tables. `user_id` cascades on account delete. |
 | `provider` | `'google'` only today. Unique with `user_id`: one Google account for each user. |
+| `account_subject` | Google's `sub`, the stable account ID. An external action is bound to it (section 4). |
 | `account_email` | For "Connected as". 3 to 320 characters. |
 | `scopes` | The granted data scopes. 1 to 10 items, each from the known list for the provider. |
 | `token_ciphertext` | `v1.<iv>.<ciphertext>`, at most 4,096 characters. |
 | `status` | `connected` or `needs_reconnect`. |
 
-RLS: a user selects, inserts, updates and deletes only own rows. Grants: `select, insert, delete` and `update (account_email, scopes, token_ciphertext, status)` to `authenticated`, nothing to `anon`. `save_connected_account(provider, email, scopes, ciphertext)` is SECURITY INVOKER, so RLS and the grants apply. It inserts or replaces the caller's row for that provider in one statement and sets `status = 'connected'`. PostgREST's own upsert cannot do this, because it also writes `user_id` and `provider`, which have no update grant.
+RLS: a user selects, inserts, updates and deletes only own rows. Grants: `select, insert, delete` and `update (account_subject, account_email, scopes, token_ciphertext, status)` to `authenticated`, nothing to `anon`. `save_connected_account(provider, subject, email, scopes, ciphertext)` is SECURITY INVOKER, so RLS and the grants apply. It inserts or replaces the caller's row for that provider in one statement and sets `status = 'connected'`. PostgREST's own upsert cannot do this, because it also writes `user_id` and `provider`, which have no update grant.
 
 **The owner may read the own ciphertext row.** The other option was to hide the column from `authenticated` and read it through a SECURITY DEFINER function. That adds nothing here: the Worker reads the row with the user's own session, so any path that the Worker can use, the user can use too. The protection is the key, which only the Worker has, and the associated data, which binds a ciphertext to one user and one provider. A user who reads or writes the own ciphertext can only break the own connection. The app selects named columns. Only the token store selects `token_ciphertext`, and no API answer contains it (a test checks).
 
@@ -130,9 +134,11 @@ The card shows the full recipient list, the subject and the whole body, or the t
 
 The database cannot call Google, so the decision has three steps. All three are SECURITY DEFINER functions with an empty search path, granted only to `authenticated`. Each one reads `auth.uid()` and gives another user's proposal the same `not_found` answer as a missing one.
 
-1. **Claim.** `decide_action_proposal(id, 'approve', payload)` checks the payload and, for an external kind, moves the row from `proposed` to `executing` in one update. It stores a new `execution_claim_id` and `execution_started_at`. It answers `executing`. Only one decision can make this move, so only one request holds the claim. Reject works as before.
-2. **Call Google.** The Worker (the decision route) loads the token and calls Gmail or Calendar with a 15-second timeout.
-3. **Finish.** `finish_external_action(id, claim_id, succeeded, result)` stores `executed` with `{ messageId }` or `{ eventId }`, or `failed` with `{ error: "execution_failed", reason }`. It accepts only the current claim of an `executing` row, and only a result of the right shape. The reasons are a fixed list: `not_connected`, `needs_reconnect`, `scope_missing`, `google_rejected`.
+1. **Claim.** `decide_action_proposal(id, 'approve', payload)` checks the payload. For an external kind it then reads the caller's Google row. With no row, or a row that needs a reconnect, it answers `not_connected` and the proposal stays `proposed`. Otherwise it moves the row from `proposed` to `executing` in one update and stores a new `execution_claim_id`, `execution_started_at`, the Google account's subject (`execution_account_subject`) and the target (`execution_target`: `gmail:me` or `calendar:primary`). It answers `executing` with the claim as `claimId`. Only one decision can make this move, so only one request holds the claim. Reject works as before.
+2. **Call Google.** The Worker (the decision route) loads the token. It calls Google only with a claim that this request has just won (a `claimId` from this call), and only when the connected account still has the claimed subject; else it stores `failed` with the reason `account_changed`. It calls Gmail or Calendar with a 15-second timeout, in the claimed target.
+3. **Finish.** `finish_external_action(id, claim_id, succeeded, result)` stores `executed` with `{ messageId }` or `{ eventId }`, or `failed` with `{ error: "execution_failed", reason }`. It accepts only the current claim of an `executing` row, and only a result of the right shape; an empty or NULL result is `invalid`. The reasons are a fixed list: `not_connected`, `needs_reconnect`, `scope_missing`, `google_rejected`, `account_changed`.
+
+**The claim is a secret of the request that won it.** Only the claiming branch of `decide_action_proposal` and of `reclaim_external_action` return it (`claimId`). Every other answer, including `already_decided` to a second click, leaves it out, and `authenticated` has no SELECT on `execution_claim_id`. So a double click cannot give a second request a live claim, and the Worker never calls Google twice for one claim.
 
 The Worker stores `failed` only when Google did not act: it did not call Google (no connection, a dead token, a missing scope), or Google answered 4xx. A timeout, a network error or a 5xx after the request left the Worker means "outcome unknown". Then the Worker does not finish, and the row stays `executing`.
 
@@ -140,7 +146,7 @@ The status rules in the `check_action_proposal` trigger: `proposed` to `executin
 
 ### A retry never sends twice
 
-- A second approval of the same proposal gets `already_decided`, also while it is `executing`.
+- A second approval of the same proposal gets `already_decided`, also while it is `executing`, with no claim.
 - A finish with an old claim gets `stale_claim` and changes nothing.
 - **Calendar** is idempotent at Google. The event ID is the proposal ID without dashes: 32 characters from `0-9a-f`, inside the base32hex set (`a-v`, `0-9`, 5 to 1,024 characters) that `events.insert` allows. A second insert with that ID gets 409 `duplicate` ([Calendar errors](https://developers.google.com/workspace/calendar/api/guides/errors)), and the Worker stores `executed` with that ID. Google says it cannot promise to find every collision at insert time, so this is strong protection, not a proof.
 - **Gmail** has no idempotency key, and Gmail can replace a `Message-ID` that the client sets. So P-Dot never sends a `send_email` proposal again by itself, also after a timeout.
@@ -150,10 +156,11 @@ The status rules in the `check_action_proposal` trigger: `proposed` to `executin
 The lease is 120 seconds (`EXTERNAL_ACTION_LEASE_SECONDS`), much more than the longest Google call (10 seconds for a token refresh plus 15 seconds for the call).
 
 - `reclaim_external_action(id, lease_seconds)`: for a row that is `executing` and older than the lease.
-  - `create_calendar_event`: a new claim, `claimed`. The Worker inserts again with the same event ID: 409 means the first try worked. So this kind always leaves `executing`. The screen calls it when the user opens a card that is stuck, and the decision route calls it for a second approval click.
-  - `send_email`: `outcome_unknown`, and no claim. P-Dot never sends it again.
+  - The connected Google account is not the claimed one (another subject, no row, or a row that needs a reconnect): `account_changed`, and no claim, for both kinds. An event ID is unique only in one calendar, so an insert into another account's calendar could make a second event and send the invitations again.
+  - `create_calendar_event`, same account: a new claim, `claimed`. The Worker inserts again with the same event ID in the same calendar: 409 means the first try worked. The screen calls it when the user opens a card that is stuck.
+  - `send_email`, same account: `outcome_unknown`, and no claim. P-Dot never sends it again.
   - A row inside the lease gets `busy`.
-- `settle_unknown_external_action(id, lease_seconds, sent)`: only for a `send_email` row that is `executing` and older than the lease. The card says: "P-Dot does not know if this email was sent. Check your Sent folder." The user answers. `sent = true` stores `executed` with `{ userConfirmed: true }`; `false` stores `failed` with the reason `not_sent`. The function does not set the trust marker, so `decided_by_function` and the log row's `verified` are false, and the screens show "Marked done" ([0009](0009-memory-documents-actions.md)). To send again, the user asks P-Dot again, which makes a new proposal.
+- `settle_unknown_external_action(id, lease_seconds, done)`: for a row that is `executing` and older than the lease, when no reclaim can finish it: every `send_email` row, and a `create_calendar_event` row whose account changed. The card says, for example: "P-Dot does not know if this email was sent. Check the Sent folder of the Google account you used then." The user answers. `done = true` stores `executed` with `{ userConfirmed: true }`; `false` stores `failed` with the reason `not_done`. The function does not set the trust marker, so `decided_by_function` and the log row's `verified` are false, and the screens show "Marked done" ([0009](0009-memory-documents-actions.md)). To send again, the user asks P-Dot again, which makes a new proposal.
 - If the user never answers, the row stays `executing` and shows the same question. It never runs again.
 
 ### What "verified" means for an external action
@@ -187,7 +194,8 @@ Timeouts: 10 seconds for token calls and reads, 15 seconds for a send or an inse
 ## 7. Deploy order (expand, then code)
 
 1. **PR G1, database (expand), branch `om/google-expand-db`.** This record, migration `20261030000000_google_connection.sql`, the gate tests in both grant modes, the hash line, the DEPLOYMENT.md steps and a CHANGELOG entry. The code on main does not use the new objects, and its reads and decisions still work (the gate runs main's repositories on the new schema).
-   - Check 1: the owner confirms in the Supabase dashboard that `20261030000000_google_connection` is in the migration history and that these exist: the table `connected_accounts` with RLS on and four policies; the columns `execution_claim_id` and `execution_started_at` on `action_proposals`; the functions `save_connected_account`, `finish_external_action`, `reclaim_external_action` and `settle_unknown_external_action`; and the new definitions of `decide_action_proposal`, `normalize_action_payload`, `check_action_proposal` and `log_proposal_change`.
+   - Check 1: the owner confirms in the Supabase dashboard that `20261030000000_google_connection` is in the migration history and that the objects listed in DEPLOYMENT.md ("Expand, then contract", Google) exist.
+   - Between G1 and G2: if a user approves a `send_email` or `create_calendar_event` row that they made by hand, the claim commits and the current Worker answers 500, so the row stays `executing` until G2 ships; nothing calls Google. No code makes such rows before G2.
 2. **PR G2, code, branch `om/google-connect`.** Merge only after check 1. Before the migration, Connect fails at `save_connected_account` (404 from PostgREST) and stores nothing; the screen shows the error state. Do not use its Preview before check 1, because Previews use the production database.
 
 There is no contract step. Each step merges and deploys on its own.
@@ -197,10 +205,11 @@ Rollback: a Worker version from before G2 ignores the new table and kinds. A pro
 ## Risks
 
 - **Prompt injection through email** (section 3). The main threat.
-- **Account pre-registration while "Confirm email" is off.** A person can sign up with a password and another person's address. Supabase treats that sign-up as confirmed. When the real owner of the address later uses "Continue with Google", Supabase can link the Google identity to that account, and the first person still knows its password. Before anyone other than the owner's test users signs in with Google, turn "Confirm email" back on (it needs custom SMTP for real users, DEPLOYMENT.md step 6). Supabase's page does not show this exact case, so the owner checks it with two test accounts.
+- **Account pre-registration (PLAUSIBLE, not tested against hosted Auth).** While "Confirm email" was off, a person could sign up with a password and another person's address, and Supabase marked that account confirmed. Turning the setting on later does not change that account. When the real owner of the address uses "Continue with Google", Supabase can link the Google identity to it, and the first person still knows its password. Controls: "Confirm email" stays on from now on; before the Google provider is turned on, the owner lists the accounts made while it was off and keeps only accounts of known people (DEPLOYMENT.md, One-time setup, item 7); judges use an owner-made demo account. A test with two accounts must make the password account while confirmation is off, which the owner does not do on production.
 - **The key.** If `GOOGLE_TOKEN_ENCRYPTION_KEY` leaks together with the database rows, every stored refresh token is open. Rotate: set a new key and ask every user to connect again (a `v2` format would allow a gradual change later).
 - **Testing mode** ends access every 7 days, and the app is limited to 100 test users.
 - **An email with an unknown outcome** waits for the user's answer. P-Dot does not search the Sent folder for it.
+- **A reconnect to another Google account** stops the recovery of an action that started in the earlier account. The user answers for it instead.
 
 ## Limits
 
