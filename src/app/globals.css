@@ -3625,12 +3625,6 @@ label.button[aria-disabled="true"] {
   color: inherit;
 }
 
-.overview-lists {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
-  gap: 1.25rem;
-}
-
 .mini-list {
   list-style: none;
   margin: 0;
@@ -3757,7 +3751,8 @@ label.button[aria-disabled="true"] {
 }
 
 .stack > .panel,
-.two-column .panel {
+.two-column .panel,
+.today-slot > .panel {
   border-top: 3px solid var(--panel-accent, var(--accent));
 }
 
@@ -3870,14 +3865,6 @@ label.button[aria-disabled="true"] {
   .mascot-eyes {
     animation: none;
   }
-}
-
-.overview-lists .panel {
-  border-top: 3px solid #0ea5e9;
-}
-
-.overview-lists .panel:nth-child(2) {
-  border-top-color: #f59e0b;
 }
 
 /* Agent card: scrolling tabs that always show the selected tab, and the simulated run */
@@ -4201,15 +4188,39 @@ label.button[aria-disabled="true"] {
 
 .today-slot {
   min-width: 0;
+  container-type: inline-size;
 }
 
-.today-slot .panel-heading {
+/* In a half-width Today column, the reminder form puts its button on a new line. */
+@container (max-width: 40rem) {
+  .reminder-form {
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+
+  .reminder-form > button {
+    justify-self: start;
+  }
+}
+
+.today-slot > * > .panel-heading {
   justify-content: flex-start;
   flex-wrap: wrap;
 }
 
-.today-slot .panel-heading > :first-child {
+.today-slot > * > .panel-heading > :first-child {
   margin-right: auto;
+}
+
+/* On a narrow section, the title and the buttons share the first line; a count or link goes under them. */
+@container (max-width: 30rem) {
+  .today-slot > * > .panel-heading > .section-controls {
+    order: 1;
+  }
+
+  .today-slot > * > .panel-heading > :not(:first-child, .section-controls) {
+    order: 2;
+    flex-basis: 100%;
+  }
 }
 
 .section-controls {

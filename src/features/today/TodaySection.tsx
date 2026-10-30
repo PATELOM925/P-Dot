@@ -17,9 +17,11 @@ export interface TodaySectionState {
 
 export const TodaySectionContext = createContext<TodaySectionState | null>(null);
 
+// Arrows with a stem for moving, so they do not look like the show or hide chevron.
 const ICONS = {
-  up: "M18 15l-6-6-6 6",
-  down: "M6 9l6 6 6-6",
+  up: "M12 19V5M5 12l7-7 7 7",
+  down: "M12 5v14M19 12l-7 7-7-7",
+  chevron: "M6 9l6 6 6-6",
 };
 
 function Icon({ path }: { path: string }) {
@@ -69,7 +71,7 @@ export function SectionControls() {
         aria-controls={bodyId}
         onClick={section.toggle}
       >
-        <Icon path={ICONS.down} />
+        <Icon path={ICONS.chevron} />
       </button>
     </div>
   );
