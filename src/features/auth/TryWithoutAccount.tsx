@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useResetOnPageShow } from "@/lib/page-show";
 import { getSupabaseConfig } from "@/lib/supabase-config";
 import { UNAVAILABLE_MESSAGE } from "./errors";
 import { startTrial } from "./start-trial";
@@ -16,6 +17,12 @@ export function TryWithoutAccount({ className = "button button-primary button-la
   const [error, setError] = useState<string | null>(null);
   // A ref, not state: two clicks in one frame both see the same state.
   const started = useRef(false);
+  // Back after the trial starts shows this page from the back/forward cache, still pending.
+  useResetOnPageShow(() => {
+    started.current = false;
+    setPending(false);
+    setError(null);
+  });
 
   async function start() {
     if (started.current) return;
@@ -28,7 +35,7 @@ export function TryWithoutAccount({ className = "button button-primary button-la
       const { createBrowserClient } = await import("@supabase/ssr");
       const result = await startTrial(createBrowserClient(url, publishableKey).auth);
       if (result.ok) {
-        // The button stays disabled until the page changes.
+        // The button stays disabled until the page changes. Back resets it (useResetOnPageShow).
         // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full load makes the server read the new session cookies
         window.location.assign("/chat");
         return;

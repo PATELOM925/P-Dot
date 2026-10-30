@@ -1,6 +1,7 @@
 "use client";
 
 import { useFormStatus } from "react-dom";
+import { usePageShowKey } from "@/lib/page-show";
 import { signInWithGoogleAction } from "./actions";
 
 function SubmitButton() {
@@ -14,8 +15,10 @@ function SubmitButton() {
 
 /** Sign-in with Google through Supabase. Asks Google only for the address and the basic profile. */
 export function GoogleSignInButton({ next }: { next?: string }) {
+  // A new key after Back from Google remounts the form, so the button is not stuck pending.
+  const key = usePageShowKey();
   return (
-    <form action={signInWithGoogleAction} className="stack">
+    <form key={key} action={signInWithGoogleAction} className="stack">
       {next ? <input type="hidden" name="next" value={next} /> : null}
       <SubmitButton />
     </form>
