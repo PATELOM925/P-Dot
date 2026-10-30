@@ -9,6 +9,7 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **The README explains the hackathon entry.** Problem: the hackathon rules ask the README to show how the project uses NVIDIA models and Nebius Token Factory, and two README lines were old. Resolution: a "Hackathon: Nebius x NVIDIA" section with the Nemotron tier table, the Token Factory and Tavily use, and fixed status and setup lines. ([PR #21](https://github.com/PATELOM925/P-Dot/pull/21))
 - **Tool calls, a tool hop loop with web search, and the eval port** ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)). ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22))
   - Problem: the assistant had no tools. Tirth's tool loop on an old branch had no spend hold, parsed arguments by hand, offered web search without the user's toggle and showed model plan text. The PRD still excluded memory, documents and actions.
   - Resolution:
