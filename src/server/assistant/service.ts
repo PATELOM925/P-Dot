@@ -38,6 +38,7 @@ import {
 } from "./executor";
 import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
 import { normalizeReplyText } from "./reply-text";
+import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
 import {
   budgetRefusal,
@@ -93,6 +94,8 @@ export interface AssistantDeps {
    * tools are not offered.
    */
   ownData?: OwnDataServices | null;
+  /** Make a title with the model for a new conversation, after the reply. Off when missing. */
+  titles?: boolean;
 }
 
 /** A Nebius hold made before the stream starts and settled when it ends. */
@@ -834,6 +837,64 @@ async function* runChatTurn(
     completionTokens: usage?.completionTokens,
   });
   yield { type: "done", message: saved, truncated: truncated || finishReason === "length" };
+
+  // 4. A title made by the model for a new conversation, after the reply (decision 0013).
+  if (deps.titles && turn.history.length === 1 && turn.conversation.title === titleFromMessage(turn.userMessage.content)) {
+    yield* makeTitle(deps, turn, signal, settle);
+  }
+}
+
+/**
+ * One short call on the fast tier. Each attempt holds and settles spend like a
+ * reply. Any failure keeps the title from the first message: the reply is
+ * already saved, so this step never sends an error.
+ */
+async function* makeTitle(
+  deps: AssistantDeps,
+  turn: PreparedTurn,
+  signal: AbortSignal,
+  settle: (hold: NebiusHold, amount: number) => void,
+): AsyncGenerator<ChatStreamEvent> {
+  const logBase = { requestId: turn.requestId, route: "chat" };
+  const plan = titlePlan(deps.routing.fast);
+  const messages = titleMessages(turn.userMessage.content);
+  const budget: AttemptBudget = {
+    async reserve(model) {
+      const heldMicroUsd = nebiusHoldMicroUsd(model, messages, plan.maxOutputTokens);
+      const reservation = await deps.spend.reserve("nebius", heldMicroUsd);
+      if (!reservation.allowed) return { allowed: false, limit: reservation.limit };
+      return { allowed: true, hold: { reservationId: reservation.id, heldMicroUsd } };
+    },
+    settle(hold, model, outcome) {
+      settle(hold, outcome.sent ? nebiusSettleMicroUsd(model, hold.heldMicroUsd, outcome.usage) : 0);
+    },
+  };
+  let text = "";
+  try {
+    for await (const chunk of executeRouted({
+      plan,
+      messages,
+      provider: deps.provider,
+      budget,
+      breaker: deps.breaker,
+      signal,
+      report: newRouteReport(plan.tier),
+      random: deps.random,
+    })) {
+      if (chunk.type === "text") text += chunk.text;
+      if (text.length > 400) break;
+    }
+  } catch (error) {
+    deps.log("warn", "title_failed", { ...logBase, kind: error instanceof Error ? error.name : "unknown" });
+    return;
+  }
+  const title = cleanTitle(text);
+  if (!title || signal.aborted) return;
+  const renamed = await deps.repo.renameConversation(turn.userId, turn.conversation.id, title).catch(() => {
+    deps.log("warn", "title_save_failed", logBase);
+    return null;
+  });
+  if (renamed) yield { type: "title", conversationId: renamed.id, title: renamed.title };
 }
 
 /**

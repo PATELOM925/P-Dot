@@ -39,6 +39,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     log: logEvent,
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
+    titles: true,
     ownData: {
       embedder: createBudgetedEmbedder({
         settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },

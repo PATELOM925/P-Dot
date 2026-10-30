@@ -118,6 +118,8 @@ export type ChatStreamEvent =
   | { type: "status"; tool: AssistantToolName; query?: string }
   | { type: "delta"; text: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }
+  /** After `done` for a new conversation: the title the model made, already saved. */
+  | { type: "title"; conversationId: string; title: string }
   | { type: "error"; code: ApiErrorCode; message: string; retryable: boolean };
 
 // ---------------------------------------------------------------------------

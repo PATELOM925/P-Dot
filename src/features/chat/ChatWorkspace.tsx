@@ -346,6 +346,9 @@ export function ChatWorkspace({
             notifyActionsChanged();
             setStatus("Reply complete.");
             break;
+          case "title":
+            setConversations((list) => list.map((c) => (c.id === event.conversationId ? { ...c, title: event.title } : c)));
+            break;
           case "error":
             finished = true;
             setStreaming(null);
