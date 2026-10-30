@@ -119,6 +119,16 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
+  /** Set to make the connector history check fail. */
+  failConnectorCheck = false;
+
+  async hasConnectorReply(userId: string, conversationId: string) {
+    if (this.failConnectorCheck) throw new Error("hasConnectorReply failed");
+    return this.messages.some(
+      (m) => m.userId === userId && m.conversationId === conversationId && m.role === "assistant" && m.route?.reason === "connector_read",
+    );
+  }
+
   async nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }) {
     return (
       this.messages

@@ -10,6 +10,7 @@ import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
+import { MCP_SERVER_NAMES, type McpServerId } from "@/lib/connectors";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type {
   ActionProposalDTO,
@@ -32,7 +33,7 @@ import {
 import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
-import { ToolChips, ToolsMenu, type ComposerToolState } from "./ComposerTools";
+import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -93,11 +94,14 @@ export function ChatWorkspace({
   initialConversationId,
   mode,
   trial = false,
+  connectedApps = [],
 }: {
   initialConversationId: string | null;
   mode: Mode;
   /** A trial user (decision 0015): limit errors say so. */
   trial?: boolean;
+  /** Apps the user connected that chat can read. Read on the server. */
+  connectedApps?: McpServerId[];
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
@@ -106,6 +110,8 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  // Apps to read for the next message only. The server refuses them together with web search.
+  const [apps, setApps] = useState<McpServerId[]>([]);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
@@ -325,10 +331,12 @@ export function ChatWorkspace({
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
+    const sentApps = apps;
+    const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
     const body: ChatRequest =
       action === "send"
-        ? { action, message: text, webSearch, effort, ...(activeId ? { conversationId: activeId } : { mode }) }
-        : { action, conversationId: activeId!, webSearch, effort };
+        ? { action, message: text, webSearch, effort, ...connectors, ...(activeId ? { conversationId: activeId } : { mode }) }
+        : { action, conversationId: activeId!, webSearch, effort, ...connectors };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
@@ -395,6 +403,8 @@ export function ChatWorkspace({
             if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
+            // One message only. An app the user turned on after Send stays on for the next message.
+            if (sentApps.length > 0) setApps((current) => current.filter((app) => !sentApps.includes(app)));
             setActiveId(event.conversation.id);
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
@@ -406,7 +416,7 @@ export function ChatWorkspace({
               search: current?.search ?? null,
               tier: event.route.tier,
             }));
-            setStatus(webSearch ? "Searching the web…" : "P-Dot is replying…");
+            setStatus(sentApps.length > 0 ? "Reading your apps…" : webSearch ? "Searching the web…" : "P-Dot is replying…");
             break;
           case "search":
             setStreaming((current) => ({
@@ -498,19 +508,61 @@ export function ChatWorkspace({
     }
   }
 
-  const tools: ComposerToolState = { webSearch, deep: effort === "deep" };
-  function toggleTool(tool: keyof ComposerToolState) {
-    if (tool === "webSearch") {
-      setWebSearch((on) => !on);
-    } else {
+  // The "+" menu: web search, Think harder, then each connected app. A new tool is one more item.
+  const tools: ToolItem[] = [
+    {
+      key: "web",
+      title: "Search the web",
+      description: "Current pages, with sources.",
+      chip: "Web search",
+      chipClass: "chip-web",
+      icon: "web",
+      on: webSearch,
+    },
+    {
+      key: "deep",
+      title: "Think harder",
+      description: "Stronger model. Slower. This message only.",
+      chip: "Think harder",
+      chipClass: "chip-deep",
+      icon: "deep",
+      on: effort === "deep",
+    },
+    ...connectedApps.map(
+      (app): ToolItem => ({
+        key: `app:${app}`,
+        title: `Use ${MCP_SERVER_NAMES[app]}`,
+        description: "Read only, for this message.",
+        chip: MCP_SERVER_NAMES[app],
+        chipClass: "chip-app",
+        icon: "app",
+        on: apps.includes(app),
+      }),
+    ),
+  ];
+
+  // Web search and apps do not go together in one message: turning one on turns the other off.
+  function toggleTool(key: string) {
+    if (key === "web") {
+      const on = !webSearch;
+      setWebSearch(on);
+      if (on) setApps([]);
+    } else if (key === "deep") {
       effortVersion.current += 1;
       setEffort((current) => (current === "deep" ? "auto" : "deep"));
+    } else if (key.startsWith("app:")) {
+      const app = connectedApps.find((id) => `app:${id}` === key);
+      if (!app) return;
+      const on = !apps.includes(app);
+      setApps((current) => (on ? [...current.filter((a) => a !== app), app] : current.filter((a) => a !== app)));
+      if (on) setWebSearch(false);
     }
   }
 
   function pickStarter(prompt: StarterPrompt) {
     setDraft(prompt.text);
     setWebSearch(prompt.webSearch);
+    if (prompt.webSearch) setApps([]);
     effortVersion.current += 1;
     setEffort(prompt.effort);
     inputRef.current?.focus();
@@ -865,7 +917,7 @@ export function ChatWorkspace({
           }}
         >
           <div className="composer-box">
-            <ToolChips tools={tools} onToggle={toggleTool} disabled={sending} inputRef={inputRef} />
+            <ToolChips items={tools} onToggle={toggleTool} disabled={sending} inputRef={inputRef} />
             <label htmlFor="composer-input" className="visually-hidden">
               Message
             </label>
@@ -898,7 +950,7 @@ export function ChatWorkspace({
               <ToolsMenu
                 open={openMenu === "tools"}
                 onOpenChange={(open) => setOpenMenu(open ? "tools" : null)}
-                tools={tools}
+                items={tools}
                 onToggle={toggleTool}
                 disabled={sending}
               />
