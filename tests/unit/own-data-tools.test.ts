@@ -303,23 +303,170 @@ describe("proposal tools", () => {
     ]);
     expect(own.memories).toHaveLength(2);
   });
+});
 
-  it("counts a decided proposal of this turn as written: Retry reply after a browser approval makes no new card", async () => {
-    const repo = new MemoryRepository();
-    const { deps, own, waited } = setup([{ calls: [call("propose_task", { title: "Pay rent" })] }, { text: "Done." }], { repo });
-    repo.failInsertForRole = "assistant";
-    const first = await runTurn(deps, { action: "send", message: "Add a task to pay rent", webSearch: false }, waited);
-    own.proposals[0]!.status = "executed";
+const KEY = "11111111-1111-4111-8111-111111111111";
+const toolRounds = (requests: ModelCallRequest[]) => requests.filter((r) => r.tools && r.messages.at(-1)?.role === "user");
+const lastToolResults = (requests: ModelCallRequest[]) =>
+  requests.at(-1)!.messages.filter((m) => m.role === "tool").map((m) => m.content);
 
-    repo.failInsertForRole = null;
-    const retry = await prepareChatTurn(deps, {
+/** Sends with a request key; the reply save fails, so the turn has no reply. */
+async function failedFirstAttempt(setupResult: ReturnType<typeof setup>, message: string) {
+  const { deps, repo, waited } = setupResult;
+  repo.failInsertForRole = "assistant";
+  const request: ChatRequest = { action: "send", message, webSearch: false };
+  const prepared = await prepareChatTurn(deps, { userId: ALICE, requestId: "r1", request, requestKey: KEY });
+  if (!prepared.ok) throw new Error(`refused: ${prepared.code}`);
+  expect(prepared.turn.repeat).toBe(false);
+  const events = await collect(streamChatTurn(deps, prepared.turn, new AbortController().signal));
+  await Promise.all(waited);
+  expect(events.at(-1)).toMatchObject({ type: "error" });
+  repo.failInsertForRole = null;
+  return { turn: prepared.turn, request };
+}
+
+async function prepareRepeat(deps: AssistantDeps, kind: "retry" | "resend", first: { turn: { conversation: { id: string } }; request: ChatRequest }) {
+  const prepared = await prepareChatTurn(
+    deps,
+    kind === "retry"
+      ? { userId: ALICE, requestId: "r2", request: { action: "retry", conversationId: first.turn.conversation.id, webSearch: false } }
+      : { userId: ALICE, requestId: "r2", request: first.request, requestKey: KEY },
+  );
+  if (!prepared.ok) throw new Error(`refused: ${prepared.code}`);
+  expect(prepared.turn.repeat).toBe(true);
+  return prepared.turn;
+}
+
+describe("fresh turns always write", () => {
+  it("two turns with the same request in the same second each get a card and a memory", async () => {
+    const { deps, own, repo, waited } = setup([
+      { calls: [call("propose_task", { title: "Buy milk" }, "c1"), call("save_memory", { content: "Drinks oat milk" }, "c2")] },
+      { text: "Done." },
+    ]);
+    const message = "Remember that I drink oat milk and add a task to buy milk";
+    const first = await runTurn(deps, { action: "send", message, webSearch: false }, waited);
+    const second = await prepareChatTurn(deps, {
       userId: ALICE,
       requestId: "r2",
-      request: { action: "retry", conversationId: first.turn.conversation.id, webSearch: false },
+      request: { action: "send", conversationId: first.turn.conversation.id, message, webSearch: false },
     });
-    if (!retry.ok) throw new Error(retry.code);
-    await collect(streamChatTurn(deps, retry.turn, new AbortController().signal));
+    if (!second.ok) throw new Error(second.code);
+    // Same database time as the first turn's message and rows.
+    const sameTime = first.turn.userMessage.createdAt;
+    repo.messages.forEach((m) => (m.createdAt = sameTime));
+    second.turn.userMessage.createdAt = sameTime;
+    await collect(streamChatTurn(deps, second.turn, new AbortController().signal));
 
-    expect(own.proposals).toHaveLength(1);
+    expect(second.turn.repeat).toBe(false);
+    expect(own.proposals.map((p) => p.createdAt)).toEqual([sameTime, sameTime]);
+    expect(own.memories).toHaveLength(2);
+  });
+
+  it("two tabs that send the same request at the same time each get a card and a memory", async () => {
+    const { deps, own, repo, waited } = setup([
+      { calls: [call("propose_task", { title: "Buy milk" }, "c1"), call("save_memory", { content: "Drinks oat milk" }, "c2")] },
+      { text: "Done." },
+    ]);
+    const conversation = await repo.createConversation(ALICE, "Chat", "personal");
+    const request: ChatRequest = { action: "send", conversationId: conversation.id, message: "Add a task to buy milk, I drink oat milk", webSearch: false };
+    const tabA = await prepareChatTurn(deps, { userId: ALICE, requestId: "a", request, requestKey: "aaaaaaaa-0000-4000-8000-000000000001" });
+    const tabB = await prepareChatTurn(deps, { userId: ALICE, requestId: "b", request, requestKey: "bbbbbbbb-0000-4000-8000-000000000002" });
+    if (!tabA.ok || !tabB.ok) throw new Error("refused");
+
+    // A saves its rows after B's message, then B runs its tools.
+    await collect(streamChatTurn(deps, tabA.turn, new AbortController().signal));
+    await collect(streamChatTurn(deps, tabB.turn, new AbortController().signal));
+    await Promise.all(waited);
+
+    expect([tabA.turn.repeat, tabB.turn.repeat]).toEqual([false, false]);
+    expect(own.proposals[0]!.createdAt >= tabB.turn.userMessage.createdAt).toBe(true);
+    expect(own.proposals).toHaveLength(2);
+    expect(own.memories.map((m) => m.sourceMessageId)).toEqual([tabA.turn.userMessage.id, tabB.turn.userMessage.id]);
+  });
+});
+
+describe("a repeat of a turn keeps the first attempt's cards", () => {
+  type Own = ReturnType<typeof setup>["own"];
+  const after: [string, Step, (own: Own) => void, "proposals" | "memories"][] = [
+    ["the proposal was approved without an edit", { calls: [call("propose_task", { title: "Pay rent" })] }, (own) => (own.proposals[0]!.status = "executed"), "proposals"],
+    [
+      "the proposal was approved with an edit",
+      { calls: [call("propose_task", { title: "Pay rent" })] },
+      (own) => {
+        own.proposals[0]!.status = "executed";
+        own.proposals[0]!.payload = { kind: "create_task", mode: "personal", title: "Pay October rent" };
+      },
+      "proposals",
+    ],
+    ["the proposal was rejected", { calls: [call("propose_task", { title: "Pay rent" })] }, (own) => (own.proposals[0]!.status = "rejected"), "proposals"],
+    [
+      "the memory was edited and kept",
+      { calls: [call("save_memory", { content: "Drinks milk" })] },
+      (own) => {
+        own.memories[0]!.status = "active";
+        own.memories[0]!.content = "Drinks oat milk";
+      },
+      "memories",
+    ],
+  ];
+
+  for (const kind of ["retry", "resend"] as const) {
+    it.each(after)(`${kind}: no new card after %s`, async (_name, step, decide, rows) => {
+      const env = setup([step, { text: "Done." }]);
+      const first = await failedFirstAttempt(env, "Add a task to pay rent, and remember that I drink milk");
+      expect(env.own[rows]).toHaveLength(1);
+      decide(env.own);
+
+      const turn = await prepareRepeat(env.deps, kind, first);
+      const events = await collect(streamChatTurn(env.deps, turn, new AbortController().signal));
+      await Promise.all(env.waited);
+
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+      expect(toolRounds(env.requests)).toHaveLength(2);
+      expect(lastToolResults(env.requests)).toEqual([expect.stringContaining("already proposed in an earlier attempt")]);
+      expect(env.own.proposals.length + env.own.memories.length).toBe(1);
+    });
+  }
+
+  it("skips every write of the repeat once the first attempt wrote anything", async () => {
+    const steps: Step[] = [{ calls: [call("propose_task", { title: "Book flights" })] }, { text: "Done." }];
+    const env = setup(steps);
+    const first = await failedFirstAttempt(env, "Add a task to book flights, and remember that I fly from BOM");
+    steps.splice(0, 1, { calls: [call("propose_task", { title: "Book flights" }, "c1"), call("save_memory", { content: "Flies from BOM" }, "c2")] });
+
+    const turn = await prepareRepeat(env.deps, "retry", first);
+    await collect(streamChatTurn(env.deps, turn, new AbortController().signal));
+
+    expect(lastToolResults(env.requests)).toHaveLength(2);
+    expect(env.own.proposals).toHaveLength(1);
+    expect(env.own.memories).toHaveLength(0);
+  });
+
+  it("writes every proposal and memory of the repeat when the first attempt wrote nothing", async () => {
+    const steps: Step[] = [{ text: "Sure." }];
+    const env = setup(steps);
+    const first = await failedFirstAttempt(env, "Add a task to book flights, and remember that I fly from BOM");
+    steps.splice(0, 1, { calls: [call("propose_task", { title: "Book flights" }, "c1"), call("save_memory", { content: "Flies from BOM" }, "c2")] }, { text: "Done." });
+
+    const turn = await prepareRepeat(env.deps, "retry", first);
+    await collect(streamChatTurn(env.deps, turn, new AbortController().signal));
+
+    expect(env.own.proposals).toHaveLength(1);
+    expect(env.own.memories).toHaveLength(1);
+  });
+
+  it("does not count a proposal of a later message that another tab sent while the retry runs", async () => {
+    const steps: Step[] = [{ text: "Sure." }];
+    const env = setup(steps);
+    const first = await failedFirstAttempt(env, "Add a task to buy milk");
+    const retry = await prepareRepeat(env.deps, "retry", first);
+    steps.splice(0, 1, { calls: [call("propose_task", { title: "Buy milk" })] }, { text: "Done." });
+
+    const other = await runTurn(env.deps, { action: "send", conversationId: first.turn.conversation.id, message: "Add a task to buy milk", webSearch: false }, env.waited);
+    expect(env.own.proposals).toHaveLength(1);
+    await collect(streamChatTurn(env.deps, retry, new AbortController().signal));
+
+    expect(other.turn.userMessage.createdAt > retry.userMessage.createdAt).toBe(true);
+    expect(env.own.proposals).toHaveLength(2);
   });
 });

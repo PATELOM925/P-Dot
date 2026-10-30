@@ -96,6 +96,8 @@ export interface ConversationRepository {
   insertMessage(userId: string, message: NewMessage): Promise<MessageDTO>;
   /** Returns null when no message with that ID belongs to the user. */
   getMessage(userId: string, messageId: string): Promise<MessageDTO | null>;
+  /** The `created_at` of the first user message after `after` in the conversation, as stored, or null. */
+  nextUserMessageAt(userId: string, conversationId: string, after: string): Promise<string | null>;
   findMessageByClientRequest(userId: string, key: string): Promise<KeyedMessage | null>;
   findConversationByClientRequest(
     userId: string,
@@ -137,6 +139,7 @@ const MESSAGE_COLUMNS =
 const ROUTE_COLUMNS = new Set(["model", "model_tier", "route_reason", "model_fallback"]);
 
 const keyedRow = z.object({ conversation_id: z.string(), client_request_hash: z.string() });
+const createdAtRow = z.object({ created_at: z.string() });
 
 const claimRow = z.object({
   outcome: z.enum(["claimed", "answered", "busy", "not_found"]),
@@ -351,6 +354,21 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
         .maybeSingle();
       if (error) throw repositoryError("getMessage", error);
       return data ? toMessage(data) : null;
+    },
+
+    async nextUserMessageAt(userId, conversationId, after) {
+      const { data, error } = await supabase
+        .from("messages")
+        .select("created_at")
+        .eq("user_id", userId)
+        .eq("conversation_id", conversationId)
+        .eq("role", "user")
+        .gt("created_at", after)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw repositoryError("nextUserMessageAt", error);
+      return data ? createdAtRow.parse(data).created_at : null;
     },
 
     async findMessageByClientRequest(userId, key) {

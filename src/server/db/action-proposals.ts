@@ -25,10 +25,10 @@ export interface ActionProposalRepository {
   /** Inserts with status "proposed". Throws when the payload or summary is invalid. */
   createProposal(userId: string, proposal: NewActionProposal): Promise<ActionProposalDTO>;
   /**
-   * Every proposal of one conversation created at or after `since` (an ISO
-   * time), oldest first, in any status. No limit: one turn makes only a few.
+   * True when the conversation has a proposal in any status created at or
+   * after `from` and, when `before` is set, before it (stored times).
    */
-  listTurnProposals(userId: string, conversationId: string, since: string): Promise<ActionProposalDTO[]>;
+  hasProposalBetween(userId: string, conversationId: string, from: string, before: string | null): Promise<boolean>;
   /** Newest first. `status` filters; undefined returns every status. Rows whose payload does not parse are left out. */
   listProposals(userId: string, status: ActionStatus | undefined, limit: number): Promise<ActionProposalDTO[]>;
   /**
@@ -152,16 +152,17 @@ export function createActionProposalRepository(supabase: SupabaseClient): Action
       return toWrittenProposal(data, "createActionProposal");
     },
 
-    async listTurnProposals(userId, conversationId, since) {
-      const { data, error } = await supabase
+    async hasProposalBetween(userId, conversationId, from, before) {
+      let query = supabase
         .from("action_proposals")
-        .select(PROPOSAL_COLUMNS)
+        .select("id")
         .eq("user_id", userId)
         .eq("conversation_id", conversationId)
-        .gte("created_at", since)
-        .order("created_at", { ascending: true });
-      if (error) throw new RepositoryError("listTurnProposals");
-      return (data ?? []).map(toProposal).filter((dto): dto is ActionProposalDTO => dto !== null);
+        .gte("created_at", from);
+      if (before !== null) query = query.lt("created_at", before);
+      const { data, error } = await query.limit(1);
+      if (error) throw new RepositoryError("hasProposalBetween");
+      return (data ?? []).length > 0;
     },
 
     async listProposals(userId, status, limit) {

@@ -34,8 +34,8 @@ export interface OwnDataServices {
   /** Holds spend for each batch (createBudgetedEmbedder). */
   embedder: Embedder;
   retrieval: RetrievalRepository;
-  memories: Pick<MemoryRepository, "createMemory" | "listMemoriesFromMessage">;
-  proposals: Pick<ActionProposalRepository, "createProposal" | "listTurnProposals">;
+  memories: Pick<MemoryRepository, "createMemory" | "hasAssistantMemoryFrom">;
+  proposals: Pick<ActionProposalRepository, "createProposal" | "hasProposalBetween">;
 }
 
 /** Server services a tool may use. AssistantDeps has all of them. */
@@ -56,8 +56,12 @@ export interface ToolContext {
   mode: Mode;
   conversationId: string;
   userMessageId: string;
-  /** When the user message was saved (database time). A turn's writes come at or after it. */
-  userMessageCreatedAt: string;
+  /**
+   * True when an earlier attempt of this turn already wrote a proposal or a
+   * suggested memory. Then the propose tools write nothing (decision 0013).
+   * Always false for a fresh turn. Read once per turn.
+   */
+  earlierAttemptWrote: () => Promise<boolean>;
   signal: AbortSignal;
   /** Web sources the turn already has, in citation order. A tool adds only new URLs. */
   sources: readonly WebSearchResult[];

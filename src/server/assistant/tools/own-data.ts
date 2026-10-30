@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_MEMORY_CHARS, MAX_REMINDER_TITLE_CHARS, MAX_TASK_CHARS, RETRIEVAL_MATCH_COUNT, SEARCH_QUERY_CHARS } from "@/lib/limits";
+import type { ConversationRepository } from "@/server/db/conversations";
 import type { ActionPayload } from "@/types/api";
 import { formatDocumentMatches, formatMemories } from "../prompt";
 import type { OwnDataServices, ToolContext, ToolSpec } from "./registry";
@@ -62,25 +63,42 @@ export const searchMemoriesTool: ToolSpec<z.infer<typeof query>> = {
 };
 
 /**
- * Writes a proposal unless this turn already wrote one with the same payload,
- * so "Retry reply" after a failed save makes no second card. A turn is the
- * conversation from its user message on: proposals have no message link yet,
- * so the check reads every proposal of the conversation created at or after
- * the user message, in any status. A later turn that asks again gets a card.
+ * The check behind `ToolContext.earlierAttemptWrote` for one turn (decision
+ * 0013). A fresh turn (its user message was saved by this request) never
+ * reads. A repeat ("Retry reply", or a resend that found the saved message)
+ * reads once, before its first write, so its own writes do not block it.
+ * Linked to the turn: a suggested memory with the user message as its source,
+ * or a proposal of the conversation saved from the user message up to the
+ * next user message. Payload and status do not matter, so an edit or a
+ * decision on the card still counts.
  */
-async function propose(context: ToolContext, payload: ActionPayload, summary: string): Promise<"created" | "exists"> {
-  const { proposals } = data(context);
-  const earlier = await proposals.listTurnProposals(context.userId, context.conversationId, context.userMessageCreatedAt);
-  const same = JSON.stringify(payload);
-  if (earlier.some((p) => JSON.stringify(p.payload) === same)) return "exists";
-  await proposals.createProposal(context.userId, { conversationId: context.conversationId, payload, summary });
-  return "created";
+export function earlierAttemptCheck(
+  services: OwnDataServices | null | undefined,
+  messages: Pick<ConversationRepository, "nextUserMessageAt">,
+  turn: { repeat: boolean; userId: string; conversationId: string; userMessage: { id: string; createdAt: string } },
+): () => Promise<boolean> {
+  let checked: Promise<boolean> | null = null;
+  const read = async () => {
+    if (!turn.repeat || !services) return false;
+    const { userId, conversationId, userMessage } = turn;
+    if (await services.memories.hasAssistantMemoryFrom(userId, userMessage.id)) return true;
+    const next = await messages.nextUserMessageAt(userId, conversationId, userMessage.createdAt);
+    return services.proposals.hasProposalBetween(userId, conversationId, userMessage.createdAt, next);
+  };
+  return () => (checked ??= read());
 }
 
-const proposed = (what: string, result: "created" | "exists") =>
-  result === "created"
-    ? `A card now asks the user to approve ${what}. It is not done yet. Say that the user can approve it below.`
-    : `A card that asks the user to approve ${what} is already waiting. Nothing new was added.`;
+const ALREADY_PROPOSED =
+  "This was already proposed in an earlier attempt at this reply, and the user may have decided on it. Nothing new was added. Do not say that a new card is waiting.";
+
+async function propose(context: ToolContext, payload: ActionPayload, summary: string): Promise<boolean> {
+  if (await context.earlierAttemptWrote()) return false;
+  await data(context).proposals.createProposal(context.userId, { conversationId: context.conversationId, payload, summary });
+  return true;
+}
+
+const proposed = (what: string, created: boolean) =>
+  created ? `A card now asks the user to approve ${what}. It is not done yet. Say that the user can approve it below.` : ALREADY_PROPOSED;
 
 const taskArgs = z.object({ title: z.string().trim().min(1).max(MAX_TASK_CHARS).describe("The task, short and clear.") });
 
@@ -94,8 +112,8 @@ export const proposeTaskTool: ToolSpec<z.infer<typeof taskArgs>> = {
   offered: (flags) => flags.ownData,
   statusQuery: () => undefined,
   async run({ title }, context) {
-    const result = await propose(context, { kind: "create_task", mode: context.mode, title }, `Add the task "${title}".`);
-    return { content: proposed("this task", result) };
+    const created = await propose(context, { kind: "create_task", mode: context.mode, title }, `Add the task "${title}".`);
+    return { content: proposed("this task", created) };
   },
 };
 
@@ -118,8 +136,8 @@ export const proposeReminderTool: ToolSpec<z.infer<typeof reminderArgs>> = {
   statusQuery: () => undefined,
   async run({ title, dueAt }, context) {
     const due = new Date(dueAt).toISOString();
-    const result = await propose(context, { kind: "create_reminder", mode: context.mode, title, dueAt: due }, `Remind you: "${title}".`);
-    return { content: proposed("this reminder", result) };
+    const created = await propose(context, { kind: "create_reminder", mode: context.mode, title, dueAt: due }, `Remind you: "${title}".`);
+    return { content: proposed("this reminder", created) };
   },
 };
 
@@ -139,11 +157,7 @@ export const saveMemoryTool: ToolSpec<z.infer<typeof memoryArgs>> = {
   statusQuery: () => undefined,
   async run({ content }, context) {
     const { memories, embedder } = data(context);
-    // Memories link to their message, so the check reads only this turn's.
-    const earlier = await memories.listMemoriesFromMessage(context.userId, context.userMessageId);
-    if (earlier.some((m) => m.source === "assistant" && m.content === content)) {
-      return { content: "This memory is already waiting for the user. Nothing new was added." };
-    }
+    if (await context.earlierAttemptWrote()) return { content: ALREADY_PROPOSED };
     // The vector is written now, so a memory the user keeps without editing can be found.
     const [vector] = await embedder.embed([content], context.signal);
     await memories.createMemory(

@@ -119,6 +119,15 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
+  async nextUserMessageAt(userId: string, conversationId: string, after: string) {
+    return (
+      this.messages
+        .filter((m) => m.userId === userId && m.conversationId === conversationId && m.role === "user" && m.createdAt > after)
+        .map((m) => m.createdAt)
+        .sort()[0] ?? null
+    );
+  }
+
   async insertMessage(userId: string, message: NewMessage) {
     if (this.failInsertForRole === message.role) throw new Error("insert failed");
     const owner = this.conversations.find((c) => c.id === message.conversationId);
@@ -408,10 +417,8 @@ export class FakeOwnData {
           this.memories.push(row);
           return row;
         },
-        listMemoriesFromMessage: async (userId: string, messageId: string) =>
-          this.memories
-            .filter((m) => m.userId === userId && m.sourceMessageId === messageId)
-            .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+        hasAssistantMemoryFrom: async (userId: string, messageId: string) =>
+          this.memories.some((m) => m.userId === userId && m.sourceMessageId === messageId && m.source === "assistant"),
       },
       proposals: {
         createProposal: async (userId: string, proposal: NewActionProposal) => {
@@ -429,10 +436,14 @@ export class FakeOwnData {
           this.proposals.push(row);
           return row;
         },
-        listTurnProposals: async (userId: string, conversationId: string, since: string) =>
-          this.proposals
-            .filter((p) => p.userId === userId && p.conversationId === conversationId && p.createdAt >= since)
-            .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+        hasProposalBetween: async (userId: string, conversationId: string, from: string, before: string | null) =>
+          this.proposals.some(
+            (p) =>
+              p.userId === userId &&
+              p.conversationId === conversationId &&
+              p.createdAt >= from &&
+              (before === null || p.createdAt < before),
+          ),
       },
     };
   }

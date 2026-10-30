@@ -244,7 +244,7 @@ describe("POST /api/chat when one write fails", () => {
     const quota = new FakeQuota();
     const contextRecords = new FakeContextRecords();
     const existing = variant === "existing" ? await repo.createConversation(ALICE, "Earlier", "personal") : null;
-    faults.wrap(repo, ["findMessageByClientRequest", "findConversationByClientRequest", "getMessage"], { read: true });
+    faults.wrap(repo, ["findMessageByClientRequest", "findConversationByClientRequest", "getMessage", "nextUserMessageAt"], { read: true });
     faults.wrap(repo, ["createConversation", "insertMessage", "claimReply", "releaseReplyClaim"], {
       detail: (method, args) => (method === "insertMessage" ? String((args[1] as { role: string }).role) : ""),
     });
@@ -263,9 +263,9 @@ describe("POST /api/chat when one write fails", () => {
       // Its spend writes are swept through FakeSpend; the call itself can only fail.
       faults.wrap(ownData.embedder, ["embed"], { label: "Embedder", read: true });
       faults.wrap(ownData.retrieval, ["matchMemories", "matchDocumentChunks"], { label: "Retrieval", read: true });
-      faults.wrap(ownData.proposals, ["listTurnProposals"], { label: "Proposals", read: true });
+      faults.wrap(ownData.proposals, ["hasProposalBetween"], { label: "Proposals", read: true });
       faults.wrap(ownData.proposals, ["createProposal"], { label: "Proposals" });
-      faults.wrap(ownData.memories, ["listMemoriesFromMessage"], { label: "Memories", read: true });
+      faults.wrap(ownData.memories, ["hasAssistantMemoryFrom"], { label: "Memories", read: true });
       faults.wrap(ownData.memories, ["createMemory"], { label: "Memories" });
     }
     const fake = fakeDeps({ repo, spend, quota, contextRecords, ...(tools ? { ownData, provider: model.provider } : {}) });

@@ -54,6 +54,7 @@ import {
 import { RETRY_POLICY, type RoutingConfig } from "./tiers";
 import {
   checkToolCall,
+  earlierAttemptCheck,
   MAX_TOOL_CALLS_PER_HOP,
   MAX_TOOL_HOPS,
   selectTools,
@@ -123,6 +124,12 @@ export interface PreparedTurn {
   userId: string;
   conversation: ConversationSummary;
   userMessage: MessageDTO;
+  /**
+   * True when this request answers a user message that was already saved:
+   * "Retry reply", or a resend that found its message. False when this
+   * request saved the message (a fresh turn).
+   */
+  repeat: boolean;
   /** Chronological history ending with `userMessage`. */
   history: HistoryMessage[];
   webSearch: boolean;
@@ -375,6 +382,7 @@ export async function prepareChatTurn(
         userId,
         conversation: { ...conversation, updatedAt: userMessage.createdAt },
         userMessage,
+        repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
         webSearch: request.webSearch,
         searchBudgetExhausted,
@@ -578,6 +586,12 @@ async function* runChatTurn(
   const toolSignal = AbortSignal.any([signal, AbortSignal.timeout(plan.deadlineMs)]);
   const sources: WebSearchResult[] = [...results];
   const callsPerTool = new Map<string, number>();
+  const earlierAttemptWrote = earlierAttemptCheck(deps.ownData, deps.repo, {
+    repeat: turn.repeat,
+    userId: turn.userId,
+    conversationId: turn.conversation.id,
+    userMessage: turn.userMessage,
+  });
 
   let content = "";
   let truncated = false;
@@ -745,7 +759,7 @@ async function* runChatTurn(
             mode: turn.conversation.mode,
             conversationId: turn.conversation.id,
             userMessageId: turn.userMessage.id,
-            userMessageCreatedAt: turn.userMessage.createdAt,
+            earlierAttemptWrote,
             signal: toolSignal,
             sources,
           });
