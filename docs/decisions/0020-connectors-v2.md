@@ -153,6 +153,34 @@ Changes to the shared MCP code, each one a no-op for Notion, Linear and Todoist:
 - **C12 UI state ownership:** The approval card state is local to one reply and holds one key. Link and connection state comes from the server on each page load.
 - **C13 Proof in the real runtime:** Unit and SQL gate tests with fakes. Not proven: a real GitHub App connect, a real bot, and the OpenNext Worker runtime.
 
+## Owner setup
+
+Do these steps only after the two migrations are in the Supabase migration history. Until then, leave the settings empty.
+
+**GitHub App**
+
+1. Go to GitHub, Settings, Developer settings, GitHub Apps, **New GitHub App**.
+2. Name: `P-Dot` (or another free name). Homepage URL: `https://pdot.iampatelom.com`.
+3. Callback URL: `https://pdot.iampatelom.com/api/connectors/mcp/callback`. Keep "Expire user authorization tokens" on. Leave "Request user authorization (OAuth) during installation" off.
+4. Webhook: clear "Active". P-Dot needs no GitHub webhook.
+5. Permissions, Repository: Contents **Read-only**, Issues **Read-only**, Pull requests **Read-only**, Metadata **Read-only**. Give no write permission.
+6. "Where can this GitHub App be installed?": **Any account**, so other users can install it on their repositories.
+7. Create the app. Copy the **Client ID**. Select **Generate a new client secret** and copy it.
+8. `npx wrangler secret put GITHUB_MCP_CLIENT_ID` and `npx wrangler secret put GITHUB_MCP_CLIENT_SECRET`.
+9. To read private repositories, each user installs the app on the account or repositories (the app's public page, **Install**). Public repositories work without it.
+
+**Telegram bot**
+
+1. In Telegram, open `@BotFather`, send `/newbot`, and pick a name and a username that ends in `bot`. Copy the token.
+2. Make a webhook secret: `openssl rand -hex 32`.
+3. `npx wrangler secret put TELEGRAM_BOT_TOKEN`, `npx wrangler secret put TELEGRAM_BOT_USERNAME` (without `@`) and `npx wrangler secret put TELEGRAM_WEBHOOK_SECRET`.
+4. Set the webhook once, from your own machine (do not paste the token into a shared place):
+   `curl -s "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=https://pdot.iampatelom.com/api/telegram/webhook" -d "secret_token=<SECRET>" -d 'allowed_updates=["message"]'`
+5. Check: `curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"` shows the URL and no last error.
+6. Optional, in `@BotFather`: `/setdescription` "Sends you messages that you approve in P-Dot."
+
+Telegram and GitHub also need `CONNECTOR_TOKEN_ENCRYPTION_KEY` (decision 0016). When the Notion, Linear and Todoist cards work on production, it is set.
+
 ## Limits
 
 - **L1.** The bot cannot answer a message with P-Dot's assistant (see Decisions).
