@@ -34,7 +34,7 @@ import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
-import { googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
+import { autoSources, googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -44,10 +44,11 @@ import { StarterPrompts } from "./StarterPrompts";
 import type { StarterPrompt } from "./starter-prompts";
 import { readChatStream } from "./stream";
 import { toolStatusLine } from "./tool-status";
+import { browserTimeZone } from "@/lib/time-zone";
 import {
   STALL_LINE,
   STALL_MS,
-  TURN_STATE_LABELS,
+  turnStepLine,
   blocksRetry,
   canRetryLast,
   chatErrorView,
@@ -56,6 +57,7 @@ import {
 } from "./turn-state";
 import { appendDictation, useDictation } from "./useDictation";
 import { useStickToBottom } from "./useStickToBottom";
+import { orderByPins, usePins, useSidebarCollapsed } from "./sidebar-prefs";
 
 interface StreamingReply {
   text: string;
@@ -93,12 +95,15 @@ const EMPTY_TITLES: Record<Mode, string> = {
 };
 
 export function ChatWorkspace({
+  userId,
   initialConversationId,
   mode,
   google = null,
   trial = false,
   connectedApps = [],
 }: {
+  /** Keys this device's pinned conversations to the signed-in user. */
+  userId: string;
   initialConversationId: string | null;
   mode: Mode;
   google?: GoogleChatState;
@@ -120,6 +125,8 @@ export function ChatWorkspace({
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
   const [apps, setApps] = useState<McpServerId[]>([]);
+  // True once the user picks or turns off a source for this draft: the auto pick then stays off.
+  const [autoOff, setAutoOff] = useState(false);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
@@ -143,6 +150,8 @@ export function ChatWorkspace({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
+  const pins = usePins(userId);
   // One composer menu at a time.
   const [openMenu, setOpenMenu] = useState<"tools" | "approval" | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -333,26 +342,41 @@ export function ChatWorkspace({
     }
   }
 
+  // The sources the next message uses: the user's pick, or the source that the draft names.
+  const picked = { webSearch, useGoogle, apps };
+  const sources = autoOff ? picked : autoSources(draft, picked, google, connectedApps);
+
   async function submit(action: "send" | "retry") {
     if (sending) return;
     const text = draft.trim();
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
-    const sentApps = apps;
+    const sentApps = sources.apps;
     const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
+    const timeZone = browserTimeZone();
+    const zone = timeZone ? { timeZone } : {};
     const body: ChatRequest =
       action === "send"
         ? {
             action,
             message: text,
+            webSearch: sources.webSearch,
+            effort,
+            ...connectors,
+            ...(sources.useGoogle ? { useGoogle: true as const } : {}),
+            ...(activeId ? { conversationId: activeId } : { mode }),
+            ...zone,
+          }
+        : {
+            action,
+            conversationId: activeId!,
             webSearch,
             effort,
             ...connectors,
             ...(useGoogle ? { useGoogle: true as const } : {}),
-            ...(activeId ? { conversationId: activeId } : { mode }),
-          }
-        : { action, conversationId: activeId!, webSearch, effort, ...connectors, ...(useGoogle ? { useGoogle: true as const } : {}) };
+            ...zone,
+          };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
@@ -389,6 +413,7 @@ export function ChatWorkspace({
       dictation.cancel();
       setDraft("");
       setUseGoogle(false);
+      setAutoOff(false);
       starterToolsRef.current = false;
       setMessages((current) => [
         ...current,
@@ -546,7 +571,7 @@ export function ChatWorkspace({
     }
   }
 
-  const googleItem = googleToolItem(google, useGoogle);
+  const googleItem = googleToolItem(google, sources.useGoogle);
   // The "+" menu: web search, Think harder, Google, then each connected app. A new tool is one more item.
   const tools: ToolItem[] = [
     {
@@ -578,7 +603,7 @@ export function ChatWorkspace({
         chip: MCP_SERVER_NAMES[app],
         chipClass: "chip-app",
         icon: "app",
-        on: apps.includes(app),
+        on: sources.apps.includes(app),
       }),
     ),
   ];
@@ -591,7 +616,8 @@ export function ChatWorkspace({
       return;
     }
     if (key === "google" && google !== "connected") return;
-    const next = toggleSource({ webSearch, useGoogle, apps }, key, connectedApps);
+    const next = toggleSource(sources, key, connectedApps);
+    setAutoOff(true);
     setWebSearch(next.webSearch);
     setUseGoogle(next.useGoogle);
     setApps(next.apps);
@@ -647,6 +673,7 @@ export function ChatWorkspace({
       }
     }
     setConversations((list) => list.filter((c) => c.id !== id));
+    pins.unpin(id);
     if (activeId === id) startNewConversation();
     setConfirmDeleteId(null);
     setDeletingId(null);
@@ -710,7 +737,7 @@ export function ChatWorkspace({
     );
 
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout${sidebarCollapsed ? " is-collapsed" : ""}`}>
       {showList && <div ref={drawerBackdropRef} className="drawer-backdrop" aria-hidden="true" onClick={closeList} />}
       <aside
         ref={drawerRef}
@@ -747,7 +774,7 @@ export function ChatWorkspace({
           <p className="muted small">No conversations yet.</p>
         )}
         <ul className="conversation-list">
-          {conversations.map((conversation) => (
+          {orderByPins(conversations, pins.pins).map((conversation) => (
             <li key={conversation.id} className={conversation.id === activeId ? "is-active" : undefined}>
               {renamingId === conversation.id ? (
                 <form
@@ -815,6 +842,18 @@ export function ChatWorkspace({
                   </button>
                   <button
                     type="button"
+                    className={`icon-button pin-button${pins.pins.includes(conversation.id) ? " is-pinned" : ""}`}
+                    onClick={() => pins.toggle(conversation.id)}
+                    aria-pressed={pins.pins.includes(conversation.id)}
+                    aria-label={`Pin “${conversation.title}”`}
+                    title={pins.pins.includes(conversation.id) ? "Unpin conversation" : "Pin conversation to the top"}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill={pins.pins.includes(conversation.id) ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M9 4h6l-1 6 4 4H6l4-4-1-6zM12 14v6" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     className="icon-button"
                     onClick={() => startRename(conversation)}
                     aria-label={`Rename “${conversation.title}”`}
@@ -848,6 +887,20 @@ export function ChatWorkspace({
       <main className="chat-main">
         <div className="chat-toolbar">
           <button
+            type="button"
+            className="icon-button desktop-only"
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="chat-drawer"
+            aria-label={sidebarCollapsed ? "Show conversations" : "Hide conversations"}
+            title={sidebarCollapsed ? "Show conversations" : "Hide conversations"}
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16" />
+            </svg>
+          </button>
+          <button
             ref={drawerToggleRef}
             type="button"
             className="button button-small mobile-only"
@@ -880,11 +933,17 @@ export function ChatWorkspace({
             <article className="message message-assistant" aria-busy="true">
               <p className="message-author">P-Dot</p>
               <p className="turn-state" data-state={stalled ? "stalled" : "working"}>
-                {stalled ? STALL_LINE : TURN_STATE_LABELS.working}
+                {stalled
+                  ? STALL_LINE
+                  : turnStepLine({
+                      text: streaming.text,
+                      tool: streaming.tool,
+                      searching: webSearch && !streaming.search,
+                      tier: streaming.tier,
+                    })}
               </p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
-              {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
-              {streaming.text ? (
+              {streaming.text && (
                 <AssistantReply
                   text={streaming.text}
                   sources={streaming.search?.sources ?? []}
@@ -892,16 +951,6 @@ export function ChatWorkspace({
                   showSources={streaming.search?.status === "used"}
                   streaming
                 />
-              ) : (
-                <div className="message-content">
-                  <span className="muted">
-                    {webSearch && !streaming.search
-                      ? "Searching the web…"
-                      : streaming.tier === "heavy"
-                        ? "Thinking harder…"
-                        : "Thinking…"}
-                  </span>
-                </div>
               )}
             </article>
           )}
@@ -972,6 +1021,7 @@ export function ChatWorkspace({
               onChange={(event) => {
                 const value = event.target.value;
                 setDraft(value);
+                if (!value.trim()) setAutoOff(false);
                 if (!value.trim() && starterToolsRef.current) {
                   starterToolsRef.current = false;
                   setWebSearch(false);

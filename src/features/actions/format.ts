@@ -30,7 +30,7 @@ export const EXTERNAL_CHECK_PLACE: Record<"send_email" | "create_calendar_event"
 /** Where the result of an executed action can be seen. */
 export const KIND_RESULT_LINKS: Record<ActionKind, { href: string; label: string }> = {
   create_task: { href: "/today", label: "Open your to-do list" },
-  create_reminder: { href: "/workflows", label: "Open your reminders" },
+  create_reminder: { href: "/today#workflows", label: "Open your reminders" },
   save_memory: { href: "/memory", label: "Open what P-Dot remembers" },
   send_email: { href: "https://mail.google.com/mail/#sent", label: "Open your Sent folder in Gmail" },
   create_calendar_event: { href: "https://calendar.google.com/", label: "Open Google Calendar" },

@@ -72,7 +72,12 @@ export interface StreamOptions {
   idleTimeoutMs?: number;
   /** Functions the model may call. None or empty: the request has no `tools` field. */
   tools?: ToolDefinition[];
+  /** "auto" when missing. "required" or one function name makes the model call a tool. */
+  toolChoice?: ToolChoice;
 }
+
+/** How the model may use the offered tools: freely, at least one, or one named function. */
+export type ToolChoice = "auto" | "required" | { name: string };
 
 /** Most tool calls one response may carry. More is a malformed response. */
 const MAX_TOOL_CALLS = 8;
@@ -197,14 +202,14 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
 }
 
 /** The `tools` and `tool_choice` fields, or nothing when no tool is offered. */
-export function toolFields(tools: ToolDefinition[] | undefined): Record<string, unknown> {
+export function toolFields(tools: ToolDefinition[] | undefined, choice: ToolChoice = "auto"): Record<string, unknown> {
   if (!tools || tools.length === 0) return {};
   return {
     tools: tools.map((tool) => ({
       type: "function",
       function: { name: tool.name, description: tool.description, parameters: tool.parameters },
     })),
-    tool_choice: "auto",
+    tool_choice: typeof choice === "string" ? choice : { type: "function", function: { name: choice.name } },
   };
 }
 
@@ -309,7 +314,7 @@ export async function* streamChatCompletion(
           // reads this flag. Reasoning tokens cost money and count against max_tokens, so
           // without a budget they could leave no room for the reply.
           ...thinkingFields(settings.thinkingBudgetTokens ?? 0),
-          ...toolFields(options.tools),
+          ...toolFields(options.tools, options.toolChoice),
         }),
         signal: scope.signal,
       });

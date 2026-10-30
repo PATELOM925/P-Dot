@@ -222,6 +222,10 @@ Editing an external action on its card, attachments, reply threading, calendars 
 3. The read limits stay: 2 searches, 3 reads, 12,000 characters for each turn.
 4. Option B now: no context record change. Option A later, as its own expand pull request.
 
+### Auto pick from the message (2026-10-30)
+
+A connected Google account turns on for a message about email or the calendar when the user picked no source. The user sees the "Google" chip before Send and can turn it off. The intent of the message wins: a request for a task, a reminder or a memory does not turn Google on, and the first hop forces a Google read only for a question, not for a send or a write request. See decision 0016, "Auto pick from the message", for the full rule.
+
 ### Low-level design
 
 **Types and request (`src/types/api.ts`, `src/lib/schemas.ts`, `src/lib/limits.ts`)**

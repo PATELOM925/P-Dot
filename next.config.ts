@@ -14,6 +14,13 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
+  // Old page addresses still open the page that replaced them.
+  async redirects() {
+    return [
+      { source: "/action-log", destination: "/activity", permanent: true },
+      { source: "/workflows", destination: "/today#workflows", permanent: true },
+    ];
+  },
 };
 
 export default nextConfig;

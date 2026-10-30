@@ -1,6 +1,6 @@
 import "server-only";
 import type { Effort, ModelTier, RouteReason } from "@/lib/routing";
-import type { ToolIntent } from "./tool-intent";
+import type { ToolIntent } from "@/lib/tool-intent";
 
 // Deterministic model router. A pure function from request features to a
 // tier. It makes no model call, so it adds no latency.

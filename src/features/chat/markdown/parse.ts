@@ -262,7 +262,8 @@ function parseList(lines: string[], depth: number): Block {
 
 const BARE_URL = /https?:\/\/[^\s<>()]+/y;
 const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "'", '"']);
-const CITE = /\[(\d{1,2})\]/y;
+/** [n], and the forms some models write instead (decoded the same on the server): 【n】, 【n†L1-L4】, [n†source]. */
+const CITE = /\[(\d{1,2})(?:†[^\]\n]{0,60})?\]|【(\d{1,2})(?:†[^】\n]{0,60})?】/y;
 
 /** Longest link destination read, so a "(" with no ")" costs at most this much. */
 const MAX_DESTINATION_CHARS = 2100;
@@ -376,12 +377,12 @@ export function parseInline(text: string, depth = 0): Inline[] {
       }
       continue;
     }
-    if (char === "[") {
+    if (char === "[" || char === "【") {
       CITE.lastIndex = i;
       const cite = CITE.exec(text);
       if (cite && text[i + cite[0].length] !== "(") {
         flush();
-        out.push({ type: "cite", n: Number(cite[1]) });
+        out.push({ type: "cite", n: Number(cite[1] ?? cite[2]) });
         i += cite[0].length;
         continue;
       }
