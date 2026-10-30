@@ -1771,6 +1771,81 @@ a.tool-row {
   gap: 1.25rem;
 }
 
+/* A row of cards that scrolls sideways (CardRail). */
+
+.card-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.card-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+}
+
+.card-rail-arrows {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.card-rail-arrows[hidden] {
+  display: none;
+}
+
+.card-rail-arrow {
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+}
+
+.card-rail-arrow:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.card-rail-arrow[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.card-rail-arrow[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.card-rail-track {
+  display: flex;
+  gap: 1rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+  padding: 2px 2px 0.5rem;
+}
+
+.card-rail-track > * {
+  flex: 0 0 min(19rem, 85%);
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+.card-rail-track:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .card-rail-track {
+    scroll-behavior: smooth;
+  }
+}
+
 .status-pill {
   padding: 0.25rem 0.625rem;
   border-radius: 999px;
@@ -3624,12 +3699,6 @@ label.button[aria-disabled="true"] {
   color: inherit;
 }
 
-.overview-lists {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
-  gap: 1.25rem;
-}
-
 .mini-list {
   list-style: none;
   margin: 0;
@@ -3756,7 +3825,8 @@ label.button[aria-disabled="true"] {
 }
 
 .stack > .panel,
-.two-column .panel {
+.two-column .panel,
+.today-slot > .panel {
   border-top: 3px solid var(--panel-accent, var(--accent));
 }
 
@@ -3869,14 +3939,6 @@ label.button[aria-disabled="true"] {
   .mascot-eyes {
     animation: none;
   }
-}
-
-.overview-lists .panel {
-  border-top: 3px solid #0ea5e9;
-}
-
-.overview-lists .panel:nth-child(2) {
-  border-top-color: #f59e0b;
 }
 
 /* Agent card: scrolling tabs that always show the selected tab, and the simulated run */
@@ -4115,4 +4177,182 @@ label.button[aria-disabled="true"] {
   .agent-badge {
     animation: none;
   }
+}
+
+/* Feedback: "What should P-Dot connect to next?" */
+
+.feedback-card {
+  max-width: 40rem;
+}
+
+.feedback-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choice-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.375rem 1rem;
+  border: 2px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.choice-chip input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.choice-chip:hover {
+  background: var(--surface-muted);
+}
+
+.choice-chip.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+.choice-chip:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Today: sections the user can collapse and arrange. */
+
+.page-actions,
+.layout-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.layout-controls .button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+.today-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (min-width: 1000px) {
+  .today-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.today-slot {
+  min-width: 0;
+  container-type: inline-size;
+}
+
+/* In a half-width Today column, the reminder form puts its button on a new line. */
+@container (max-width: 40rem) {
+  .reminder-form {
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+
+  .reminder-form > button {
+    justify-self: start;
+  }
+}
+
+.today-slot > * > .panel-heading {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.today-slot > * > .panel-heading > :first-child {
+  margin-right: auto;
+}
+
+/* On a narrow section, the title and the buttons share the first line; a count or link goes under them. */
+@container (max-width: 30rem) {
+  .today-slot > * > .panel-heading > .section-controls {
+    order: 1;
+  }
+
+  .today-slot > * > .panel-heading > :not(:first-child, .section-controls) {
+    order: 2;
+    flex-basis: 100%;
+  }
+}
+
+.section-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.section-control {
+  width: 2.75rem;
+  height: 2.75rem;
+  color: var(--text);
+}
+
+.section-control:hover {
+  color: var(--text);
+}
+
+.section-control[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.section-control[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.today-board.is-arranging .today-slot > * {
+  outline: 2px dashed var(--border-strong);
+  outline-offset: 4px;
+}
+
+.section-toggle svg {
+  transition: transform 0.15s ease;
+}
+
+.section-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-toggle svg {
+    transition: none;
+  }
+}
+
+.section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.section-body[hidden] {
+  display: none;
+}
+
+h4 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.3;
 }

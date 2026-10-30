@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ApprovalModeOptions } from "@/features/actions/ApprovalModePicker";
 import { KIND_LABELS } from "@/features/actions/format";
 import { signOutAction } from "@/features/auth/actions";
+import { FeedbackCard } from "@/features/feedback/FeedbackCard";
 import { AppSettings } from "@/features/pwa/AppSettings";
 import { ACTION_EFFECTS, ALWAYS_ASK_REASONS, MAX_AUTO_ACTIONS_PER_REPLY } from "@/lib/approval-policy";
 import { requireAuth } from "@/server/auth/session";
@@ -91,6 +92,8 @@ export default async function SettingsPage() {
         </p>
       </section>
 
+      <FeedbackCard className="card stack" />
+
       <details className="card stack card-details" aria-labelledby="data-heading">
         <summary>
           <h2 id="data-heading">How your data is used</h2>
@@ -136,6 +139,10 @@ export default async function SettingsPage() {
             <strong>Activity:</strong> approvals, cancellations, completed actions and changes to memories,
             documents and reminders are recorded without their text, and cannot be edited or deleted. See{" "}
             <Link href="/activity">Activity</Link>.
+          </li>
+          <li>
+            <strong>Feedback:</strong> what you send in &ldquo;What should P-Dot connect to next?&rdquo; is stored with
+            your account, so the team can read it.
           </li>
           <li>
             <strong>Storage (Supabase):</strong> your account, conversations, tasks, memories, documents, reminders and

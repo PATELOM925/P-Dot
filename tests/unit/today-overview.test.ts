@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Overview } from "@/features/today/Overview";
+import { RecentChats, UpNext } from "@/features/today/TodayLists";
 import type { ActionProposalDTO, ConversationSummary, MemoryDTO, ReminderDTO, TaskDTO } from "@/types/api";
 
 const task = (id: string, done: boolean): TaskDTO => ({ id, mode: "personal", title: `Task ${id}`, done, createdAt: "2026-10-30T09:00:00Z" });
@@ -47,7 +48,6 @@ function render(overrides: Partial<Parameters<typeof Overview>[0]> = {}) {
       reminders: [],
       memories: [],
       proposals: [],
-      conversations: [],
       ...overrides,
     }),
   );
@@ -67,28 +67,33 @@ describe("Today overview", () => {
     expect(html).toMatch(/tile-value">1<\/span><span class="tile-label">Remembered/);
   });
 
-  it("lists the three soonest scheduled reminders first", () => {
-    const html = render({
-      reminders: [
-        reminder("d", "2026-11-04T10:00:00Z"),
-        reminder("b", "2026-11-02T10:00:00Z"),
-        reminder("a", "2026-11-01T10:00:00Z"),
-        reminder("c", "2026-11-03T10:00:00Z"),
-      ],
-    });
+  it("lists the three soonest scheduled reminders first under Up next", () => {
+    const html = renderToStaticMarkup(
+      createElement(UpNext, {
+        reminders: [
+          reminder("d", "2026-11-04T10:00:00Z"),
+          reminder("b", "2026-11-02T10:00:00Z"),
+          reminder("a", "2026-11-01T10:00:00Z"),
+          reminder("c", "2026-11-03T10:00:00Z"),
+          reminder("e", "2026-10-31T10:00:00Z", "done"),
+        ],
+      }),
+    );
     const order = ["Reminder a", "Reminder b", "Reminder c"].map((title) => html.indexOf(title));
     expect(order.every((index) => index >= 0)).toBe(true);
     expect([...order].sort((x, y) => x - y)).toEqual(order);
     expect(html).not.toContain("Reminder d");
+    expect(html).not.toContain("Reminder e");
   });
 
   it("links the quick ask to chat as a prefilled draft, and recent chats to their conversation", () => {
-    const html = render({ conversations: [conversation] });
+    const html = render();
     expect(html).toContain('action="/chat"');
     expect(html).toContain('name="ask"');
     expect(html).toContain("/chat?ask=Plan%20a%20simple%20dinner%20for%20tonight");
-    expect(html).toContain("/chat?c=11111111-1111-4111-8111-111111111111");
-    expect(html).toContain("Weekend plan");
+    const chats = renderToStaticMarkup(createElement(RecentChats, { conversations: [conversation] }));
+    expect(chats).toContain("/chat?c=11111111-1111-4111-8111-111111111111");
+    expect(chats).toContain("Weekend plan");
   });
 
   it("changes its wording and ideas with the mode", () => {

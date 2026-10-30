@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BrandName } from "@/components/ui/BrandMark";
+import { CardRail } from "@/components/ui/CardRail";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GoogleCard } from "@/features/connectors/GoogleCard";
 import { googleCardState, googleOutcomeMessage } from "@/features/connectors/google";
@@ -9,6 +10,7 @@ import { McpCard } from "@/features/connectors/McpCard";
 import { mcpCardState, mcpOutcomeMessage } from "@/features/connectors/mcp";
 import { OpenOnPhoneCard } from "@/features/connectors/OpenOnPhoneCard";
 import { builtInStatus } from "@/features/connectors/status";
+import { FeedbackCard } from "@/features/feedback/FeedbackCard";
 import { TelegramCard, type TelegramCardState } from "@/features/connectors/TelegramCard";
 import { telegramOutcomeMessage } from "@/lib/telegram";
 import { DOCUMENT_LIST_LIMIT, MEMORY_LIST_LIMIT, REMINDER_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
@@ -134,89 +136,83 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
         }
       />
 
-      <section className="stack" aria-labelledby="accounts-heading">
-        <h2 id="accounts-heading">Your accounts</h2>
-        {auth.isAnonymous && (
-          <p className="alert alert-notice">
-            Create an account to connect other accounts. <Link href="/signup">Create an account</Link>
-          </p>
-        )}
-        <div className="card-grid">
-          <GoogleCard state={googleCardState(configured, google, auth.isAnonymous === true)} message={googleMessage} />
-          {layout.apps.map((app) => (
-            <McpCard
-              key={app}
-              app={app}
-              state={mcpCardState(
-                mcpConfig.status === "ready",
-                mcpViews === "load_failed" ? "load_failed" : (mcpViews.find((view) => view.server === app) ?? null),
-                auth.isAnonymous === true,
-              )}
-              message={params.app === app ? mcpMessage : null}
-            />
-          ))}
-          {telegram && <TelegramCard state={telegram} message={telegramMessage} />}
-        </div>
-      </section>
+      <CardRail
+        title="Your accounts"
+        intro={
+          auth.isAnonymous && (
+            <p className="alert alert-notice">
+              Create an account to connect other accounts. <Link href="/signup">Create an account</Link>
+            </p>
+          )
+        }
+      >
+        <GoogleCard state={googleCardState(configured, google, auth.isAnonymous === true)} message={googleMessage} />
+        {layout.apps.map((app) => (
+          <McpCard
+            key={app}
+            app={app}
+            state={mcpCardState(
+              mcpConfig.status === "ready",
+              mcpViews === "load_failed" ? "load_failed" : (mcpViews.find((view) => view.server === app) ?? null),
+              auth.isAnonymous === true,
+            )}
+            message={params.app === app ? mcpMessage : null}
+          />
+        ))}
+        {telegram && <TelegramCard state={telegram} message={telegramMessage} />}
+      </CardRail>
 
-      <section className="stack" aria-labelledby="devices-heading">
-        <h2 id="devices-heading">Your devices</h2>
-        <div className="card-grid">
-          <OpenOnPhoneCard siteUrl={getSiteUrl()} />
-        </div>
-      </section>
+      <CardRail title="Your devices">
+        <OpenOnPhoneCard siteUrl={getSiteUrl()} />
+      </CardRail>
 
-      <section className="stack" aria-labelledby="built-in-heading">
-        <h2 id="built-in-heading">Built in</h2>
-        <div className="card-grid">
-          {builtIn.map((tool) => (
-            <article key={tool.name} className="panel">
-              <div className="panel-heading">
-                <h3>{tool.name}</h3>
-                <span className="status-pill status-executed">Ready</span>
-              </div>
-              <p className="connector-status">{tool.status}</p>
-              <p>
-                <strong>Can:</strong> {tool.can}
-              </p>
-              <Link href={tool.href}>{tool.link}</Link>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <details className="more-details stack">
-        <summary>Coming soon ({layout.planned.length + 1})</summary>
-        <div className="card-grid">
-          {layout.planned.map((connector) => (
-            <article key={connector.name} className="panel">
-              <div className="panel-heading">
-                <h3>{connector.brand ? <BrandName brand={connector.brand} name={connector.name} /> : connector.name}</h3>
-                <span className="status-pill">Coming soon</span>
-              </div>
-              <p>
-                <strong>Will:</strong> {connector.can}.
-              </p>
-              <p className="muted">
-                <strong>Asks first:</strong> {connector.asks}.
-              </p>
-              <button type="button" className="button button-small" disabled>
-                Connect
-              </button>
-            </article>
-          ))}
-          <article className="panel">
+      <CardRail title="Built in">
+        {builtIn.map((tool) => (
+          <article key={tool.name} className="panel">
             <div className="panel-heading">
-              <h3>Your devices</h3>
+              <h3>{tool.name}</h3>
+              <span className="status-pill status-executed">Ready</span>
+            </div>
+            <p className="connector-status">{tool.status}</p>
+            <p>
+              <strong>Can:</strong> {tool.can}
+            </p>
+            <Link href={tool.href}>{tool.link}</Link>
+          </article>
+        ))}
+      </CardRail>
+
+      <CardRail title="Coming soon">
+        {layout.planned.map((connector) => (
+          <article key={connector.name} className="panel">
+            <div className="panel-heading">
+              <h3>{connector.brand ? <BrandName brand={connector.brand} name={connector.name} /> : connector.name}</h3>
               <span className="status-pill">Coming soon</span>
             </div>
             <p>
-              <strong>Will:</strong> act on your own laptop and phone, with your approval for each action.
+              <strong>Will:</strong> {connector.can}.
             </p>
-            <Link href="/devices">Open devices</Link>
+            <p className="muted">
+              <strong>Asks first:</strong> {connector.asks}.
+            </p>
+            <button type="button" className="button button-small" disabled>
+              Connect
+            </button>
           </article>
-        </div>
-      </details>
+        ))}
+        <article className="panel">
+          <div className="panel-heading">
+            <h3>Your devices</h3>
+            <span className="status-pill">Coming soon</span>
+          </div>
+          <p>
+            <strong>Will:</strong> act on your own laptop and phone, with your approval for each action.
+          </p>
+          <Link href="/devices">Open devices</Link>
+        </article>
+      </CardRail>
+
+      <FeedbackCard />
     </main>
   );
 }

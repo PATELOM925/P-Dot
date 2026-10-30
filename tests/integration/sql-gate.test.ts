@@ -37,6 +37,7 @@ const OWNED_TABLES = [
   "conversations",
   "document_chunks",
   "documents",
+  "feedback_requests",
   "memories",
   "messages",
   "reminders",
@@ -136,6 +137,7 @@ async function seedOwner(gate: SqlGate, userId: string): Promise<Owned> {
     "insert into telegram_links (user_id, link_code_hash, link_code_expires_at) values ($1, $2, now() + interval '10 minutes')",
     [userId, "a".repeat(64)],
   );
+  await gate.admin("insert into feedback_requests (user_id, kind, text) values ($1, 'other', 'gate')", [userId]);
   await gate.admin("insert into usage_windows (user_id, window_start, request_count) values ($1, now(), 1)", [userId]);
   await gate.admin(
     `insert into spend_reservations (user_id, provider, usage_day, period_kind, period_start, held, charged)
@@ -198,6 +200,8 @@ function insertFor(table: OwnedTable, owner: string, refs: Owned): [string, unkn
         "insert into telegram_links (user_id, link_code_hash, link_code_expires_at) values ($1, $2, now() + interval '10 minutes')",
         [owner, "b".repeat(64)],
       ];
+    case "feedback_requests":
+      return ["insert into feedback_requests (user_id, kind) values ($1, 'slack')", [owner]];
     case "context_records":
       return [
         `insert into context_records (message_id, user_id, model, history_message_count, history_chars, prompt_version)

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MCP_SERVER_IDS } from "./connectors";
 import { DOCUMENT_MEDIA_TYPES } from "./document-types";
+import { FEEDBACK_KIND_IDS } from "./feedback";
 import {
   MAX_ACTION_SUMMARY_CHARS,
   MAX_DOCUMENT_CHARS,
@@ -13,6 +14,7 @@ import {
   MAX_EVENT_ATTENDEES,
   MAX_EVENT_DAYS,
   MAX_EVENT_TITLE_CHARS,
+  MAX_FEEDBACK_TEXT_CHARS,
   MAX_IMAGE_TEXT_BODY_BYTES,
   MAX_MEMORY_CHARS,
   MAX_MESSAGE_CHARS,
@@ -302,3 +304,24 @@ export const actionDecisionSchema = z
   });
 
 export const actionSummarySchema = z.string().trim().min(1).max(MAX_ACTION_SUMMARY_CHARS);
+
+// ---------------------------------------------------------------------------
+// Feedback: "What should P-Dot connect to next?"
+// ---------------------------------------------------------------------------
+
+/** Body of POST /api/feedback. A blank text counts as no text; "other" needs text. */
+export const feedbackSchema = z
+  .object({
+    kind: z.enum(FEEDBACK_KIND_IDS, "Choose a suggestion or Other."),
+    text: z
+      .string()
+      .trim()
+      .max(MAX_FEEDBACK_TEXT_CHARS, `Keep the note to ${MAX_FEEDBACK_TEXT_CHARS} characters or fewer.`)
+      .nullish()
+      .transform((value) => value || null),
+  })
+  .strict()
+  .refine((value) => value.kind !== "other" || value.text !== null, {
+    message: "Type what P-Dot should connect to.",
+    path: ["text"],
+  });

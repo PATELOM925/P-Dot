@@ -124,3 +124,7 @@ export const DOCUMENT_MATCH_MIN_SIMILARITY = 0.1;
 export const EMBEDDING_DIMENSIONS = 1_024;
 /** Texts per embedding request. */
 export const EMBEDDING_BATCH_SIZE = 32;
+
+/** Feedback requests. The same limits as the feedback_requests migration. */
+export const MAX_FEEDBACK_TEXT_CHARS = 500;
+export const FEEDBACK_DAILY_LIMIT = 10;
