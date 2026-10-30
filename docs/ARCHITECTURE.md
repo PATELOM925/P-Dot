@@ -123,7 +123,14 @@ Decision [0013](decisions/0013-ai-tools-and-scope.md). The assistant can call to
 | `statusQuery(args)` | What the `status` event shows besides the tool name. |
 | `run(args, context)` | Does the work and returns the tool message for the model. |
 
-Tools today: `web_search`, offered only when the user turned search on, at most once in a turn, one Tavily credit held for each run.
+Tools today:
+
+- `web_search`: offered only when the user turned search on, at most once in a turn, one Tavily credit held for each run.
+- `search_documents`, `search_memories`: read the user's own documents and kept memories of the current mode, at most 5 matches, through `match_document_chunks` and `match_memories`. The IDs go in the context record.
+- `propose_task`, `propose_reminder`: write an `action_proposals` row that waits for approval.
+- `save_memory`: writes a proposed memory from the assistant, linked to the user message.
+
+Before each turn, the top 4 active memories of the mode go in the final user turn, in an untrusted `<saved_memories>` block. After the reply of a new conversation, a short fast-tier call makes its title (`title` event).
 
 To add a tool, write a `ToolSpec`, add it to `TOOLS` in `tools/index.ts`, add its name to `AssistantToolName` and a status line in `src/features/chat/tool-status.ts`. A tool that a per-message toggle controls (for example "Use Google" for Gmail and Calendar tools, decision 0014) adds a flag to `ToolFlags`, a field to the chat request schema, and sets the flag in `prepareChatTurn`. A tool that changes anything is `propose` and writes an `action_proposals` row; a tool that reads private data outside P-Dot needs an approval step first (decision 0011, step 5).
 

@@ -37,6 +37,20 @@ Tirth built a tool loop, retrieval tools, an eval suite and hallucination tests 
 - **Status event.** `{ type: "status", tool, query? }` before a tool runs. It carries only the tool name and, for a search, the query. It is never saved and never carries the model's text. The prompt asks the model to call a tool without text before the call. Text that a model writes anyway stays in the reply, as the user saw it.
 - **Logs.** Tool events log the tool name (or `unknown`) and the hop. Never the query, the arguments or a result.
 
+## Memory, documents and proposals
+
+- **Memories before each turn.** The server embeds the user's message (one budgeted embedding, which holds spend) and takes the top 4 active memories of the conversation's mode (`match_memories`). They go in the final user turn in a `<saved_memories>` block with the same untrusted words as web results, never in the system message. The first hold prices the largest memory block (`MEMORY_BLOCK_MAX_BYTES`). Their IDs go in the context record. If retrieval fails, the reply goes on without memories.
+- **`search_documents` and `search_memories`.** Read tools over `match_document_chunks` and `match_memories`, for the current mode only, at most 5 matches. Each query embedding holds spend. Document parts are shown to the model by title, with no links (no `doc://`). The IDs that reached the model go in the context record (`memoryIds`, `documentChunkIds`), and "What was sent" shows them.
+- **`propose_task` and `propose_reminder`.** They insert an `action_proposals` row with `conversation_id`, before `done`, through the schema checks of decision 0009. A reminder needs an ISO date and time with an offset; the server stores it in UTC.
+- **`save_memory`.** It inserts a memory with `status: proposed`, `source: assistant` and `source_message_id` set to the user message, with its vector, so a memory the user keeps without editing can be found. The "Remember this?" card handles it.
+- **No second card on Retry reply.** Before a write, the tool reads the user's waiting proposals (same conversation and payload) or waiting memories (same text and user message). If one exists, nothing new is written. Without a message link on proposals, this is the best check that needs no migration.
+- **Deadline.** Tool runs (searches, embeddings, writes) get a signal that ends at the turn deadline, so the turn stays inside the reply claim lease. Outside the deadline: the first search and the memory embedding (`tests/unit/request-key.test.ts`).
+- **Tier.** With these tools, every turn offers tools, so every turn runs on the standard tier at least (see "Tier" above). This costs more than the fast tier for short messages.
+
+## Titles
+
+After the reply of a new conversation (its first message, and the title is still the one made from that message), one call on the fast tier makes a title: 32 output tokens, no reasoning, no hedge, at most 2 attempts and 15 seconds. Each attempt holds and settles spend. The title is cleaned, saved with the existing rename grant, and sent as a `title` event after `done`. Any failure, a refused hold included, keeps the old title and sends no error. The step is on in `createAssistantDeps` (`titles: true`) and off in the default test deps.
+
 ## How to add a tool
 
 1. Add the name to `AssistantToolName` in `src/types/api.ts`, and a status line in `src/features/chat/tool-status.ts`.
