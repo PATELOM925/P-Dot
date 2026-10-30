@@ -59,7 +59,7 @@ export const STALE_DOCUMENT_SETTLE_LIMIT = 5;
 /**
  * How long a claim to write a reply lasts (decision 0012). It must be longer
  * than the longest chat turn: the heavy tier deadline, which all tool hops
- * share, plus the first search and one web_search tool call.
+ * and tool runs share, plus the first search and the memory embedding.
  */
 export const REPLY_CLAIM_LEASE_SECONDS = 300;
 export const MAX_REMINDER_TITLE_CHARS = 200;
