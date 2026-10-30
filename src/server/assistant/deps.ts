@@ -18,10 +18,11 @@ import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
 import { createNebiusProvider } from "@/server/providers/model";
-import { searchWeb } from "@/server/providers/tavily/client";
+import { extractPages, searchWeb } from "@/server/providers/tavily/client";
 import { limitsFor } from "@/server/trial-limits";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
 import { createBudgetedEmbedder, type Embedder } from "./embed";
+import type { ImageTextDeps } from "./image-text";
 import type { AssistantDeps } from "./service";
 
 /**
@@ -55,6 +56,12 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     spend,
     routing: config.routing,
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
+    research: tavily
+      ? {
+          search: (query, options, signal) => searchWeb(tavily, query, { ...options, signal }),
+          extract: (urls, signal) => extractPages(tavily, urls, { signal }),
+        }
+      : null,
     provider: createNebiusProvider(config.nebius),
     breaker,
     now: () => new Date(),
@@ -114,4 +121,21 @@ export function createEmbedderForRequest(auth: AuthContext, config: AssistantCon
     settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
     spend: createSpendGuard(auth.supabase, limitsFor(auth, config).spend),
   });
+}
+
+/**
+ * The image text call for one authenticated request (decision 0019): the
+ * vision tier with this user's quota and spend caps (trial caps for a trial),
+ * as chat has. Throws ConfigError when Nebius is not configured.
+ */
+export function createImageTextDeps(auth: AuthContext, config: AssistantConfig): ImageTextDeps {
+  const limits = limitsFor(auth, config);
+  return {
+    provider: createNebiusProvider(config.nebius),
+    spend: createSpendGuard(auth.supabase, limits.spend),
+    quota: createQuotaGate(auth.supabase, limits.quota.requestsPerWindow, limits.quota.windowSeconds),
+    breaker,
+    vision: config.routing.vision,
+    now: () => new Date(),
+  };
 }

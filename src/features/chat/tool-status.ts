@@ -1,8 +1,8 @@
-import type { AssistantToolName } from "@/types/api";
+import type { AssistantToolName, ResearchStep } from "@/types/api";
 
 const MAX_QUERY_CHARS = 120;
 
-const LINES: Record<AssistantToolName, (query: string | undefined) => string> = {
+const LINES: Record<AssistantToolName | ResearchStep, (query: string | undefined, count: number | undefined) => string> = {
   web_search: (query) => (query ? `Searching the web for “${query}”…` : "Searching the web…"),
   search_documents: (query) => (query ? `Searching your documents for “${query}”…` : "Searching your documents…"),
   search_memories: (query) => (query ? `Searching your memories for “${query}”…` : "Searching your memories…"),
@@ -20,11 +20,15 @@ const LINES: Record<AssistantToolName, (query: string | undefined) => string> = 
   linear_get_issue: () => "Reading a Linear issue…",
   todoist_list_tasks: () => "Checking your Todoist tasks…",
   todoist_find_tasks: (query) => (query ? `Searching Todoist for “${query}”…` : "Searching Todoist…"),
+  research_search: () => "Searching the web (deep)…",
+  research_read: (_query, count) => (count === 1 ? "Reading 1 page…" : `Reading ${count ?? "the top"} pages…`),
+  research_write: () => "Writing the brief…",
+  brief_search: (query) => (query ? `Searching today's news for “${query}”…` : "Searching today's news…"),
 };
 
 /** The words for a tool status event. A tool this page does not know gets a general line. */
-export function toolStatusLine(tool: string, query: string | undefined): string {
+export function toolStatusLine(tool: string, query: string | undefined, count?: number): string {
   const short = query && query.length > MAX_QUERY_CHARS ? `${query.slice(0, MAX_QUERY_CHARS - 1)}…` : query;
-  const line = Object.hasOwn(LINES, tool) ? LINES[tool as AssistantToolName] : null;
-  return line ? line(short) : "P-Dot is using a tool…";
+  const line = Object.hasOwn(LINES, tool) ? LINES[tool as AssistantToolName | ResearchStep] : null;
+  return line ? line(short, typeof count === "number" && Number.isInteger(count) && count > 0 ? count : undefined) : "P-Dot is using a tool…";
 }

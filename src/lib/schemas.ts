@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MCP_SERVER_IDS } from "./connectors";
+import { DOCUMENT_MEDIA_TYPES } from "./document-types";
 import {
   MAX_ACTION_SUMMARY_CHARS,
   MAX_DOCUMENT_CHARS,
@@ -12,13 +13,18 @@ import {
   MAX_EVENT_ATTENDEES,
   MAX_EVENT_DAYS,
   MAX_EVENT_TITLE_CHARS,
+  MAX_IMAGE_TEXT_BODY_BYTES,
   MAX_MEMORY_CHARS,
   MAX_MESSAGE_CHARS,
   MAX_REMINDER_TITLE_CHARS,
   MAX_TASK_CHARS,
   MAX_TITLE_CHARS,
+  BRIEF_DATE_CHARS,
+  BRIEF_MAX_TOPICS,
+  BRIEF_TOPIC_CHARS,
 } from "./limits";
 import { EFFORTS } from "./routing";
+import { MAX_TIME_ZONE_CHARS, isValidTimeZone } from "./time-zone";
 import type { ChatRequest } from "@/types/api";
 
 const conversationId = z.uuid();
@@ -40,7 +46,32 @@ const connectorsSchema = z
  */
 const oneSource = (value: { webSearch: boolean; connectors?: unknown[]; useGoogle?: true }) =>
   [value.webSearch, (value.connectors?.length ?? 0) > 0, value.useGoogle === true].filter(Boolean).length <= 1;
+/** The browser's IANA time zone, so the reply reads "tomorrow at 6pm" in the user's time. */
+const timeZoneSchema = z.string().max(MAX_TIME_ZONE_CHARS).refine(isValidTimeZone, "Unknown time zone.").optional();
 const mixedSources = { message: "Use only one of web search, Google or connected apps for a message.", path: ["webSearch"] };
+
+/** Deep research is a kind of web search, so it needs web search on (decision 0018). */
+const researchNeedsWeb = (value: { webSearch: boolean; research?: true }) => value.research !== true || value.webSearch;
+const researchWithoutWeb = { message: "Deep research needs web search.", path: ["research"] };
+
+const briefSchema = z.strictObject({
+  topics: z
+    .array(z.string().trim().min(1, "A topic cannot be empty.").max(BRIEF_TOPIC_CHARS, `A topic must be at most ${BRIEF_TOPIC_CHARS} characters.`))
+    .min(1, "Add at least one topic.")
+    .max(BRIEF_MAX_TOPICS, `Use at most ${BRIEF_MAX_TOPICS} topics.`),
+  date: z
+    .string()
+    .trim()
+    .min(1)
+    .max(BRIEF_DATE_CHARS)
+    .regex(/^[\p{L}\p{N} ,./-]+$/u, "The date has characters that are not allowed."),
+});
+
+/** The brief starts a new conversation and does its own searches, so it takes no other source. */
+const briefAlone = (value: { webSearch: boolean; research?: true; useGoogle?: true; connectors?: unknown[]; conversationId?: string; brief?: unknown }) =>
+  value.brief === undefined ||
+  (!value.webSearch && value.research === undefined && value.useGoogle === undefined && (value.connectors?.length ?? 0) === 0 && value.conversationId === undefined);
+const briefMixed = { message: "The brief starts a new conversation and uses no other source.", path: ["brief"] };
 
 // `.strict()` rejects unknown keys, so a client cannot smuggle in fields such
 // as a user ID. Identity always comes from the verified session.
@@ -59,9 +90,14 @@ const sendSchema = z
     // Only sent when the "Use Google" toggle is on (decision 0014), so an older server still accepts a send without it.
     useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
+    research: z.literal(true).optional(),
+    brief: briefSchema.optional(),
+    timeZone: timeZoneSchema,
   })
   .strict()
-  .refine(oneSource, mixedSources);
+  .refine(oneSource, mixedSources)
+  .refine(researchNeedsWeb, researchWithoutWeb)
+  .refine(briefAlone, briefMixed);
 
 const retrySchema = z
   .object({
@@ -71,9 +107,12 @@ const retrySchema = z
     effort: effortSchema,
     useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
+    research: z.literal(true).optional(),
+    timeZone: timeZoneSchema,
   })
   .strict()
-  .refine(oneSource, mixedSources);
+  .refine(oneSource, mixedSources)
+  .refine(researchNeedsWeb, researchWithoutWeb);
 
 export const chatRequestSchema: z.ZodType<ChatRequest> = z.discriminatedUnion("action", [
   sendSchema,
@@ -143,12 +182,24 @@ export const createDocumentSchema = z
       .trim()
       .min(1, "Title cannot be empty.")
       .max(MAX_DOCUMENT_TITLE_CHARS, `Title must be at most ${MAX_DOCUMENT_TITLE_CHARS} characters.`),
-    mediaType: z.enum(["text/plain", "text/markdown"]),
+    mediaType: z.enum(DOCUMENT_MEDIA_TYPES),
     text: z
       .string()
       .min(1, "The document is empty.")
       .max(MAX_DOCUMENT_CHARS, `The document must be at most ${MAX_DOCUMENT_CHARS} characters.`)
       .refine((t) => t.trim().length > 0, { message: "The document is empty." }),
+  })
+  .strict();
+
+/** A JPEG data URL that starts with the JPEG signature (FF D8 FF, "/9j/" in base64). The browser makes this copy. */
+const JPEG_DATA_URL = /^data:image\/jpeg;base64,\/9j\/[A-Za-z0-9+/]*={0,2}$/;
+
+export const imageTextSchema = z
+  .object({
+    image: z
+      .string()
+      .max(MAX_IMAGE_TEXT_BODY_BYTES, "This image is too large to read. Try a smaller image.")
+      .regex(JPEG_DATA_URL, "Send the image as a JPEG data URL."),
   })
   .strict();
 

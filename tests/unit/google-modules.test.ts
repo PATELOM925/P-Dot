@@ -180,6 +180,20 @@ describe("the Google card", () => {
     });
     expect(connected).toMatchObject({ kind: "connected", email: "a@example.com" });
     expect(connected.kind === "connected" && connected.access).toHaveLength(2);
+    expect(connected.kind === "connected" && connected.missing).toEqual(["Read Gmail: not allowed"]);
+  });
+
+  it("lists what Google did not allow, so a missing Calendar or Send is visible (live test, 2026-10-30)", () => {
+    const readOnly = googleCardState(true, {
+      email: "a@example.com",
+      scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      status: "connected",
+    });
+    expect(readOnly).toMatchObject({
+      kind: "connected",
+      access: ["Read and search your Gmail."],
+      missing: ["Send email: not allowed", "Calendar: not allowed"],
+    });
   });
 
   it("maps only known outcome codes to a message", () => {

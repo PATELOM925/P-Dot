@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildContextWindow, titleFromMessage } from "@/server/assistant/context";
 import { buildPromptMessages, formatSearchResults, isContinuationRequest, neutralize } from "@/server/assistant/prompt";
-import { normalizeReplyText } from "@/server/assistant/reply-text";
+import { createReplyNormalizer, normalizeReplyText } from "@/lib/reply-text";
 
 const now = new Date(Date.UTC(2026, 9, 14));
 
@@ -216,6 +216,51 @@ describe("normalizeReplyText", () => {
   it("leaves other brackets alone", () => {
     expect(normalizeReplyText("【note】 [2]")).toBe("【note】 [2]");
   });
+
+  it("writes the long citation forms as [n]", () => {
+    expect(normalizeReplyText("Cafe A 【2†L1-L4】, Cafe B [3†source] and 【1】.")).toBe("Cafe A [2], Cafe B [3] and [1].");
+  });
+});
+
+describe("createReplyNormalizer", () => {
+  const stream = (chunks: string[]) => {
+    const normalizer = createReplyNormalizer();
+    const shown = chunks.map((chunk) => normalizer.push(chunk)).join("");
+    return { shown, text: shown + normalizer.flush() };
+  };
+
+  it("holds a citation split across chunks until it closes", () => {
+    const { shown, text } = stream(["Union Cafe 【", "2†L1", "-L4】 is open. See [1", "†x] and [3", "]."]);
+    expect(shown).not.toMatch(/【|†/);
+    expect(text).toBe("Union Cafe [2] is open. See [1] and [3].");
+  });
+
+  it("gives back an open bracket that never closes when the stream ends", () => {
+    expect(stream(["Price [1", "0 off"]).text).toBe("Price [10 off");
+    expect(stream(["Note 【draft"]).text).toBe("Note 【draft");
+  });
+});
+
+describe("the line about Google and the apps", () => {
+  const base = { history: [{ role: "user" as const, content: "Check my latest emails" }], webSearch: "off" as const, results: [], now, mode: "work" as const };
+  const system = (privateSources?: "on" | "off") => buildPromptMessages({ ...base, privateSources })[0]!.content;
+
+  it("says the tools are on now when Google or an app is on", () => {
+    expect(system("on")).toContain("Earlier replies in this conversation may say you had no access. That is no longer true: the tools are on now. Use them.");
+    expect(system("on")).not.toContain("+ menu");
+  });
+
+  it("says how to turn them on when the user asked for neither", () => {
+    const text = system("off");
+    expect(text).toContain("Gmail, Google Calendar and the apps (Notion, Linear, Todoist) are off for this message.");
+    expect(text).toContain("do not say that you have no access");
+    expect(text).toContain("turn on Google or the app in the + menu");
+    expect(text).not.toContain("no longer true");
+  });
+
+  it("adds no line when the caller gives none", () => {
+    expect(system()).not.toMatch(/no longer true|\+ menu/);
+  });
 });
 
 describe("rich block rules", () => {
@@ -237,5 +282,11 @@ describe("rich block rules", () => {
     expect(system(buildPromptMessages(input("used", [])))).not.toContain("pdot-places");
     const used = buildPromptMessages(input("used", [{ title: "Bars", url: "https://www.blogto.com/bars", excerpt: "Walrus Pub" }]));
     expect(system(used)).toContain("pdot-places");
+  });
+
+  it("puts the places rule before the table rule and says not to use a table for places", () => {
+    const text = system(buildPromptMessages(input("used", [{ title: "Cafes", url: "https://www.yelp.ca/x", excerpt: "Union Coffee" }])));
+    expect(text.indexOf("pdot-places")).toBeLessThan(text.indexOf("pdot-table"));
+    expect(text).toContain("cafes, bars, restaurants, shops, things to see), put the places the sources name in this block, not in a table or a list");
   });
 });

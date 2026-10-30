@@ -13,6 +13,8 @@ export default defineConfig({
     environment: "node",
     include: ["tests/unit/**/*.test.ts", "tests/integration/**/*.test.ts"],
     restoreMocks: true,
+    // The Cloudflare build machine is slow (the suite took 154 s there); 5 s failed a test that takes 30 ms here.
+    testTimeout: 15_000,
     // The database gate starts PGlite and applies every migration in a hook; with test files in parallel this can take more than 10 s.
     hookTimeout: 60_000,
   },

@@ -2,7 +2,7 @@
 
 A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
 
-**Status: MVP implementation in progress.** Working: accounts with email or Google sign-in, a no-account trial ("Try P-Dot now"), a streaming chat with opt-in web search, Markdown replies with citation chips, a sources row and place, table, checklist and step cards, conversation history with rename and delete, model-written chat titles, Personal and Work modes, a to-do list, browser dictation, a Memory page for memories and documents, memory and document search in replies, task, reminder and memory proposals as approval cards, "What was sent" under each reply, an action log, reminders, a Google connection (Gmail and Calendar) with a per-message "Use Google" switch to search mail and calendars and propose emails and events, which run once after approval, read-only Notion, Linear and Todoist connectors, phone navigation, and an installable app for Android. Workflows and device pairing are still previews. Unit tests use mocked providers, and the database rules run in an in-memory Postgres gate. On 2026-10-30 the owner's local check script (not in this repo) signed in to the live app, sent a message and got a real reply. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19). A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
+**Status: MVP implementation in progress.** Working: accounts with email or Google sign-in, a no-account trial ("Try P-Dot now"), a streaming chat with opt-in web search, Markdown replies with citation chips, a sources row and place, table, checklist and step cards, conversation history with rename and delete, model-written chat titles, Personal and Work modes, a to-do list, browser dictation, a Memory page for memories and documents, memory and document search in replies, task, reminder and memory proposals as approval cards, "What was sent" under each reply, an Activity page, reminders, a Google connection (Gmail and Calendar) with a per-message "Use Google" switch to search mail and calendars and propose emails and events, which run once after approval, read-only Notion, Linear and Todoist connectors, phone navigation, and an installable app for Android. Workflows and device pairing are still previews. Unit tests use mocked providers, and the database rules run in an in-memory Postgres gate. On 2026-10-30 the owner's local check script (not in this repo) signed in to the live app, sent a message and got a real reply. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19). A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
 
 
 ## Hackathon: Nebius x NVIDIA
@@ -64,8 +64,8 @@ To run it yourself, see [Setup](#setup) and [Local development and testing (Dock
 | **Remember this?** in chat: keep, edit then keep, don't keep | Works for memories P-Dot suggested (`status = 'proposed'`, linked to a message). The assistant does not suggest memories yet |
 | **Memory** page: memories and documents (`.txt`, `.md`), add, keep, edit, move, delete | Works. Saving or changing text needs the Nebius key (embeddings); replies do not use memories or documents yet |
 | **What was sent** under each reply | Works for replies saved since context records began; older replies say they have none |
-| **Action log** page | Works: approvals, cancellations, runs and changes to memories, documents and reminders, without their text |
-| **Workflows**: reminders | Works (add, done, reopen, delete); P-Dot does not notify you when one is due yet. Routines are previews |
+| **Activity** page (`/activity`) | Works: approvals, cancellations, runs and changes to memories, documents and reminders, without their text |
+| **Today**: Workflows section with reminders | Works (add, done, reopen, delete); P-Dot does not notify you when one is due yet. Routines are previews |
 | **Connectors** | Built-in tools (to-do list, reminders, memory, documents) show live counts. Google (Gmail and Calendar), Notion, Linear and Todoist connect with one click; the app connectors are read only |
 | **Installable app** (PWA): manifest, service worker, install prompt, notification permission | Works in Chrome on Android and desktop; iPhone users add it to the Home Screen. No push messages are sent yet ([decision 0010](docs/decisions/0010-pwa-and-device-pairing.md)) |
 | **Devices** page | Shows what this browser supports; device pairing is a preview |
@@ -182,8 +182,8 @@ Open `http://localhost:3000` (not `127.0.0.1`, so cookies and email links share 
 | Hover a conversation: pencil, then Enter | Renamed in the sidebar; the new name is stored |
 | **Today** → add a task, tick it, delete it | Persists after a reload; Work and Personal lists are separate |
 | Microphone button, allow the browser prompt, speak | "Listening…" with the words being heard, then English text in the message box (Chrome/Edge/Safari; button is disabled elsewhere). Esc or the button stops; Send stops it too |
-| **Workflows** and **Connectors** pages | Reminders work on Workflows; routines are disabled previews. Connectors shows live counts for the built-in tools and Connect and Disconnect for Google, Notion, Linear and Todoist |
-| Insert a row into `action_proposals` for your user (Studio → SQL Editor, `status = 'proposed'`, with a `conversation_id`), then open that conversation | An approval card appears under the reply of the latest turn before the row was made, and the Today tab shows the count. Approve, Edit then approve, and Cancel each change its status; approved tasks and reminders appear on Today and Workflows; each decision appears on **Action log**; after a reload, decided ones show as short lines |
+| **Today** Workflows section and **Connectors** page | Reminders work in the Workflows section on Today; routines are disabled previews. Connectors shows live counts for the built-in tools and Connect and Disconnect for Google, Notion, Linear and Todoist |
+| Insert a row into `action_proposals` for your user (Studio → SQL Editor, `status = 'proposed'`, with a `conversation_id`), then open that conversation | An approval card appears under the reply of the latest turn before the row was made, and the Today tab shows the count. Approve, Edit then approve, and Cancel each change its status; approved tasks and reminders appear on Today; each decision appears on **Activity**; after a reload, decided ones show as short lines |
 | Insert a row into `memories` with `status = 'proposed'`, `source = 'assistant'` and `source_message_id` set to a message in that conversation | A "Remember this?" card appears under that turn's reply. Keep moves it to Remembered on the Memory page; Don't keep deletes it |
 | **Memory** → add, keep, edit, move to the other mode, delete | Persists after a reload. Without a Nebius key, adding or changing text says the embedding service is not configured |
 | **Memory** → Documents → choose a `.md` or `.txt` file, check the title, Add | With a Nebius key it shows "Ready". Other file types and empty files are refused before anything is sent |
@@ -260,7 +260,8 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `GET /api/conversations/:id` | One conversation with its messages (404 for missing or someone else's) |
 | `DELETE /api/conversations/:id` | Permanently delete a conversation and its messages |
 | `GET /api/memories?mode=&status=`, `POST /api/memories`, `PATCH`/`DELETE /api/memories/:id` | Memories the user can see, edit and delete ([decision 0009](docs/decisions/0009-memory-documents-actions.md)) |
-| `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | Plain text and Markdown documents, split and embedded on upload |
+| `GET /api/documents?mode=`, `POST /api/documents`, `DELETE /api/documents/:id` | The text of documents (text, CSV, code, PDF, Word, images), split and embedded on upload ([decision 0019](docs/decisions/0019-document-types.md)) |
+| `POST /api/documents/image-text` | Reads the text in one image and describes it with one vision call, under the chat quota and spend caps. Saves nothing |
 | `GET /api/actions?status=`, `POST /api/actions/:id/decision` | Action proposals; `{ decision: "approve" \| "reject", payload? }` runs an approved action once |
 | `GET /api/action-log` | The action log, written only by the database (IDs, kinds, modes, counts and flags only) |
 | `GET /api/reminders?mode=`, `POST /api/reminders`, `PATCH`/`DELETE /api/reminders/:id` | Reminders (no delivery yet) |
@@ -272,7 +273,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 
 | Path | Contents |
 | --- | --- |
-| `src/app/` | Pages (landing, `(auth)`, `(workspace)`: today, chat, memory, workflows, connectors, action-log, devices, settings), API routes, `auth/confirm`, the web app manifest (`manifest.ts`) |
+| `src/app/` | Pages (landing, `(auth)`, `(workspace)`: today, chat, memory, connectors, activity, devices, settings; `/workflows` and `/action-log` redirect), API routes, `auth/confirm`, the web app manifest (`manifest.ts`) |
 | `wrangler.jsonc`, `open-next.config.ts` | Cloudflare Worker and OpenNext adapter configuration |
 | `src/proxy.ts` | Session refresh and page redirects (Next.js 16 "proxy", formerly middleware) |
 | `src/features/` | Auth forms and server actions, chat workspace (rename, dictation, "What was sent"), to-do list, mode switch, approval cards and the action log (`actions/`), memory, documents, reminders, connectors status, the installable app (`pwa/`) |

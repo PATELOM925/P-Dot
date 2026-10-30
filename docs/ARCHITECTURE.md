@@ -44,6 +44,7 @@ src/
       tasks/               to-do items per mode
       memories/, documents/, actions/, action-log/, reminders/,
       messages/[id]/context/   decision 0009
+      documents/image-text/    POST: the text in one image, one vision call (decision 0019)
       health/              GET liveness + configured integrations
       connectors/google/   connect, callback, disconnect (decision 0014)
   components/layout/       workspace header, navigation, mode switch
@@ -136,7 +137,7 @@ Tools today:
 - `save_memory`: writes a proposed memory from the assistant, linked to the user message.
 - `notion_search`, `notion_fetch`, `linear_search_issues`, `linear_get_issue`, `todoist_list_tasks`, `todoist_find_tasks` ([decision 0016](decisions/0016-mcp-connectors.md)): read-only reads of the user's connected apps through `src/server/mcp/`, offered only for a message where the user turned on "Use <app>" and only for tools pinned at Connect. A search argument must be one phrase of the user's message; an ID must come from a typed field of this app's results in this turn or from the user's message. Results go to the model in `<untrusted_connector_data>` blocks, at most 12,000 characters for each turn. Such a turn has no `web_search`, and its reply has route reason `connector_read`, which stops the model-written `web_search` in that conversation for good, as a `google_request` reply does.
 
-The own-data tools are offered only when `detectToolIntent` (`src/server/assistant/tool-intent.ts`) finds a task, reminder, memory or own-data request in the message. A plain message gets no tools and stays on the fast tier.
+The own-data tools are offered only when `detectToolIntent` (`src/lib/tool-intent.ts`) finds a task, reminder, memory or own-data request in the message. A plain message gets no tools and stays on the fast tier.
 
 Before each turn, the top 4 active memories of the mode go in the final user turn, in an untrusted `<saved_memories>` block. After the reply of a new conversation, a short fast-tier call makes its title (`title` event).
 

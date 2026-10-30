@@ -3,6 +3,9 @@ import { LegalPage } from "@/components/layout/LegalPage";
 
 export const metadata: Metadata = { title: "Privacy · P-Dot" };
 
+// Built once at build time, so a request does no rendering work.
+export const dynamic = "force-static";
+
 export default function PrivacyPage() {
   return (
     <LegalPage title="Privacy" updated="30 October 2026">
@@ -60,7 +63,7 @@ export default function PrivacyPage() {
           <li>Delete a conversation in the chat list. Its messages go from the database at once.</li>
           <li>Delete a memory or a document on the Memory page. Its text and search vector go at once.</li>
           <li>Disconnect Google or an app on the Connectors page.</li>
-          <li>The action log and the action proposals stay as an audit record.</li>
+          <li>The Activity record and the action proposals stay as an audit record.</li>
           <li>Database backups can keep a copy until they expire under the hosting plan.</li>
           <li>Trial accounts and their data are deleted by 31 January 2027.</li>
           <li>

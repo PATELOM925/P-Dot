@@ -1,8 +1,13 @@
-import "server-only";
-
 // Rule-based check for when a message needs the own-data tools (decision 0013).
 // Pure and cheap, like the router: no model call. A plain everyday message
 // gets no tools, so it stays on the fast tier.
+
+/**
+ * "schedule" as a verb ("schedule a call", "can you schedule it"). The noun
+ * ("my schedule", "the schedule today", "what's on my schedule") is a
+ * calendar read, not a task request.
+ */
+export const SCHEDULE_VERB = String.raw`(?<!\b(?:my|our|your|the|a|this|that|today(?:'|’)?s|tomorrow(?:'|’)?s|work|daily|weekly|class)\s+)\bschedule\b(?!\s+(?:today|tonight|tomorrow|this\s+(?:week|weekend|morning|afternoon|evening)|next\s+week|for\s+(?:today|tonight|tomorrow|this|next))\b(?!['’]))`;
 
 /** Why the own-data tools are offered. Each value is also a route reason. */
 export type ToolIntent = "task_request" | "memory_request" | "own_data";
@@ -13,7 +18,7 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
     pattern: new RegExp(
       [
         String.raw`\bremind(?!\s+me\s+(?:what|who|whom|whose|which|where|why|how)\b)(?:er|ers)?\b`,
-        String.raw`\bschedule\b`,
+        SCHEDULE_VERB,
         String.raw`\bto-?dos?\b`,
         String.raw`\b(?:add|create|make|set|put)\b[^.?!]{0,30}\b(?:task|tasks|to-?do|reminder|alarm)\b`,
         String.raw`\b(?:add|put)\b[^.?!]{0,40}\bto\s+(?:my|the)\b[^.?!]{0,20}\blist\b`,
@@ -44,9 +49,10 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
     intent: "own_data",
     pattern: new RegExp(
       [
-        String.raw`\bmy\s+(?:notes?|documents?|docs|files?|uploads?|resume|cv|pdfs?)\b`,
+        String.raw`\bmy\s+(?:[\w'-]+\s+){0,2}(?:notes?|documents?|docs|files?|uploads?|resume|cv|pdfs?)\b`,
+        String.raw`\b(?:in|from|according\s+to|based\s+on)\s+my\s+(?:[\w'-]+\s+){0,3}(?:notes?|documents?|docs?|files?|uploads?|pdfs?)\b`,
         String.raw`\b(?:the|my|that|this)\s+(?:document|doc|file|pdf|resume|cv|notes?)\s+(?:that\s+|which\s+)?i\s+(?:uploaded|added|saved|shared|sent)\b`,
-        String.raw`\b(?:in|from)\s+(?:the|my|that)\s+(?:file|document|doc|notes?)\b`,
+        String.raw`\b(?:in|from|according\s+to|based\s+on)\s+(?:the|that)\s+(?:file|document|doc|notes?)\b`,
         String.raw`\bwhat\s+(?:do|did)\s+you\s+(?:know|remember)\s+about\s+me\b`,
         String.raw`\bdo\s+you\s+remember\b`,
         String.raw`\bwhat\s+did\s+i\s+(?:tell|say\s+to|save|share\s+with)\s+you\b`,

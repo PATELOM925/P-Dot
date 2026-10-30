@@ -23,6 +23,17 @@ export const SEARCH_MAX_RESULTS = 5;
 export const SEARCH_EXCERPT_CHARS = 1_200;
 export const SEARCH_QUERY_CHARS = 400;
 
+/** Deep research (decision 0018): one advanced search, then the text of its top pages. */
+export const RESEARCH_MAX_RESULTS = 8;
+export const RESEARCH_PAGES = 3;
+export const RESEARCH_PAGE_CHARS = 3_000;
+
+/** Morning brief (decision 0018): one news search for each topic. */
+export const BRIEF_MAX_TOPICS = 3;
+export const BRIEF_TOPIC_CHARS = 60;
+export const BRIEF_RESULTS_PER_TOPIC = 3;
+export const BRIEF_DATE_CHARS = 40;
+
 /** Messages returned when reopening a conversation (no pagination in the MVP). */
 export const CONVERSATION_MESSAGE_LIMIT = 200;
 
@@ -44,6 +55,12 @@ export const MAX_DOCUMENT_TITLE_CHARS = 200;
 export const MAX_DOCUMENT_CHARS = 100_000;
 /** Request body limit for a document upload (JSON with the text). */
 export const MAX_DOCUMENT_BODY_BYTES = 512 * 1024;
+/** Largest PDF, Word or image file the browser reads (decision 0019). Its text must still fit MAX_DOCUMENT_CHARS. */
+export const MAX_DOCUMENT_FILE_BYTES = 10 * 1024 * 1024;
+/** The browser makes the long side of an image at most this many pixels before it sends the image. */
+export const IMAGE_MAX_SIDE_PX = 1_280;
+/** Request body limit for the image text route: the resized image as a base64 data URL, in JSON. */
+export const MAX_IMAGE_TEXT_BODY_BYTES = 1536 * 1024;
 export const DOCUMENT_LIST_LIMIT = 100;
 export const DOCUMENT_CHUNK_CHARS = 2_000;
 export const DOCUMENT_CHUNK_OVERLAP_CHARS = 200;

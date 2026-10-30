@@ -114,6 +114,13 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - **Rule:** cleanup that must always run cannot live only in a generator's `finally`. Give it an owner that exists before the stream starts, and test a cancel before the first read.
 - **Sources:** [decision 0012](decisions/0012-resend-idempotency.md), review round 1; `tests/unit/api-routes.test.ts` ("cancelled before its first read").
 
+### 13. One Tavily reservation holds at most 2 credits
+
+- **What happened:** deep research and the morning brief make more than one Tavily call in a turn (decision 0018). The SQL bound on `reserve_provider_spend` allows at most 2 credits for one Tavily reservation, which is one advanced search.
+- **Fix:** each search holds its own credits. `TurnHolds.tavily` is a list in the order of use, and a credit leaves it when its search starts. The extract holds its 1 credit just before it is sent and settles at 0 if Stop comes first.
+- **Rule:** hold credits for each paid call, not for the whole turn, and give back only credits whose call was not sent. Tavily charges an extract by successful pages (1 credit for each 5), so 1 held credit covers an extract of 3 pages.
+- **Sources:** [decision 0018](decisions/0018-tavily-research-and-brief.md); `supabase/migrations/20261019000000_global_spend_guard.sql`; the Tavily credits page, read on 2026-10-30; `tests/unit/research.test.ts`.
+
 ## Checklists
 
 **Add or change a model**
@@ -135,8 +142,23 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - Keep the overall deadline and the attempt cap. Every retry and hedge must reserve budget.
 - Prove the change with fake timers. Then run a small real latency check and record p50 and max first-token time in the pull request.
 
+### 13. A tool turn waited for two model calls and for the memory lookup
+
+- **What happened:** the live user test on 2026-10-30 measured the first visible text from the browser. Fast tier: 2.9 s once and 15.6 s on another try. Tool turns (standard tier, Super first): first text at 10.4 s, 16.0 s and 18.5 s, and a whole reply at 19 to 23.6 s. A web search turn: 7.9 s from "Searching the web" to the next step, and the first text at 25.3 s. In each tool turn the model wrote text before its tool call, against the prompt rule, so the first hop ran to its end before the tool and the second hop. The server logs (`model_route`: `firstTokenMs`, `modelsTried`, `fallback`) were not read for this change, so the split between a slow Super and a first-token timeout of 10 s with a fallback to Lightning is not known.
+- **Fix:** the memory lookup (one embedding call and one database match) now runs at the same time as the web search, not after it, and a message of one or two words under 12 characters ("hi", "thanks!") has no lookup. The title call runs after the `done` event, so it does not delay the reply. No hold, timeout or hedge changed.
+- **Rule:** start independent setup calls of a turn together. Measure from the `model_route` log before you change a tier, a timeout or a hedge.
+- **Sources:** /tmp/pdot-usertest/report.md (live user test, not in the repo); `tests/unit/own-data-tools.test.ts` ("starts the memory lookup before the web search ends").
+
+### 14. A forced `tool_choice` is not verified on Nebius
+
+- **What happened:** the model answered "Got it!" to "Remember that I prefer short answers" with no `save_memory` call, and "I've proposed a task" with no `propose_task` call.
+- **Fix:** the first hop of a message that asks to remember sends `tool_choice` with the function `save_memory`; a task or reminder request sends "required". If the provider answers HTTP 400, the same hop runs again with "auto" and the server logs `tool_choice_refused`. A turn with no proposal has each sentence that claims one removed (`claim-guard.ts`).
+- **Rule:** check the `tool_choice_refused` count after the deploy. If it is not zero, the forced choice does not work on that model.
+- **Sources:** live user test 2026-10-30; `tests/unit/claim-guard.test.ts`.
+
 ## Not verified yet
 
+- A forced `tool_choice` ("required" or a named function) on Super, Ultra and Lightning (lesson 14).
 - Tool calls on Super, Ultra and Lightning, and a final pass with no `tools` field after earlier tool messages (decision 0013). The adapter tests use the OpenAI-compatible wire shape, not a recorded Nebius stream.
 - The token allowance for the chat template's tool text (1,024, plus 128 for each tool and 64 for each tool call and result). It is an estimate. If real usage is above a hold, the settle counts only the hold.
 - Real Nebius error shapes for quota, rate limit and model-not-found inside a stream.

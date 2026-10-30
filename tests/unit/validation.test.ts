@@ -28,8 +28,16 @@ describe("chatRequestSchema", () => {
     ["retry with a message", { action: "retry", conversationId: ID, message: "hi", webSearch: false }],
     ["unknown action", { action: "delete", conversationId: ID, webSearch: false }],
     ["not an object", "hello"],
+    ["unknown time zone", { action: "send", message: "hi", webSearch: false, timeZone: "Mars/Olympus" }],
+    ["time zone with odd characters", { action: "send", message: "hi", webSearch: false, timeZone: "UTC; drop" }],
+    ["time zone that is too long", { action: "send", message: "hi", webSearch: false, timeZone: "A".repeat(65) }],
   ])("rejects %s", (_label, body) => {
     expect(chatRequestSchema.safeParse(body).success).toBe(false);
+  });
+
+  it("accepts the browser's time zone on a send and a retry", () => {
+    expect(chatRequestSchema.safeParse({ action: "send", message: "hi", webSearch: false, timeZone: "Asia/Kolkata" }).success).toBe(true);
+    expect(chatRequestSchema.safeParse({ action: "retry", conversationId: ID, webSearch: false, timeZone: "America/Toronto" }).success).toBe(true);
   });
 
   it("accepts a message at exactly the limit", () => {

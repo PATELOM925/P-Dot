@@ -9,18 +9,18 @@ import { signOutAction } from "@/features/auth/actions";
 import { WaitingApprovalsBadge } from "@/features/actions/WaitingApprovalsBadge";
 import { useKeyboardOpen } from "./useKeyboardOpen";
 
+// Same order as the top nav. Six tabs do not fit a phone, so Activity, Settings and Devices go in "More".
 const TABS = [
-  { href: "/today", label: "Today" },
   { href: "/chat", label: "Chat" },
+  { href: "/today", label: "Today" },
+  { href: "/connectors", label: "Connectors" },
   { href: "/memory", label: "Memory" },
 ];
 
 const MORE = [
-  { href: "/workflows", label: "Workflows" },
-  { href: "/connectors", label: "Connectors" },
-  { href: "/action-log", label: "Action log" },
-  { href: "/devices", label: "Devices" },
+  { href: "/activity", label: "Activity" },
   { href: "/settings", label: "Settings" },
+  { href: "/devices", label: "Devices" },
 ];
 
 /** Phones only (CSS): 4 tabs at the bottom, and a "More" sheet with the other pages and sign-out. */

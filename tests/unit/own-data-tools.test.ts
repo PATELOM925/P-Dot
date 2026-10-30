@@ -103,8 +103,8 @@ describe("memory retrieval before each turn", () => {
     const without = setup([{ text: "OK." }]);
     const plain = fakeDeps({ spend: without.spend, provider: without.deps.provider });
 
-    await runTurn(deps, { action: "send", message: "hi", webSearch: false }, waited);
-    await runTurn(plain.deps, { action: "send", message: "hi", webSearch: false }, plain.waited);
+    await runTurn(deps, { action: "send", message: "what should I cook tonight", webSearch: false }, waited);
+    await runTurn(plain.deps, { action: "send", message: "what should I cook tonight", webSearch: false }, plain.waited);
 
     const holds = spend.reservations.filter((r) => r.provider === "nebius");
     // The first hold for the reply, then one for the embedding, each settled.
@@ -112,6 +112,51 @@ describe("memory retrieval before each turn", () => {
     expect(holds.every((r) => r.settled !== null)).toBe(true);
     const plainHold = without.spend.reservations.find((r) => r.provider === "nebius")!.held;
     expect(holds[0]!.held - plainHold).toBeGreaterThanOrEqual(Math.floor((MEMORY_BLOCK_MAX_BYTES * 300) / 1000));
+  });
+
+  it("makes no memory lookup for a short message such as 'hi' or 'thanks!'", async () => {
+    for (const message of ["hi", "thanks!", "ok cool"]) {
+      const { deps, own, spend, requests, waited } = setup([{ text: "OK." }]);
+      own.memoryMatches = [memory("m1", "Likes tea")];
+
+      await runTurn(deps, { action: "send", message, webSearch: false }, waited);
+
+      expect(spend.reservations.filter((r) => r.provider === "nebius")).toHaveLength(1);
+      expect(requests[0]!.messages.at(-1)!.content).not.toContain("Likes tea");
+    }
+  });
+
+  it("starts the memory lookup before the web search ends", async () => {
+    const order: string[] = [];
+    const spend = new FakeSpend();
+    const repo = new MemoryRepository();
+    const own = new FakeOwnData(ALICE, testEmbedder(spend), () => "2026-10-14T12:00:00.000Z");
+    const services = own.services();
+    const embedder = services.embedder;
+    services.embedder = {
+      ...embedder,
+      embed: async (texts, signal) => {
+        order.push("embed");
+        return embedder.embed(texts, signal);
+      },
+    };
+    const { provider } = scripted([{ text: "OK [1]." }]);
+    const fake = fakeDeps({
+      repo,
+      spend,
+      provider,
+      ownData: services,
+      search: async () => {
+        order.push("search start");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push("search end");
+        return [{ title: "Page", url: "https://example.com/1", excerpt: "Fact." }];
+      },
+    });
+
+    await runTurn(fake.deps, { action: "send", message: "cafes near Union Station", webSearch: true }, fake.waited);
+
+    expect(order.indexOf("embed")).toBeLessThan(order.indexOf("search end"));
   });
 
   it("answers without memories when retrieval fails, and logs no text", async () => {
@@ -171,7 +216,7 @@ describe("search tools over the user's own data", () => {
     const { deps, own, requests, waited } = setup([{ text: "OK." }]);
     own.memoryMatches = [memory("m1", "Likes tea")];
 
-    const { turn } = await runTurn(deps, { action: "send", message: "thanks", webSearch: false }, waited);
+    const { turn } = await runTurn(deps, { action: "send", message: "thanks, that helps a lot", webSearch: false }, waited);
 
     expect(requests[0]).not.toHaveProperty("tools");
     expect(turn.route).toEqual({ tier: "fast", reason: "everyday" });
@@ -234,6 +279,20 @@ describe("proposal tools", () => {
     expect(own.proposals).toHaveLength(1);
     expect(own.proposals[0]!.payload).toEqual({ kind: "create_reminder", mode: "personal", title: "Call mom", dueAt: "2026-10-31T03:30:00.000Z" });
   });
+
+  // No timer or retry runs here. The first Intl time-zone format in a worker loads the ICU zone data
+  // (about 19 ms on a laptop, 0.1 ms after that); a busy build machine stretched it past 5 s.
+  it("reads 6pm tomorrow in the user's time zone and stores the reminder in UTC", async () => {
+    const { deps, own, requests, waited } = setup([
+      { calls: [call("propose_reminder", { title: "Call mom", dueAt: "2026-10-15T18:00:00+05:30" })] },
+      { text: "OK." },
+    ]);
+
+    await runTurn(deps, { action: "send", message: "Remind me to call mom tomorrow at 6pm", webSearch: false, timeZone: "Asia/Kolkata" }, waited);
+
+    expect(requests[0]!.messages[0]!.content).toContain("Asia/Kolkata (UTC+05:30)");
+    expect(own.proposals[0]!.payload).toMatchObject({ kind: "create_reminder", dueAt: "2026-10-15T12:30:00.000Z" });
+   }, 20_000);
 
   it("save_memory writes a proposed memory from the assistant, linked to the user message, with a vector", async () => {
     const { deps, own, spend, waited } = setup([{ calls: [call("save_memory", { content: "Allergic to peanuts" })] }, { text: "Keep it below." }]);

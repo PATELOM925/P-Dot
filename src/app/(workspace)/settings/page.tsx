@@ -62,25 +62,24 @@ export default async function SettingsPage() {
 
       <section id="approvals" className="card stack" aria-labelledby="approvals-heading">
         <h2 id="approvals-heading">Approvals</h2>
-        <p>Choose how P-Dot acts on what it suggests in chat. You can also switch with the button next to the message box.</p>
         <ApprovalModeOptions />
-        <p className="muted small">
-          In Auto, for replies to messages you send while it is on, P-Dot does these on its own and shows them under the
-          reply with Undo: {RUNS_ON_ITS_OWN.join(", ").toLowerCase()}. At most {MAX_AUTO_ACTIONS_PER_REPLY} for one reply;
-          the rest ask.
-        </p>
-        <div className="stack">
+        <details className="more-details stack">
+          <summary>What Auto does</summary>
+          <p className="small">
+            In Auto, for replies to messages you send while it is on, P-Dot does these on its own and shows them under the
+            reply with Undo: {RUNS_ON_ITS_OWN.join(", ").toLowerCase()}. At most {MAX_AUTO_ACTIONS_PER_REPLY} for one
+            reply; the rest ask. You can also switch with the button next to the message box.
+          </p>
           <h3>Always asks, even in Auto</h3>
           <ul className="plain-list">
             {Object.values(ALWAYS_ASK_REASONS).map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
           </ul>
-        </div>
-        <p className="hint">
-          Your choice is saved on this device. Every action, either way, appears in the{" "}
-          <Link href="/action-log">action log</Link>.
-        </p>
+          <p className="hint">
+            Your choice is saved on this device. Each action shows in <Link href="/activity">Activity</Link>.
+          </p>
+        </details>
       </section>
 
       <AppSettings />
@@ -88,13 +87,14 @@ export default async function SettingsPage() {
       <section className="card stack" aria-labelledby="devices-heading">
         <h2 id="devices-heading">Devices</h2>
         <p>
-          See how this device is set up, and how pairing your laptop and phone will work.{" "}
           <Link href="/devices">Open devices</Link>
         </p>
       </section>
 
-      <section className="card stack" aria-labelledby="data-heading">
-        <h2 id="data-heading">How your data is used</h2>
+      <details className="card stack card-details" aria-labelledby="data-heading">
+        <summary>
+          <h2 id="data-heading">How your data is used</h2>
+        </summary>
         <ul className="plain-list">
           <li>
             <strong>Inference (Nebius Token Factory):</strong> each message you send, together with recent
@@ -133,38 +133,40 @@ export default async function SettingsPage() {
             received (counts and IDs, not a copy of the text). Open it with &ldquo;What was sent&rdquo; under a reply.
           </li>
           <li>
-            <strong>Action log:</strong> approvals, cancellations, completed actions and changes to memories,
-            documents and reminders are recorded without their text, and cannot be edited or deleted. See the{" "}
-            <Link href="/action-log">action log</Link>.
+            <strong>Activity:</strong> approvals, cancellations, completed actions and changes to memories,
+            documents and reminders are recorded without their text, and cannot be edited or deleted. See{" "}
+            <Link href="/activity">Activity</Link>.
           </li>
           <li>
             <strong>Storage (Supabase):</strong> your account, conversations, tasks, memories, documents, reminders and
-            the action log are stored in a Supabase database, visible only to your account.
+            the Activity record are stored in a Supabase database, visible only to your account.
           </li>
           <li>
             <strong>Logs:</strong> the server logs request metadata (timing, status, error type) but not your
             message text or search queries.
           </li>
         </ul>
-      </section>
+      </details>
 
-      <section className="card stack" aria-labelledby="retention-heading">
-        <h2 id="retention-heading">Retention and deletion</h2>
+      <details className="card stack card-details" aria-labelledby="retention-heading">
+        <summary>
+          <h2 id="retention-heading">Retention and deletion</h2>
+        </summary>
         <p>
           Conversations are kept until you delete them. Deleting a conversation from the chat sidebar removes
           it and its messages from the active database immediately. Database backups may keep a copy until
           they expire according to the hosting plan&apos;s backup retention.
         </p>
         <p>
-          Deleting a memory or a document removes its text and search vector at once. Action proposals and the action
-          log are kept as an audit record and cannot be deleted from the app; they hold kinds, counts and IDs, and a
+          Deleting a memory or a document removes its text and search vector at once. Action proposals and the Activity
+          record are kept as an audit record and cannot be deleted from the app; they hold kinds, counts and IDs, and a
           proposal also keeps the details you were asked to approve.
         </p>
         <p className="muted">
           Self-service account deletion is not available yet. The final retention policy is still being
           decided and will be published before public release.
         </p>
-      </section>
+      </details>
     </main>
   );
 }

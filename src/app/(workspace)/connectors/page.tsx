@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { GoogleCard } from "@/features/connectors/GoogleCard";
 import { googleCardState, googleOutcomeMessage } from "@/features/connectors/google";
 import { McpCard } from "@/features/connectors/McpCard";
@@ -84,71 +85,47 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
   // P-Dot's own lists and files. The first three are the only things an approved action can change (decision 0009).
   const builtIn = [
     { name: "To-do list", href: "/today", link: "Open your to-do list", status: status.tasks, can: "add a task you approve." },
-    { name: "Reminders", href: "/workflows", link: "Open your reminders", status: status.reminders, can: "set a reminder you approve." },
+    { name: "Reminders", href: "/today#workflows", link: "Open your reminders", status: status.reminders, can: "set a reminder you approve." },
     { name: "Memory", href: "/memory", link: "Open what P-Dot remembers", status: status.memory, can: "remember something you approve." },
     {
       name: "Documents",
       href: "/memory#documents",
       link: "Open your documents",
       status: status.documents,
-      can: "keep text and Markdown files you add. P-Dot can search them when you ask about your notes, documents or files.",
+      can: "keep the text of files you add: text, CSV, PDF, Word, images and more. P-Dot can search them when you ask about your notes, documents or files.",
     },
   ];
 
   return (
     <main className="page page-wide stack">
-      <div>
-        <h1>Connectors</h1>
-        <p className="muted">
-          What P-Dot can work with. You choose what it can see, and it asks before it sends, books, changes or deletes
-          anything. Every decision is written to the <Link href="/action-log">action log</Link>.
-        </p>
-      </div>
-
-      <section className="stack" aria-labelledby="built-in-heading">
-        <div className="section-heading">
-          <h2 id="built-in-heading">Built in</h2>
-          <p className="muted">
-            P-Dot&apos;s own lists and files, shown for {MODE_LABELS[mode]} mode. An action proposed in chat can add to a
-            list only after you approve it on its card.
-          </p>
-        </div>
-        <div className="card-grid">
-          {builtIn.map((tool) => (
-            <article key={tool.name} className="panel">
-              <div className="panel-heading">
-                <h3>{tool.name}</h3>
-                <span className="status-pill status-executed">Ready</span>
-              </div>
-              <p className="connector-status">{tool.status}</p>
-              <p>
-                <strong>Can:</strong> {tool.can}
-              </p>
-              <Link href={tool.href}>{tool.link}</Link>
-            </article>
-          ))}
-          <article className="panel">
-            <div className="panel-heading">
-              <h3>Your devices</h3>
-              <span className="status-pill">Coming soon</span>
-            </div>
+      <PageHeader
+        title="Connectors"
+        info={
+          <>
             <p>
-              <strong>Will:</strong> act on your own laptop and phone, with your approval for each action.
+              You choose what P-Dot can see. It asks before it sends, books, changes or deletes anything. Each decision
+              shows in <Link href="/activity">Activity</Link>.
             </p>
-            <Link href="/devices">Open devices</Link>
-          </article>
-        </div>
-      </section>
+            <p>
+              Built in: P-Dot&apos;s own lists and files, shown for {MODE_LABELS[mode]} mode. A chat action adds to a
+              list only after you approve it on its card.
+            </p>
+            <p>
+              Your accounts: P-Dot reads an account only for one message. A message that names Notion, Linear or Todoist,
+              or asks about your email or calendar, turns that account on. You can turn an account on or off in the + menu
+              before you send.
+            </p>
+          </>
+        }
+      />
 
       <section className="stack" aria-labelledby="accounts-heading">
-        <div className="section-heading">
-          <h2 id="accounts-heading">Your accounts</h2>
-          <p className="muted">
-            Accounts you connect. P-Dot reads them only for a message where you allow it, and it asks before it sends or
-            adds anything. In chat, turn on Use Google, Notion, Linear or Todoist in the + menu to let P-Dot read it for one
-            message.
+        <h2 id="accounts-heading">Your accounts</h2>
+        {auth.isAnonymous && (
+          <p className="alert alert-notice">
+            Create an account to connect other accounts. <Link href="/signup">Create an account</Link>
           </p>
-        </div>
+        )}
         <div className="card-grid">
           <GoogleCard state={googleCardState(configured, google, auth.isAnonymous === true)} message={googleMessage} />
           {MCP_SERVER_IDS.map((app) => (
@@ -166,18 +143,27 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
         </div>
       </section>
 
-      <section className="stack" aria-labelledby="planned-heading">
-        <div className="section-heading">
-          <h2 id="planned-heading">Planned accounts</h2>
-          <p className="muted">
-            Not available yet. These cards preview the plan; none of them can be connected today.
-          </p>
-          {auth.isAnonymous && (
-            <p className="alert alert-notice">
-              Create an account to connect other accounts. <Link href="/signup">Create an account</Link>
-            </p>
-          )}
+      <section className="stack" aria-labelledby="built-in-heading">
+        <h2 id="built-in-heading">Built in</h2>
+        <div className="card-grid">
+          {builtIn.map((tool) => (
+            <article key={tool.name} className="panel">
+              <div className="panel-heading">
+                <h3>{tool.name}</h3>
+                <span className="status-pill status-executed">Ready</span>
+              </div>
+              <p className="connector-status">{tool.status}</p>
+              <p>
+                <strong>Can:</strong> {tool.can}
+              </p>
+              <Link href={tool.href}>{tool.link}</Link>
+            </article>
+          ))}
         </div>
+      </section>
+
+      <details className="more-details stack">
+        <summary>Coming soon ({PLANNED.length + 1})</summary>
         <div className="card-grid">
           {PLANNED.map((connector) => (
             <article key={connector.name} className="panel">
@@ -198,8 +184,18 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
               </button>
             </article>
           ))}
+          <article className="panel">
+            <div className="panel-heading">
+              <h3>Your devices</h3>
+              <span className="status-pill">Coming soon</span>
+            </div>
+            <p>
+              <strong>Will:</strong> act on your own laptop and phone, with your approval for each action.
+            </p>
+            <Link href="/devices">Open devices</Link>
+          </article>
         </div>
-      </section>
+      </details>
     </main>
   );
 }
