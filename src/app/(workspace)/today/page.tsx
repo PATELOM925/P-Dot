@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ApprovalList } from "@/features/actions/ApprovalList";
+import { BriefCard } from "@/features/today/BriefCard";
 import { TaskList } from "@/features/today/TaskList";
 import { MODE_LABELS } from "@/lib/mode";
-import { ACTION_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
+import { ACTION_LIST_LIMIT, BRIEF_MAX_TOPICS, TASK_LIST_LIMIT } from "@/lib/limits";
 import { requireAuth } from "@/server/auth/session";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
+import { createMemoryRepository } from "@/server/db/memories";
 import { createTaskRepository } from "@/server/db/tasks";
 import { getMode } from "@/server/mode";
 
@@ -19,9 +21,13 @@ const SCOPE: Record<"personal" | "work", string> = {
 export default async function TodayPage() {
   const auth = await requireAuth("/today");
   const mode = await getMode();
-  const [tasks, proposals] = await Promise.all([
+  const [tasks, proposals, memories] = await Promise.all([
     createTaskRepository(auth.supabase).listTasks(auth.userId, mode, TASK_LIST_LIMIT),
     createActionProposalRepository(auth.supabase).listProposals(auth.userId, undefined, ACTION_LIST_LIMIT),
+    // Topics for an empty brief field. The brief still works when this read fails.
+    createMemoryRepository(auth.supabase)
+      .listMemories(auth.userId, mode, "active", BRIEF_MAX_TOPICS)
+      .catch(() => []),
   ]);
 
   return (
@@ -39,13 +45,7 @@ export default async function TodayPage() {
 
       <div className="two-column">
         <div className="stack">
-          <section className="panel" aria-labelledby="brief-heading">
-            <h2 id="brief-heading">Daily brief</h2>
-            <p className="muted">
-              No brief yet. A daily brief is built from your email and calendar, and connectors are not available yet.
-            </p>
-            <Link href="/connectors">See planned connectors</Link>
-          </section>
+          <BriefCard key={mode} mode={mode} memoryTopics={memories.map((memory) => memory.content)} />
 
           <TaskList key={mode} mode={mode} initialTasks={tasks} />
         </div>
