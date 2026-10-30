@@ -1,17 +1,83 @@
 # P-Dot
 
-A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search.
+P-Dot is a personal assistant for people who want one place for chat, their own notes and files, their day and their connected accounts. It answers with NVIDIA Nemotron models on Nebius Token Factory and searches the web with Tavily. It knows your saved memories and documents, plans your day on the Today page, and reads Gmail, Calendar, Notion, Linear and Todoist when you connect them. It never acts on your behalf without your approval: each task, reminder, memory or email is a card that you approve, edit or cancel.
 
-**Status: MVP implementation in progress.** Working: accounts with email or Google sign-in, a no-account trial ("Try P-Dot now"), a streaming chat with opt-in web search, Markdown replies with citation chips, a sources row and place, table, checklist and step cards, conversation history with rename and delete, model-written chat titles, Personal and Work modes, a to-do list, browser dictation, a Memory page for memories and documents, memory and document search in replies, task, reminder and memory proposals as approval cards, "What was sent" under each reply, an Activity page, reminders, a Google connection (Gmail and Calendar) with a per-message "Use Google" switch to search mail and calendars and propose emails and events, which run once after approval, read-only Notion, Linear and Todoist connectors, phone navigation, and an installable app for Android. Workflows and device pairing are still previews. Unit tests use mocked providers, and the database rules run in an in-memory Postgres gate. On 2026-10-30 the owner's local check script (not in this repo) signed in to the live app, sent a message and got a real reply. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19). A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
+**Live app:** https://pdot.iampatelom.com · **Demo video:** https://youtu.be/OhikQWepjOs · **License:** Apache 2.0 ([LICENSE](LICENSE))
 
+**Status:** MVP, live in production since 2026-10-19. See [What works today](#what-works-today) and [Verification status](#verification-status). A global spend guard caps what all users together can spend ([Usage limits](#usage-limits)).
+
+## Try it (for judges)
+
+Open https://pdot.iampatelom.com. Sign in with the demo account `demo@pdot.iampatelom.com` and the password `Judge-Demo-2026`, or click **Try P-Dot now** to start with no account.
+
+1. **Chat.** Ask "Plan a 3-day trip to Lisbon on a small budget". Under the reply, P-Dot shows the Nemotron model it used and why.
+2. **Deep research.** Open the "+" menu, select **Deep research**, and ask "Compare the best e-bikes under $2,000". P-Dot searches the web, reads the top 3 pages and writes a brief with cited sources.
+3. **Morning brief.** Open **Today**, check the topics and click **Make today's brief**. P-Dot searches today's news for each topic and saves the brief as a new chat.
+4. **Your documents.** Open **Memory**, then **Documents**, and add a resume (PDF, Word or text). Go back to **Chat** and ask "What job roles should I apply to?". The reply uses the resume.
+5. **Approval card.** Ask "Remind me to call the dentist tomorrow at 10 am". P-Dot shows a reminder card. Approve, edit or cancel it. The decision shows on **Activity**.
+6. **What was sent.** Under any reply, open **What was sent**. It shows the model, the context size, the memories and documents used, web search use and tokens.
+7. **Theme.** Use the theme button in the header (on a phone: **More**, then **Theme**) to switch between System, Light and Dark.
+
+**Google sign-in and the Gmail and Calendar connection work only for test users.** The Google app is in testing mode, so Google refuses other accounts. Use the demo account or "Try P-Dot now" for everything else. Notion, Linear and Todoist connect with your own account.
+
+## What works today
+
+**Chat**
+- Streamed replies from 4 Nemotron tiers. A router picks the tier for each message ([Nemotron section](#how-p-dot-uses-nvidia-nemotron-through-nebius-token-factory)). "Think harder" always uses the heavy tier.
+- Deep research: an advanced web search, the text of the top 3 pages and a cited brief.
+- Web search with citation chips and a sources row.
+- Rich answers: Markdown, place, table, checklist and step cards.
+- "What was sent" under each reply.
+- Conversation history with rename, delete, pin and model-written titles. Personal and Work modes. Dictation in browsers that support speech recognition.
+
+**Personal context**
+- Memories that you keep, edit, move between modes and delete.
+- Documents: text, CSV, JSON, code, PDF, Word and images (PNG, JPEG, WebP, GIF). Video and audio files are refused. When your documents in a mode are small (12,000 characters or less in total), their full text goes into every turn. Larger sets are searched, and the best matches go in.
+- When a message names a connected app (Notion, Linear, Todoist), P-Dot turns that app on for the message. When it asks about email or the calendar, P-Dot turns Google on. You can turn it off before you send.
+
+**Actions**
+- Approval cards for tasks, reminders, memories, emails and calendar events. Approve, edit then approve, or cancel. Each approved action runs once.
+- Ask first or Auto approval mode.
+- Activity (formerly Action log): approvals, cancellations, runs and changes, without their text.
+
+**Today**
+- Overview: a greeting, a quick ask, tiles, upcoming reminders and recent chats.
+- Morning brief: news for up to 3 topics, made only when you click.
+- To-do list for each mode.
+- Workflows section: reminders (add, done, reopen, delete). P-Dot does not notify you when a reminder is due yet. Routines are marked "Coming soon".
+
+**Connectors**
+- Google: Gmail (search, propose emails) and Calendar (search, propose events), with one-click connect. Missing permissions are shown on the card.
+- Notion, Linear and Todoist: read only, through their MCP servers.
+
+**UI**
+- Nav order: Chat, Today, Connectors, Memory, Activity, Settings. On a phone, Activity, Settings and Devices are under the **More** tab.
+- Light, dark and system theme.
+- Installable app (PWA) in Chrome on Android and desktop; on iPhone, add it to the Home Screen. No push messages are sent yet.
+- Device pairing on the Devices page is a preview.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  B[Browser or installed app] -->|HTTPS, NDJSON stream| W[Cloudflare Worker<br/>Next.js with OpenNext]
+  W -->|session, RLS| S[(Supabase<br/>Auth, Postgres with RLS, pgvector)]
+  W -->|chat, vision, embeddings| N[Nebius Token Factory<br/>Nemotron, Qwen3 embeddings]
+  W -->|search, extract| T[Tavily]
+  W -->|OAuth, REST| G[Google<br/>Gmail, Calendar]
+  W -->|MCP| M[Notion, Linear, Todoist]
+```
+
+- One Next.js app runs on one Cloudflare Worker. Pages and API routes share it. Provider keys are Worker secrets and never reach the browser.
+- Supabase holds accounts and all data. Row-level security scopes every row to its user. The app uses only the publishable key with the user's session.
+- Memories and document chunks are embedded with `Qwen/Qwen3-Embedding-8B` on Token Factory and stored in pgvector.
+- Web text, page text, document text and model output are untrusted. They go to the model inside delimited blocks, never as system instructions.
+- A global spend guard in Postgres holds the worst-case cost before each Nebius or Tavily call and settles the real cost after it ([decision 0006](docs/decisions/0006-global-spend-guard.md)).
+- Actions with an outside effect run only after an approval. Only the database writes the action log.
 
 ## Hackathon: Nebius x NVIDIA
 
-P-Dot is entered in the Nebius x NVIDIA Global AI Hackathon, **Personal AI Track**. The project started on 2026-10-09, inside the submission period.
-
-- Live app: https://pdot.iampatelom.com
-- Demo video: https://youtu.be/OhikQWepjOs
-- License: Apache 2.0 ([LICENSE](LICENSE))
+P-Dot is entered in the Nebius x NVIDIA Global AI Hackathon, **Personal AI Track**, and for **Best Use of Tavily**. The project started on 2026-10-09, inside the submission period.
 
 ### How P-Dot uses NVIDIA Nemotron through Nebius Token Factory
 
@@ -20,15 +86,15 @@ Every chat reply is a runtime call to the Token Factory chat completions API (`h
 | Tier | Models, in order | Used for | Reasoning | Max output tokens |
 | --- | --- | --- | --- | --- |
 | fast | `nvidia/Nemotron-3_5-Lightning`, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/nemotron-3-super-120b-a12b` | Everyday messages | Off | 1,024 |
-| standard | `nvidia/nemotron-3-super-120b-a12b`, `nvidia/Nemotron-3_5-Lightning` | One reasoning signal (planning, analysis, math, code), long messages, long conversations, web search results | Off | 2,048 |
+| standard | `nvidia/nemotron-3-super-120b-a12b`, `nvidia/Nemotron-3_5-Lightning` | One reasoning signal (planning, analysis, math, code), long messages, long conversations, web search, deep research, the morning brief, tool calls and every turn with documents | Off | 2,048 |
 | heavy | `nvidia/Nemotron-3-Ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b` | Multi-step requests, one reasoning signal in a long message, and "Think harder" | On, 1,024-token budget | 4,096 |
-| vision | `nvidia/Nemotron-3.5-Super-VL` | Image input (router and tier ready; the chat API does not take images yet) | Off | 1,024 |
+| vision | `nvidia/Nemotron-3.5-Super-VL` | Reads each uploaded image once: the exact text in it, then a short description, which is saved as the document text ([decision 0019](docs/decisions/0019-document-types.md)) | Off | 4,096 for an image read |
 
-The executor ([`src/server/assistant/executor.ts`](src/server/assistant/executor.ts)) adds retries with backoff, a move to the next model on 404, a first-token timeout per tier, one deadline per reply, a hedge on the fast tier after 1.5 s, and a circuit breaker. It never switches models after the first visible token. Under each reply, the chat shows the model and the reason (for example "Nemotron 3 Super · multi-step request"), and "What was sent" shows the model ID, the context size, memories, documents, web search use and tokens.
+The executor ([`src/server/assistant/executor.ts`](src/server/assistant/executor.ts)) adds retries with backoff, a move to the next model on 404, a first-token timeout per tier, one deadline per reply, a hedge on the fast tier after 1.5 s, and a circuit breaker. It never switches models after the first visible token. Under each reply, the chat shows the model and the reason (for example "Nemotron 3 Super · multi-step request").
 
 Embeddings for memories and documents use `Qwen/Qwen3-Embedding-8B` on the same Token Factory key (1,024 dimensions), stored in Supabase with pgvector.
 
-Tool calls ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22), [decision 0013](docs/decisions/0013-ai-tools-and-scope.md)): a tool-calling loop runs on the standard tier or above, with `web_search` as the first tool. It runs at most 2 tool steps and a final answer step, and holds spend for each step. Live since [PR #24](https://github.com/PATELOM925/P-Dot/pull/24): `search_documents`, `search_memories`, and the `propose_task`, `propose_reminder` and `save_memory` tools, which become approval cards, and chat titles written by Nemotron. The own-data tools are offered only when the message asks for them, so everyday messages stay on the fast tier. Web search, "Use Google" (Gmail and Calendar, [PR #30](https://github.com/PATELOM925/P-Dot/pull/30)) and the app connectors are per-message switches, and only one of the three can be on for a message.
+Tool calls ([decision 0013](docs/decisions/0013-ai-tools-and-scope.md)): a tool-calling loop runs on the standard tier or above. It runs at most 2 tool steps and a final answer step, and holds spend for each step. Tools: `web_search`, `search_documents`, `search_memories`, the Gmail and Calendar tools, the read tools of the connected apps, and `propose_task`, `propose_reminder` and `save_memory`, which become approval cards. Nemotron also writes the chat titles. The own-data tools are offered only when the message asks for them, so everyday messages stay on the fast tier.
 
 ### Where Token Factory sped up the work
 
@@ -38,49 +104,38 @@ Tool calls ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22), [decision 001
 - **Reasoning control per request.** `chat_template_kwargs.enable_thinking` and `thinking_token_budget` let each tier choose reasoning on or off without a different model.
 - **Fast first tokens.** Measured through the executor on 2026-10-19 (small sample): 431 to 467 ms on Lightning, 502 to 530 ms on Super, 559 to 869 ms on Ultra with reasoning (a 200-token reasoning budget for the test).
 
-### Tavily
-
-When the user turns on web search (the "+" menu in chat), the server calls the Tavily Search API ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts)) with basic depth and up to 5 results. Excerpts are cut to 1,200 characters and unsafe URLs are dropped. Results go to Nemotron inside a delimited `<web_search_results>` block marked as untrusted, and the reply lists the sources with links. A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. Tavily credits have their own caps in the spend guard ([decision 0006](docs/decisions/0006-global-spend-guard.md)). Since [PR #22](https://github.com/PATELOM925/P-Dot/pull/22), with the toggle on, Nemotron calls `web_search` as a tool and picks the query itself.
-
 ### Other Nebius tools
 
 P-Dot uses Nebius Token Factory only. It does not use Nebius AI Cloud, Serverless Endpoints or Serverless Jobs. The app runs on Cloudflare Workers, with Supabase for auth and Postgres.
 
+### Tavily
+
+P-Dot uses Tavily in three ways ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts), [decision 0018](docs/decisions/0018-tavily-research-and-brief.md)):
+
+| Use | Start | Tavily calls | Credits held |
+| --- | --- | --- | --- |
+| Web search | "Search the web" in the "+" menu. Nemotron calls `web_search` as a tool and picks the query. | Search, basic depth, up to 5 results | 1 for each search |
+| Deep research | "Deep research" in the "+" menu, for one message | Search, advanced depth, up to 8 results (news topic for recent events). Then Extract of the top 3 pages. Then Nemotron writes a cited brief: a short answer, key findings, where sources disagree, and limits. | 2 before the stream, then 1 just before the extract |
+| Morning brief | "Make today's brief" on the Today page. Only a click starts it. | One news search for each topic (1 to 3), last day, 3 results each. Nemotron writes 5 cited bullets. | 1 for each topic |
+
+- **Untrusted text.** Excerpts are cut to 1,200 characters and page text to 3,000 characters a page, at most 3 pages. Unsafe URLs are dropped. All of it goes to Nemotron inside one delimited `<web_search_results>` block marked as untrusted, and delimiter tags are removed from the text. The reply lists the sources with links.
+- **Failures are told.** A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. A refused extract credit keeps the excerpts, and the reply goes on.
+- **Caps.** Tavily credits have their own holds and caps in the spend guard: 40 credits each UTC day and 800 each month for all users, 10 each day for one user ([decision 0006](docs/decisions/0006-global-spend-guard.md)).
+
 To run it yourself, see [Setup](#setup) and [Local development and testing (Docker)](#local-development-and-testing-docker).
 
+## Team
 
-## What works today
-
-| Area | Status |
-| --- | --- |
-| Sign up, sign in, email confirmation, password reset | Works (tested with local Supabase) |
-| Chat with streamed replies, retry, stop | Works once Nebius is configured |
-| Web search toggle (Tavily) from the "+" menu | Works once a Tavily key is set; off by default |
-| Conversation list, **rename**, delete | Works |
-| **Personal / Work mode** toggle | Works: each conversation and task belongs to one mode, lists are filtered by mode, and the assistant is instructed to stay within that mode's topics |
-| **Today** page: to-do list per mode | Works (add, tick, delete) |
-| **Microphone** button: speech to English text | Works in browsers with speech recognition (Chrome, Edge, Safari): the browser asks for the microphone the first time, shows the words it hears as you speak, and puts each finished phrase in the message box. You press send; sending or switching conversations stops listening. On Android it listens for one phrase per tap |
-| **Approval cards** in chat and on Today: approve, edit then approve, cancel | Works for proposals stored through the API. In chat each card sits under the reply that made it, with earlier decisions as short lines; the Today tab shows how many are waiting. The assistant does not create proposals yet, so none arrive from chat |
-| **Ask first / Auto** approval modes | Chat asks once per device which mode to use (Ask first is recommended). After that, the button next to the microphone shows the current mode and opens a menu that explains both; Settings → Approvals has the same choice, and the Today panel links to it. Works with today's API. In Auto, adding a task or a reminder runs on its own and shows "Done on its own" with Undo; saving a memory, deleting, outside accounts, private data, money and settings still ask (at most 3 on its own per reply). The choice is saved on the device; the server-side part is the recipe in [decision 0011](docs/decisions/0011-approval-modes.md) |
-| **Remember this?** in chat: keep, edit then keep, don't keep | Works for memories P-Dot suggested (`status = 'proposed'`, linked to a message). The assistant does not suggest memories yet |
-| **Memory** page: memories and documents (`.txt`, `.md`), add, keep, edit, move, delete | Works. Saving or changing text needs the Nebius key (embeddings); replies do not use memories or documents yet |
-| **What was sent** under each reply | Works for replies saved since context records began; older replies say they have none |
-| **Activity** page (`/activity`) | Works: approvals, cancellations, runs and changes to memories, documents and reminders, without their text |
-| **Today**: Workflows section with reminders | Works (add, done, reopen, delete); P-Dot does not notify you when one is due yet. Routines are previews |
-| **Connectors** | Built-in tools (to-do list, reminders, memory, documents) show live counts. Google (Gmail and Calendar), Notion, Linear and Todoist connect with one click; the app connectors are read only |
-| **Installable app** (PWA): manifest, service worker, install prompt, notification permission | Works in Chrome on Android and desktop; iPhone users add it to the Home Screen. No push messages are sent yet ([decision 0010](docs/decisions/0010-pwa-and-device-pairing.md)) |
-| **Devices** page | Shows what this browser supports; device pairing is a preview |
-| Daily brief | Preview only |
-| Landing page agent example | Illustrative example, not real data |
-
-The design for all of this is in the "P-Dot Frontend Design" canvas; planned-but-unbuilt parts are tracked in [decision 0005](docs/decisions/0005-assistant-hub-proposal.md) and [decision 0010](docs/decisions/0010-pwa-and-device-pairing.md).
+- Om Patel ([@PATELOM925](https://github.com/PATELOM925))
+- Awais Aziz
+- Tirth
 
 ## Stack
 
 - Next.js 16 (App Router, TypeScript) for pages and API routes, deployed to Cloudflare Workers with the OpenNext adapter ([decision 0004](docs/decisions/0004-cloudflare-workers-deployment.md))
-- Supabase for authentication and Postgres (row-level security) — [decision 0001](docs/decisions/0001-supabase-auth-and-database.md)
-- Nebius Token Factory (OpenAI-compatible) for inference, streamed to the browser as NDJSON — [decision 0002](docs/decisions/0002-streaming-responses.md)
-- Tavily for opt-in web search
+- Supabase for authentication and Postgres (row-level security), see [decision 0001](docs/decisions/0001-supabase-auth-and-database.md)
+- Nebius Token Factory (OpenAI-compatible) for inference, streamed to the browser as NDJSON, see [decision 0002](docs/decisions/0002-streaming-responses.md)
+- Tavily for opt-in web search, deep research and the morning brief
 - Zod for validation, Vitest for tests
 
 ## Setup
@@ -218,7 +273,7 @@ Open `http://localhost:3000` (not `127.0.0.1`, so cookies and email links share 
 | Insert a row into `action_proposals` for your user (Studio → SQL Editor, `status = 'proposed'`, with a `conversation_id`), then open that conversation | An approval card appears under the reply of the latest turn before the row was made, and the Today tab shows the count. Approve, Edit then approve, and Cancel each change its status; approved tasks and reminders appear on Today; each decision appears on **Activity**; after a reload, decided ones show as short lines |
 | Insert a row into `memories` with `status = 'proposed'`, `source = 'assistant'` and `source_message_id` set to a message in that conversation | A "Remember this?" card appears under that turn's reply. Keep moves it to Remembered on the Memory page; Don't keep deletes it |
 | **Memory** → add, keep, edit, move to the other mode, delete | Persists after a reload. Without a Nebius key, adding or changing text says the embedding service is not configured |
-| **Memory** → Documents → choose a `.md` or `.txt` file, check the title, Add | With a Nebius key it shows "Ready". Other file types and empty files are refused before anything is sent |
+| **Memory** → Documents → choose a text, PDF, Word or image file, check the title, Add | With a Nebius key it shows "Ready". Video and audio files and empty files are refused before anything is sent |
 | **What was sent** under a reply | Model, conversation size, memories, documents, web search and tokens for that reply |
 | **Settings** → App and notifications (Chrome on Android) | "Install P-Dot" opens the install dialog; "Allow notifications" asks for permission; the test notification appears |
 | Second user in a private window | Sees none of the first user's conversations |
@@ -334,7 +389,7 @@ Short version:
 
 ## Verification status
 
-Done and passing locally: lint, type-check, the unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules, spend guard holds, settles and refusals), production build, and the 6 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
+Done and passing locally: lint, type-check, the unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules, spend guard holds, settles and refusals), production build, and the 10 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
 
 Deployed and checked on 2026-10-19: `/api/health` (auth configured, inference not configured), `/`, `/login`, `/signup` return 200, `/chat` redirects to `/login` when signed out, and `POST /api/chat` without a session returns 401. No CPU-limit or runtime errors in the Worker logs.
 
