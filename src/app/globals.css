@@ -1123,7 +1123,7 @@ textarea::placeholder {
   background: var(--accent);
 }
 
-.tool-row[data-tool="webSearch"][aria-checked="true"] .tool-switch {
+.tool-row[data-tool="web"][aria-checked="true"] .tool-switch {
   background: var(--sage-text);
 }
 
@@ -1164,6 +1164,11 @@ textarea::placeholder {
 .chip-deep {
   background: var(--accent-soft);
   color: var(--accent-soft-text);
+}
+
+.chip-app {
+  background: var(--work);
+  color: var(--work-text);
 }
 
 @media (pointer: coarse) {

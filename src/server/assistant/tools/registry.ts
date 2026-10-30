@@ -8,6 +8,7 @@ import type { SpendGuard } from "@/server/db/spend";
 import type { Logger } from "@/server/log";
 import type { ToolCall, ToolDefinition } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
+import type { ConnectorTools, ConnectorTurn } from "@/server/mcp/connector-turn";
 import type { Embedder } from "../embed";
 
 // The one place that defines the assistant's tools. A tool is a ToolSpec in
@@ -21,6 +22,11 @@ export interface ToolFlags {
   webSearch: boolean;
   /** The server can read and write the user's own P-Dot data (memories, documents, proposals). */
   ownData: boolean;
+  /**
+   * The apps the user turned on for this message, with their pinned tools
+   * (decision 0016). Only for a signed-up user whose app is connected.
+   */
+  connectors?: ConnectorTools;
 }
 
 /**
@@ -65,6 +71,8 @@ export interface ToolContext {
   signal: AbortSignal;
   /** Web sources the turn already has, in citation order. A tool adds only new URLs. */
   sources: readonly WebSearchResult[];
+  /** The reads of connected apps for this turn. Null when no app is on. */
+  connectors?: ConnectorTurn | null;
 }
 
 export interface ToolOutcome {

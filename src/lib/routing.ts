@@ -26,6 +26,7 @@ export const ROUTE_REASONS = [
   "task_request",
   "memory_request",
   "own_data",
+  "connector_read",
 ] as const;
 export type RouteReason = (typeof ROUTE_REASONS)[number];
 
@@ -54,6 +55,7 @@ const REASON_LABELS: Record<RouteReason, string> = {
   task_request: "task or reminder request, tools on",
   memory_request: "request to remember, tools on",
   own_data: "about your notes or memories, tools on",
+  connector_read: "read a connected app",
 };
 
 const MODEL_NAMES: Record<string, string> = {

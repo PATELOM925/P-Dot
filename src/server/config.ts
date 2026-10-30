@@ -219,6 +219,16 @@ export function getGoogleConfig(env: NodeJS.ProcessEnv = process.env): GoogleCon
   };
 }
 
+/** MCP connectors (decision 0016). Only the sealing key is needed: the client ID is P-Dot's CIMD URL. */
+export type McpConfigState = { status: "ready"; encryptionKey: Uint8Array } | { status: "not_set_up"; invalid: boolean };
+
+export function getMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfigState {
+  const raw = blankToUndefined(env.CONNECTOR_TOKEN_ENCRYPTION_KEY);
+  if (!raw) return { status: "not_set_up", invalid: false };
+  const encryptionKey = decodeKey(raw);
+  return encryptionKey ? { status: "ready", encryptionKey } : { status: "not_set_up", invalid: true };
+}
+
 /** Public base URL used in auth emails (verification and password recovery). */
 export function getSiteUrl(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = blankToUndefined(env.SITE_URL);

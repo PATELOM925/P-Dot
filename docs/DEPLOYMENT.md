@@ -92,6 +92,7 @@ If `npm run check` fails, the build stops and nothing is deployed.
 | `NEBIUS_BASE_URL`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`; the model routing settings `NEBIUS_FAST_MODELS`, `NEBIUS_STANDARD_MODELS`, `NEBIUS_HEAVY_MODELS`, `NEBIUS_VISION_MODELS`, `NEBIUS_MAX_OUTPUT_TOKENS`, `NEBIUS_STANDARD_MAX_OUTPUT_TOKENS`, `NEBIUS_HEAVY_MAX_OUTPUT_TOKENS`, `NEBIUS_HEAVY_THINKING_BUDGET`, `NEBIUS_HEDGE_AFTER_MS` ([decision 0007](decisions/0007-model-routing.md)); and the spend caps `NEBIUS_DAILY_CAP_USD`, `NEBIUS_TOTAL_CAP_USD`, `NEBIUS_USER_DAILY_CAP_USD`, `TAVILY_DAILY_CREDITS`, `TAVILY_MONTHLY_CREDITS`, `TAVILY_USER_DAILY_CREDITS` ([decision 0006](decisions/0006-global-spend-guard.md)) | Runtime variables. The code has a default for each. `wrangler.jsonc` sets the routing settings (the same values as the defaults) and each cap. `NEBIUS_MODEL` is no longer read. | `wrangler.jsonc`, in **both** `vars` (production) and `previews.vars` (Previews), changed through a pull request. Previews do not get top-level `vars` or dashboard variables. `tests/unit/wrangler-config.test.ts` fails if the two lists have different names. Dashboard variables (Workers & Pages → `pdot` → Settings → Variables and Secrets) are kept on deploy by `keep_vars: true`, but they apply to production only. |
 | `NEBIUS_API_KEY`, `TAVILY_API_KEY` | Runtime secrets | `npx wrangler secret put NAME` (owner only) |
 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_TOKEN_ENCRYPTION_KEY` | Runtime secrets, optional. Without all three, Google shows "Not set up". The client ID is public and is on the bundle allow list; the other two are not ([decision 0014](decisions/0014-google-sign-in-and-connection.md)). | `npx wrangler secret put NAME` (owner only); One-time setup, item 7 |
+| `CONNECTOR_TOKEN_ENCRYPTION_KEY` | Runtime secret, optional. 32 bytes, base64 (`openssl rand -base64 32`). It seals the Notion, Linear and Todoist tokens. Without it, those cards show "Not set up" and chat offers no app. Never on the bundle allow list ([decision 0016](decisions/0016-mcp-connectors.md)). | `npx wrangler secret put NAME` (owner only) |
 
 Rules:
 
@@ -155,6 +156,18 @@ Google sign-in and the Google connection ([decision 0014](decisions/0014-google-
 2. Code PR G2 (branch `om/google-connect`): sign-in with Google, Connect and Disconnect, the Gmail and Calendar modules and the Connectors card. Merge it only after check 1. Before the migration, Connect fails at `save_connected_account` and stores nothing. Do not use its Preview before check 1. Between the two steps, a user who approves a `send_email` or `create_calendar_event` row that they made by hand gets a 500 from the current Worker, and the row stays `executing` until G2 ships; nothing calls Google.
 
 A rollback to a version from before step 2 is safe. That version does not read the new table. It leaves a proposal of a new kind out of its lists, and an approval of one answers 500.
+
+The Notion, Linear and Todoist connectors ([decision 0016](decisions/0016-mcp-connectors.md)) ship in two steps. There is no contract step.
+
+1. Database PR M1 (branch `om/mcp-connectors-db`, PR #29): migration `20261031000000_mcp_connectors.sql`. It adds no table, column, function or grant. Check 1: in the Supabase dashboard, the migration is in the history, and on `connected_accounts`:
+   - `connected_accounts_provider_check` lists `google`, `notion`, `linear` and `todoist`;
+   - the new constraint `connected_accounts_google_email` exists, and `account_email` allows NULL;
+   - `connected_accounts_known_scopes` has a branch for each of the four providers;
+   - `connected_accounts_token_ciphertext_check` allows 12,288 characters for a provider that is not `google`;
+   - the policies `connected_accounts_insert_own` and `connected_accounts_update_own` check `is_anonymous` for a provider that is not `google`.
+2. Code PR M2 (branch `om/mcp-connectors`): the MCP client, Connect, callback and Disconnect, the cards and the chat toggles. Merge it only after check 1. Before the migration, a callback fails at `save_connected_account` and stores nothing, and chat finds no row and offers no app. Do not use its Preview before check 1. After step 2, set `CONNECTOR_TOKEN_ENCRYPTION_KEY`; without it the cards show "Not set up".
+
+A rollback to a version from before step 2 is safe. That version reads only `provider = 'google'` rows.
 
 ## One-time setup (owner only)
 

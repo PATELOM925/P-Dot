@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MCP_SERVER_IDS } from "./connectors";
 import {
   MAX_ACTION_SUMMARY_CHARS,
   MAX_DOCUMENT_CHARS,
@@ -27,6 +28,16 @@ export const modeSchema = z.enum(["personal", "work"]);
 /** "auto" lets the router choose; "deep" asks for the heavy tier. */
 const effortSchema = z.enum(EFFORTS).optional();
 
+/** Apps to read for one message (decision 0016): unique, at most all three. */
+const connectorsSchema = z
+  .array(z.enum(MCP_SERVER_IDS))
+  .max(MCP_SERVER_IDS.length)
+  .refine((ids) => new Set(ids).size === ids.length, "Each app can be listed once.")
+  .optional();
+const noSearchWithConnectors = (value: { webSearch: boolean; connectors?: unknown[] }) =>
+  !(value.webSearch && (value.connectors?.length ?? 0) > 0);
+const searchWithConnectors = { message: "Web search cannot be on with a connected app.", path: ["webSearch"] };
+
 // `.strict()` rejects unknown keys, so a client cannot smuggle in fields such
 // as a user ID. Identity always comes from the verified session.
 const sendSchema = z
@@ -41,8 +52,10 @@ const sendSchema = z
       .max(MAX_MESSAGE_CHARS, `Message must be at most ${MAX_MESSAGE_CHARS} characters.`),
     webSearch: z.boolean(),
     effort: effortSchema,
+    connectors: connectorsSchema,
   })
-  .strict();
+  .strict()
+  .refine(noSearchWithConnectors, searchWithConnectors);
 
 const retrySchema = z
   .object({
@@ -50,8 +63,10 @@ const retrySchema = z
     conversationId,
     webSearch: z.boolean(),
     effort: effortSchema,
+    connectors: connectorsSchema,
   })
-  .strict();
+  .strict()
+  .refine(noSearchWithConnectors, searchWithConnectors);
 
 export const chatRequestSchema: z.ZodType<ChatRequest> = z.discriminatedUnion("action", [
   sendSchema,
