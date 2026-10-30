@@ -26,8 +26,14 @@ export async function POST(request: Request, context: { params: Promise<{ server
     if (!server) return backToConnectors(request, null, "disconnect_error");
 
     const { quota } = getAssistantConfig();
-    const decision = await createQuotaGate(auth.supabase, quota.requestsPerWindow, quota.windowSeconds).consume();
-    if (!decision.allowed) return backToConnectors(request, server.id, "rate_limited");
+    let allowed: boolean;
+    try {
+      allowed = (await createQuotaGate(auth.supabase, quota.requestsPerWindow, quota.windowSeconds).consume()).allowed;
+    } catch {
+      logEvent("error", "mcp_quota_failed", { requestId, route: ROUTE, server: server.id });
+      return backToConnectors(request, server.id, "disconnect_error");
+    }
+    if (!allowed) return backToConnectors(request, server.id, "rate_limited");
 
     const repo = createMcpAccountRepository(auth.supabase);
     let row;
