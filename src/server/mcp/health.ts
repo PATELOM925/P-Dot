@@ -2,7 +2,7 @@ import "server-only";
 import type { McpServerId } from "@/lib/connectors";
 import type { McpAccountRepository, McpTokenRow } from "@/server/db/connected-accounts";
 import { openBundle } from "./bundle";
-import { MCP_SERVERS } from "./catalog";
+import { MCP_SERVERS, isToolPinned } from "./catalog";
 
 // What the Connectors cards and the chat toggles show for each MCP app
 // (decision 0016). Read on the server; the token never leaves the Worker.
@@ -20,12 +20,14 @@ export interface McpConnectionView {
   noRefresh: boolean;
   /** The bundle does not open (changed key or row). Chat does not use it. */
   unreadable: boolean;
+  /** A tool added after this connection was made is missing. Connect again to get it (decision 0020). */
+  newToolsMissing?: boolean;
 }
 
 export async function viewOf(key: Uint8Array, userId: string, row: McpTokenRow): Promise<McpConnectionView> {
   const server = MCP_SERVERS[row.provider];
   const bundle = await openBundle(key, userId, server, row.subject, row.tokenCiphertext);
-  const ready = bundle ? server.tools.filter((tool) => bundle.pins[tool.remote]).map((tool) => tool.name) : [];
+  const ready = bundle ? server.tools.filter((tool) => isToolPinned(tool, bundle.pins)).map((tool) => tool.name) : [];
   return {
     server: row.provider,
     status: row.status,
@@ -34,6 +36,7 @@ export async function viewOf(key: Uint8Array, userId: string, row: McpTokenRow):
     missing: server.tools.map((tool) => tool.name).filter((name) => !ready.includes(name)),
     noRefresh: bundle !== null && bundle.refreshToken === null,
     unreadable: bundle === null,
+    newToolsMissing: bundle !== null && server.tools.some((tool) => tool.addedLater && !ready.includes(tool.name)),
   };
 }
 

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { MCP_SERVERS } from "@/server/mcp/catalog";
+import { MCP_SERVERS, type OneCallTool } from "@/server/mcp/catalog";
 import { canonicalJson, isCompatible, pinOf, pinTools } from "@/server/mcp/pins";
 import { NOTION_TOOLS } from "../support/fake-mcp";
 
-const fetchTool = MCP_SERVERS.notion.tools.find((tool) => tool.name === "notion_fetch")!;
+const fetchTool = MCP_SERVERS.notion.tools.find((tool) => tool.name === "notion_fetch") as OneCallTool;
 
 describe("tool pins", () => {
   it("gives the same pin when only the key order changes", async () => {

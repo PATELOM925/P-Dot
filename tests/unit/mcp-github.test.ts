@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuthContext } from "@/server/auth/session";
+import type { OneCallTool } from "@/server/mcp/catalog";
 import { FakeMcpAccounts, TEST_KEY, TEST_USER, fakeApp, seedConnection, type FakeApp } from "../support/fake-mcp";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
@@ -116,7 +117,7 @@ describe("GitHub Connect and callback", () => {
     const bundle = (await openBundle(TEST_KEY, TEST_USER, github, row.subject, row.tokenCiphertext))!;
     expect(bundle.clientId).toBe("github-client");
     expect(bundle.revocationEndpoint).toBeNull();
-    expect(Object.keys(bundle.pins).sort()).toEqual(["get_file_contents", "list_pull_requests", "search_issues"]);
+    expect(Object.keys(bundle.pins).sort()).toEqual(["get_file_contents", "get_me", "list_pull_requests", "search_issues", "search_pull_requests", "search_repositories"]);
     expect(JSON.stringify(bundle)).not.toContain("github-secret");
     expect(logs.join("\n")).not.toMatch(/github-secret|access-github/);
   });
@@ -189,7 +190,7 @@ describe("GitHub IDs and arguments", () => {
   });
 
   it("builds the remote arguments from the checked ID only", () => {
-    const [, list, read] = github.tools;
+    const [, list, read] = github.tools as OneCallTool[];
     expect(list!.remoteArgs({ repo: "vercel/next.js" })).toEqual({ owner: "vercel", repo: "next.js", state: "open", perPage: 10 });
     expect(read!.remoteArgs({ url: "https://github.com/octo/repo/blob/v1.2/src/index.ts" })).toEqual({
       owner: "octo",

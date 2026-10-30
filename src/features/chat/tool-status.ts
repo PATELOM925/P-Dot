@@ -23,6 +23,8 @@ const LINES: Record<AssistantToolName | ResearchStep, (query: string | undefined
   github_search_issues: (query) => (query ? `Searching GitHub issues for “${query}”…` : "Searching GitHub issues…"),
   github_list_pull_requests: (query) => (query ? `Listing pull requests in ${query}…` : "Listing pull requests…"),
   github_read_file: () => "Reading a GitHub file…",
+  github_my_work: () => "Checking your GitHub…",
+  github_find_repo: (query) => (query ? `Finding your GitHub repository “${query}”…` : "Finding your GitHub repository…"),
   research_search: () => "Searching the web (deep)…",
   research_read: (_query, count) => (count === 1 ? "Reading 1 page…" : `Reading ${count ?? "the top"} pages…`),
   research_write: () => "Writing the brief…",
