@@ -100,7 +100,16 @@ async function googleRead(context: ToolContext, read: (access: GoogleAccess) => 
   const turn = turnOf(context);
   if (turn.stopped) return { content: ENDED };
   if (turn.textLeft <= 0) return { content: LIMIT };
-  const opened = await openAccess(context);
+  let opened: GoogleAccessOutcome;
+  try {
+    opened = await openAccess(context);
+  } catch (error) {
+    if (context.signal.aborted) throw error;
+    // The token row could not be read: an outage, not an ended credential.
+    turnOf(context).access = null;
+    context.services.log("warn", "google_tool_failed", { requestId: context.requestId, route: "chat", kind: "token_read" });
+    return { content: UNAVAILABLE };
+  }
   if (!opened.ok) return { content: opened.content };
   try {
     return { content: await read(opened.access) };
