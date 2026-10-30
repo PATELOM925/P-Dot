@@ -22,6 +22,7 @@ import { searchWeb } from "@/server/providers/tavily/client";
 import { limitsFor } from "@/server/trial-limits";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
 import { createBudgetedEmbedder, type Embedder } from "./embed";
+import type { ImageTextDeps } from "./image-text";
 import type { AssistantDeps } from "./service";
 
 /**
@@ -114,4 +115,21 @@ export function createEmbedderForRequest(auth: AuthContext, config: AssistantCon
     settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
     spend: createSpendGuard(auth.supabase, limitsFor(auth, config).spend),
   });
+}
+
+/**
+ * The image text call for one authenticated request (decision 0019): the
+ * vision tier with this user's quota and spend caps (trial caps for a trial),
+ * as chat has. Throws ConfigError when Nebius is not configured.
+ */
+export function createImageTextDeps(auth: AuthContext, config: AssistantConfig): ImageTextDeps {
+  const limits = limitsFor(auth, config);
+  return {
+    provider: createNebiusProvider(config.nebius),
+    spend: createSpendGuard(auth.supabase, limits.spend),
+    quota: createQuotaGate(auth.supabase, limits.quota.requestsPerWindow, limits.quota.windowSeconds),
+    breaker,
+    vision: config.routing.vision,
+    now: () => new Date(),
+  };
 }

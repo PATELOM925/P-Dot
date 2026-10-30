@@ -13,6 +13,7 @@ import {
   MAX_EVENT_ATTENDEES,
   MAX_EVENT_DAYS,
   MAX_EVENT_TITLE_CHARS,
+  MAX_IMAGE_TEXT_BODY_BYTES,
   MAX_MEMORY_CHARS,
   MAX_MESSAGE_CHARS,
   MAX_REMINDER_TITLE_CHARS,
@@ -150,6 +151,18 @@ export const createDocumentSchema = z
       .min(1, "The document is empty.")
       .max(MAX_DOCUMENT_CHARS, `The document must be at most ${MAX_DOCUMENT_CHARS} characters.`)
       .refine((t) => t.trim().length > 0, { message: "The document is empty." }),
+  })
+  .strict();
+
+/** A JPEG data URL that starts with the JPEG signature (FF D8 FF, "/9j/" in base64). The browser makes this copy. */
+const JPEG_DATA_URL = /^data:image\/jpeg;base64,\/9j\/[A-Za-z0-9+/]*={0,2}$/;
+
+export const imageTextSchema = z
+  .object({
+    image: z
+      .string()
+      .max(MAX_IMAGE_TEXT_BODY_BYTES, "This image is too large to read. Try a smaller image.")
+      .regex(JPEG_DATA_URL, "Send the image as a JPEG data URL."),
   })
   .strict();
 
