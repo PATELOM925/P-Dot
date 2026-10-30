@@ -1,6 +1,7 @@
 import "server-only";
 import type { ToolChoice } from "@/server/providers/model";
 import { googleWords } from "@/lib/google-words";
+import { MCP_SERVERS } from "@/server/mcp/catalog";
 import type { ToolIntent } from "@/lib/tool-intent";
 
 // A reply must never say that P-Dot proposed, added, saved or set something
@@ -60,19 +61,27 @@ export function removeFalseClaims(text: string, actionAsked: boolean): { text: s
   return { text: tidy ? `${tidy}\n\n${NO_CARD_LINE}` : NO_CARD_LINE, removed };
 }
 
+/** The search or list tool of each app, the first tool in its catalog entry. */
+const APP_FIRST_READS = Object.values(MCP_SERVERS).flatMap((server) => server.tools.slice(0, 1).map((tool) => tool.name));
+
 /**
  * The first hop must call a tool when the message asks to remember, or to add
  * a task or a reminder: the model cannot answer "Got it" without a card. The
  * intent wins, so "Remind me to mail the package" gets a task card, not a
- * Gmail search. With Google on, a question about email or the calendar must
- * read first; a request to send or to write is not forced. Null when the
- * matching tool is not offered.
+ * Gmail search. With an app on, the first hop reads the app. With Google on, a
+ * question about email or the calendar must read first; a request to send or
+ * to write is not forced. Null when the matching tool is not offered.
  */
 export function forcedToolChoice(intent: ToolIntent | null, offered: readonly { name: string }[], message = ""): ToolChoice | null {
   const names = new Set(offered.map((tool) => tool.name));
   if (intent === "memory_request" && names.has("save_memory")) return { name: "save_memory" };
   if (intent === "task_request" && names.has("propose_task") && names.has("propose_reminder")) return "required";
   if (intent === "memory_request" || intent === "task_request") return null;
+  // An app is on only to read it, so the first hop reads it. Earlier replies that say
+  // "I can't access your Notion" must not decide this turn.
+  const appReads = APP_FIRST_READS.filter((name) => names.has(name));
+  if (appReads.length === 1) return { name: appReads[0]! };
+  if (appReads.length > 1) return "required";
   const words = googleWords(message);
   if (!words.read) return null;
   const mail = names.has("gmail_search") && words.mail;

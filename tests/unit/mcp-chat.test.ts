@@ -3,6 +3,7 @@ import { chatRequestSchema } from "@/lib/schemas";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import { createConnectorServices, type ConnectorServices } from "@/server/mcp/connector-turn";
 import { MAX_RESULT_CHARS } from "@/server/mcp/results";
+import { ProviderError } from "@/server/providers/errors";
 import type { CompletionChunk, ModelCallRequest, ModelProvider, ToolCall } from "@/server/providers/model";
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
 import { FakeMcpAccounts, NOTION_TOOLS, POISON, TEST_KEY, fakeApp, fakeApps, seedConnection, type FakeApp } from "../support/fake-mcp";
@@ -13,7 +14,7 @@ const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PAGE = "1a2b3c4d-5e6f-7081-9a0b-1c2d3e4f5a6b";
 const OTHER_PAGE = "99999999999999999999999999999999";
 
-type Step = { text?: string; calls?: ToolCall[] };
+type Step = { text?: string; calls?: ToolCall[]; fail?: ProviderError };
 
 function scripted(steps: Step[]) {
   const requests: ModelCallRequest[] = [];
@@ -23,6 +24,7 @@ function scripted(steps: Step[]) {
       requests.push(request);
       const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
       return (async function* (): AsyncGenerator<CompletionChunk> {
+        if (step.fail) throw step.fail;
         if (step.text) yield { type: "text", text: step.text };
         if (step.calls) yield { type: "tool_calls", calls: step.calls };
         yield { type: "finish", finishReason: step.calls ? "tool_calls" : "stop", usage: { promptTokens: 100, completionTokens: 10 } };
@@ -264,5 +266,44 @@ describe("connector reads in chat", () => {
     const s = await setup([{ text: "Hi." }]);
     await runTurn(s.deps, send("hello", { connectors: ["todoist"] }));
     expect(s.requests[0]!.tools ?? []).toEqual([]);
+  });
+});
+
+describe("an app that is on is read first (live test, 2026-10-30)", () => {
+  const REFUSAL = "I don't have access to your Notion or any external apps.";
+
+  async function withRefusal() {
+    const repo = new MemoryRepository();
+    const conversation = await repo.createConversation(ALICE, "Notion", "work");
+    await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "user", content: "Can u check my notion ?" });
+    await repo.insertMessage(ALICE, { conversationId: conversation.id, role: "assistant", content: REFUSAL });
+    return { repo, conversationId: conversation.id };
+  }
+
+  it("forces the app search on the first hop, also after an earlier refusal, and says the tools are on now", async () => {
+    const { repo, conversationId } = await withRefusal();
+    const s = await setup([{ calls: [call("notion_search", { query: "notes" })] }, { text: "Found 1 page." }], { repo });
+    await runTurn(s.deps, send("Can u check my notion ?", { conversationId, connectors: ["notion"] }));
+    expect(s.requests[0]!.toolChoice).toEqual({ name: "notion_search" });
+    expect(s.requests[0]!.messages.some((message) => message.content === REFUSAL)).toBe(true);
+    expect(s.requests[0]!.messages[0]!.content).toContain("Earlier replies in this conversation may say you had no access. That is no longer true");
+    expect(s.requests[1]!.toolChoice).toBeUndefined();
+  });
+
+  it("asks for any tool when two apps are on", async () => {
+    const s = await setup([{ text: "Ok." }]);
+    await runTurn(s.deps, send("What changed this week?"));
+    expect(s.requests[0]!.toolChoice).toBe("required");
+  });
+
+  it("runs the first hop again with 'auto' when the model refuses the forced choice", async () => {
+    const s = await setup([
+      { fail: new ProviderError("nebius", "invalid_request", 400) },
+      { calls: [call("notion_search", { query: "notes" })] },
+      { text: "Found it." },
+    ]);
+    const { events } = await runTurn(s.deps, send("Check my notes", { connectors: ["notion"] }));
+    expect(s.requests.map((request) => request.toolChoice)).toEqual([{ name: "notion_search" }, undefined, undefined]);
+    expect(events.at(-1)?.type).toBe("done");
   });
 });
