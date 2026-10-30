@@ -38,7 +38,8 @@ export function TodayBoard({ userId, sections }: { userId: string; sections: Boa
 
   useEffect(() => {
     const open = (hash: string) => {
-      const target = decodeURIComponent(hash.replace(/^#/, ""));
+      // Section ids are plain ASCII, so the hash is not decoded: a bad escape such as "#%" must not throw.
+      const target = hash.replace(/^#/, "");
       const id = target ? sectionOf(target) : null;
       if (id) dispatch({ type: "expand", id });
     };
