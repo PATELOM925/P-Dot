@@ -57,7 +57,7 @@ export function ExternalActionStatus({
   }
 
   return (
-    <div className="approval-outcome small stack" role="group" aria-label="Action in progress">
+    <div className="approval-pending small stack" role="group" aria-label="Action in progress">
       {!leaseOver ? (
         <p>P-Dot is working on this. Check back in two minutes.</p>
       ) : askUser ? (

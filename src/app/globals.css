@@ -1716,6 +1716,12 @@ h3 {
   font-weight: 600;
 }
 
+/* An external action with no known outcome yet: neutral, not the success colour. */
+.approval-pending {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 /* Cancelled and not kept are not successes. */
 .approval-outcome.muted {
   color: var(--text-muted);
