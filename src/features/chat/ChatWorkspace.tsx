@@ -27,6 +27,7 @@ import {
   postChat,
   renameConversation,
 } from "./api";
+import { Markdown } from "./markdown/Markdown";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ComposerToolState } from "./ComposerTools";
 import { TurnExtras } from "./TurnExtras";
@@ -625,8 +626,10 @@ export function ChatWorkspace({
               <p className="message-author">P-Dot</p>
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
               {streaming.tool && <p className="hint tool-status">{streaming.tool}</p>}
-              <div className="message-content">
-                {streaming.text || (
+              {streaming.text ? (
+                <Markdown text={streaming.text} />
+              ) : (
+                <div className="message-content">
                   <span className="muted">
                     {webSearch && !streaming.search
                       ? "Searching the web…"
@@ -634,8 +637,8 @@ export function ChatWorkspace({
                         ? "Thinking harder…"
                         : "Thinking…"}
                   </span>
-                )}
-              </div>
+                </div>
+              )}
               {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
           )}

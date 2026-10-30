@@ -658,6 +658,148 @@ textarea::placeholder {
   line-height: 1.55;
 }
 
+/* Safe Markdown in replies (src/features/chat/markdown). */
+.md {
+  white-space: normal;
+}
+
+.md > :last-child,
+.md li > :last-child {
+  margin-bottom: 0;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md .md-code,
+.md .md-table {
+  margin: 0 0 0.75rem;
+}
+
+.md ul,
+.md ol {
+  padding-left: 1.25rem;
+}
+
+.md li + li {
+  margin-top: 0.25rem;
+}
+
+.md li > ul,
+.md li > ol {
+  margin: 0.25rem 0 0;
+}
+
+.md .md-h {
+  margin: 0.25rem 0 0.5rem;
+  font-weight: 700;
+}
+
+.md .md-h1,
+.md .md-h2 {
+  font-size: 1.125rem;
+}
+
+.md .md-h3 {
+  font-size: 1rem;
+}
+
+.md code {
+  padding: 0.1em 0.35em;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  font-size: 0.875em;
+}
+
+.md-code {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.md-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.25rem 0.5rem 0.25rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.md-copy {
+  min-height: 2rem;
+  padding: 0 0.625rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.md-copy:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.md-code pre {
+  margin: 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.md-code pre code {
+  padding: 0;
+  background: transparent;
+  font-size: 0.8125rem;
+}
+
+.md blockquote {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--border-field);
+  color: var(--text-muted);
+}
+
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0.75rem 0;
+}
+
+.md-table {
+  overflow-x: auto;
+}
+
+.md-table table {
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.md-table th,
+.md-table td {
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  background: var(--surface-muted);
+}
+
+.md-table .md-align-center {
+  text-align: center;
+}
+
+.md-table .md-align-right {
+  text-align: right;
+}
+
 .sources {
   border-top: 1px solid var(--border);
   padding-top: 0.75rem;
