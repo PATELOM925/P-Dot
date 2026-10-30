@@ -14,10 +14,24 @@ import { createThinkFilter } from "./think";
 // Nebius Token Factory exposes an OpenAI-compatible chat completions API.
 // https://api.tokenfactory.nebius.com/docs
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+/** A whole tool call, joined from the streamed deltas. `arguments` is the raw JSON text from the model. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
 }
+
+/** A function the model may call. `parameters` is a JSON Schema object. */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export type ChatMessage =
+  | { role: "system" | "user"; content: string }
+  | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
+  | { role: "tool"; toolCallId: string; content: string };
 
 export interface NebiusSettings {
   apiKey: string;
@@ -42,6 +56,10 @@ export type CompletionChunk =
   | { type: "text"; text: string }
   /** The model is reasoning. Carries no text: reasoning is never shown or saved. */
   | { type: "reasoning" }
+  /** The model started a tool call. Carries no text; counts as the first token. */
+  | { type: "tool_progress" }
+  /** The whole tool calls of this response, sent once just before `finish`. */
+  | { type: "tool_calls"; calls: ToolCall[] }
   | { type: "finish"; finishReason: string | null; usage: TokenUsage | null };
 
 export interface StreamOptions {
@@ -51,7 +69,15 @@ export interface StreamOptions {
   totalTimeoutMs?: number;
   /** Maximum gap between streamed chunks (including time to first byte). */
   idleTimeoutMs?: number;
+  /** Functions the model may call. None or empty: the request has no `tools` field. */
+  tools?: ToolDefinition[];
 }
+
+/** Most tool calls one response may carry. More is a malformed response. */
+const MAX_TOOL_CALLS = 8;
+/** Longest tool name and argument text joined from deltas. Longer is a malformed response. */
+const MAX_TOOL_NAME_CHARS = 64;
+const MAX_TOOL_ARGUMENT_CHARS = 16_000;
 
 const chunkSchema = z.object({
   choices: z
@@ -64,6 +90,17 @@ const chunkSchema = z.object({
             content: z.string().nullish(),
             reasoning: z.string().nullish(),
             reasoning_content: z.string().nullish(),
+            tool_calls: z
+              .array(
+                z.object({
+                  index: z.number().int().min(0).max(MAX_TOOL_CALLS - 1).nullish(),
+                  id: z.string().max(200).nullish(),
+                  function: z
+                    .object({ name: z.string().nullish(), arguments: z.string().nullish() })
+                    .nullish(),
+                }),
+              )
+              .nullish(),
           })
           .nullish(),
         finish_reason: z.string().nullish(),
@@ -133,6 +170,73 @@ function thinkingFields(budget: number): Record<string, unknown> {
   return { chat_template_kwargs: { enable_thinking: true }, thinking_token_budget: budget };
 }
 
+function toWireMessage(message: ChatMessage): Record<string, unknown> {
+  if (message.role === "tool") return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
+  if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+    return {
+      role: "assistant",
+      content: message.content || null,
+      tool_calls: message.toolCalls.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: { name: call.name, arguments: call.arguments },
+      })),
+    };
+  }
+  return { role: message.role, content: message.content };
+}
+
+/** The `tools` and `tool_choice` fields, or nothing when no tool is offered. */
+export function toolFields(tools: ToolDefinition[] | undefined): Record<string, unknown> {
+  if (!tools || tools.length === 0) return {};
+  return {
+    tools: tools.map((tool) => ({
+      type: "function",
+      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+    })),
+    tool_choice: "auto",
+  };
+}
+
+interface PartialToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/**
+ * Joins `delta.tool_calls` by index. Returns true when a new call starts.
+ * Throws ProviderError("bad_response") when a call grows past the limits.
+ */
+function joinToolDelta(
+  calls: Map<number, PartialToolCall>,
+  delta: { index?: number | null; id?: string | null; function?: { name?: string | null; arguments?: string | null } | null },
+): boolean {
+  const index = delta.index ?? 0;
+  let call = calls.get(index);
+  const started = !call;
+  if (!call) {
+    if (calls.size >= MAX_TOOL_CALLS) throw new ProviderError("nebius", "bad_response");
+    call = { id: "", name: "", arguments: "" };
+    calls.set(index, call);
+  }
+  if (delta.id) call.id = delta.id;
+  if (delta.function?.name) call.name += delta.function.name;
+  if (delta.function?.arguments) call.arguments += delta.function.arguments;
+  if (call.name.length > MAX_TOOL_NAME_CHARS || call.arguments.length > MAX_TOOL_ARGUMENT_CHARS) {
+    throw new ProviderError("nebius", "bad_response");
+  }
+  return started;
+}
+
+/** Whole calls in index order. A call without an ID gets one; a call without a name is dropped. */
+function finishToolCalls(calls: Map<number, PartialToolCall>): ToolCall[] {
+  return [...calls.entries()]
+    .sort(([a], [b]) => a - b)
+    .filter(([, call]) => call.name.length > 0)
+    .map(([index, call]) => ({ id: call.id || `call_${index}`, name: call.name, arguments: call.arguments }));
+}
+
 /** `Retry-After` in milliseconds (seconds or an HTTP date), or undefined. */
 export function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
   if (!value) return undefined;
@@ -149,7 +253,8 @@ function networkError(scope: AbortScope, parent?: AbortSignal): ProviderError {
 }
 
 /**
- * Streams a chat completion. Yields text chunks, then a single `finish` chunk.
+ * Streams a chat completion. Yields text chunks, then the joined tool calls if
+ * there are any, then a single `finish` chunk.
  * Throws ProviderError on HTTP errors, in-stream errors, timeouts, malformed
  * data, or a stream that ends without completing.
  */
@@ -177,7 +282,7 @@ export async function* streamChatCompletion(
         },
         body: JSON.stringify({
           model: settings.model,
-          messages,
+          messages: messages.map(toWireMessage),
           max_tokens: settings.maxOutputTokens,
           stream: true,
           // Token usage arrives in a last chunk with no choices. The spend guard needs it.
@@ -186,6 +291,7 @@ export async function* streamChatCompletion(
           // reads this flag. Reasoning tokens cost money and count against max_tokens, so
           // without a budget they could leave no room for the reply.
           ...thinkingFields(settings.thinkingBudgetTokens ?? 0),
+          ...toolFields(options.tools),
         }),
         signal: scope.signal,
       });
@@ -208,6 +314,7 @@ export async function* streamChatCompletion(
     let finishReason: string | null = null;
     let usage: TokenUsage | null = null;
     const think = createThinkFilter();
+    const toolCalls = new Map<number, PartialToolCall>();
 
     try {
       for await (const data of readSseData(response.body, scope.signal)) {
@@ -236,6 +343,9 @@ export async function* streamChatCompletion(
           else if (choice.delta?.content || choice.delta?.reasoning || choice.delta?.reasoning_content) {
             yield { type: "reasoning" };
           }
+          for (const delta of choice.delta?.tool_calls ?? []) {
+            if (joinToolDelta(toolCalls, delta)) yield { type: "tool_progress" };
+          }
           if (choice.finish_reason) finishReason = choice.finish_reason;
         }
       }
@@ -251,6 +361,8 @@ export async function* streamChatCompletion(
     }
     const rest = think.flush();
     if (rest) yield { type: "text", text: rest };
+    const calls = finishToolCalls(toolCalls);
+    if (calls.length > 0) yield { type: "tool_calls", calls };
     yield { type: "finish", finishReason, usage };
   } finally {
     scope.dispose();
