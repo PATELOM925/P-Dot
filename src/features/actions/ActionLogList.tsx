@@ -33,8 +33,8 @@ export function ActionLogList({ initialEntries, limit }: { initialEntries: Actio
     try {
       setEntries(await fetchActionLog());
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) router.replace("/login?next=/action-log");
-      else setError(errorMessage(err, "Could not load the action log."));
+      if (err instanceof ApiError && err.status === 401) router.replace("/login?next=/activity");
+      else setError(errorMessage(err, "Could not load your activity."));
     } finally {
       setLoading(false);
     }
@@ -46,7 +46,7 @@ export function ActionLogList({ initialEntries, limit }: { initialEntries: Actio
   return (
     <section className="panel" aria-labelledby="log-heading" aria-busy={loading}>
       <div className="panel-heading">
-        <h2 id="log-heading">Recent activity</h2>
+        <h2 id="log-heading">Latest</h2>
         <button type="button" className="button button-small" onClick={() => void refresh()} disabled={loading}>
           {loading ? "Refreshing…" : "Refresh"}
         </button>
@@ -58,8 +58,7 @@ export function ActionLogList({ initialEntries, limit }: { initialEntries: Actio
       )}
       {entries.length === 0 && (
         <p className="muted">
-          Nothing yet. Adding or changing a memory or a reminder, and every action P-Dot proposes, approves or runs, will
-          appear here.
+          Nothing yet. Actions, and changes to your memories and reminders, show here.
         </p>
       )}
       {groups.map((group) => (

@@ -10,10 +10,9 @@ const PROTECTED_PREFIXES = [
   "/today",
   "/chat",
   "/memory",
-  "/workflows",
   "/connectors",
   "/devices",
-  "/action-log",
+  "/activity",
   "/settings",
   "/reset-password",
 ];
