@@ -11,6 +11,7 @@ import type { ToolSpec } from "./registry";
 import { webSearchTool } from "./web-search";
 import { GOOGLE_TOOLS } from "./google";
 import { CONNECTOR_TOOLS } from "./connectors";
+export { connectorReconnectNotes } from "./connectors";
 
 export * from "./registry";
 export { earlierAttemptCheck };

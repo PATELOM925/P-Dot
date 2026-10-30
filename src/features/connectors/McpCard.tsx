@@ -85,6 +85,12 @@ export function McpCard({
             </ul>
           )}
           {state.missing.length > 0 && <p className="muted">Not available: {state.missing.join(", ")}</p>}
+          {state.newToolsMissing && (
+            <>
+              <p id={`${app}-new-tools-help`}>Connect {name} again to use the new tools. Your connection keeps working until then.</p>
+              <ConnectForm app={app} label={`Connect ${name} again`} describedBy={`${app}-new-tools-help`} />
+            </>
+          )}
           {state.noRefresh && <p className="muted">Access ends soon. P-Dot cannot renew it. Connect again then.</p>}
           <form method="post" action={`/api/connectors/mcp/${app}/disconnect`}>
             <button type="submit" className="button button-small" aria-describedby={`${app}-disconnect-help`}>

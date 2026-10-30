@@ -64,6 +64,7 @@ import {
 import { RETRY_POLICY, type RoutingConfig } from "./tiers";
 import {
   checkToolCall,
+  connectorReconnectNotes,
   earlierAttemptCheck,
   MAX_TOOL_CALLS_PER_HOP,
   MAX_TOOL_HOPS,
@@ -398,7 +399,7 @@ export async function prepareChatTurn(
       now: deps.now(),
       timeZone: request.timeZone,
       mode,
-      toolGuidance: toolsBound.map((tool) => tool.guidance),
+      toolGuidance: [...toolsBound.map((tool) => tool.guidance), ...(toolsBound.length > 0 ? connectorReconnectNotes(connectorTools) : [])],
       serverNote: google?.note,
       format,
       tier: route.tier,

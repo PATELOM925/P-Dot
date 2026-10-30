@@ -156,6 +156,14 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - **Rule:** check the `tool_choice_refused` count after the deploy. If it is not zero, the forced choice does not work on that model.
 - **Sources:** live user test 2026-10-30; `tests/unit/claim-guard.test.ts`.
 
+### 15. Nemotron sometimes writes a tool call as text
+
+- **What happened:** live, on 2026-10-31, as the owner with GitHub on, "Check if there are any open PRs on my github" gave a reply (Nemotron 3 Super) that started with `</tool_call>`, lines of `null`, `</parameter>`, `</function>` and `</tool_call>`, then normal text. The model wrote its call in `content` in the qwen form (`<tool_call>`, `<function=name>`, `<parameter=name>`) in place of `tool_calls`.
+- **Fix:** `src/server/providers/nebius/tool-markup.ts` filters the reply text in the adapter, after the think filter and before any text leaves it. It removes the markup and the lines that hold only `null`, also when a tag is split across chunks. A whole block (qwen or hermes JSON form) that names an offered tool becomes a tool call with the ID `text_call_<n>`, only when the response has no real tool call. The service checks its arguments with the same zod schema as any call. On the last hop no tool is offered, so a block there is only removed.
+- **Rule:** never pass model `content` to the user without the markup filter. A text call is not trusted more than a real one.
+- **Limit:** a line that is only `null` inside a code block in a reply is removed too.
+- **Sources:** the owner's live chat on 2026-10-31; `tests/unit/nebius-tool-markup.test.ts` (the exact leaked shape).
+
 ## Not verified yet
 
 - A forced `tool_choice` ("required" or a named function) on Super, Ultra and Lightning (lesson 14).

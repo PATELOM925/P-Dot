@@ -47,22 +47,31 @@ export const TODOIST_TOOLS: RemoteToolDef[] = [
   { name: "find-tasks", inputSchema: { type: "object", properties: { searchText: { type: "string" }, limit: { type: "number" } } } },
 ];
 
-/** Like GitHub's remote server (decision 0020): the read tools P-Dot uses, and one write tool. */
-export const GITHUB_TOOLS: RemoteToolDef[] = [
-  {
-    name: "search_issues",
-    description: POISON,
-    inputSchema: {
-      type: "object",
-      properties: { query: { type: "string" }, owner: { type: "string" }, repo: { type: "string" }, perPage: { type: "number" } },
-      required: ["query"],
-    },
-  },
+const SEARCH_PROPERTIES = {
+  query: { type: "string" },
+  owner: { type: "string" },
+  repo: { type: "string" },
+  sort: { type: "string", enum: ["comments", "created", "updated"] },
+  order: { type: "string", enum: ["asc", "desc"] },
+  page: { type: "number" },
+  perPage: { type: "number" },
+};
+
+/** The tools that P-Dot used before github_my_work and github_find_repo, as an earlier connection pinned them. */
+export const GITHUB_TOOLS_BEFORE: RemoteToolDef[] = [
+  { name: "search_issues", description: POISON, inputSchema: { type: "object", properties: SEARCH_PROPERTIES, required: ["query"] } },
   {
     name: "list_pull_requests",
     inputSchema: {
       type: "object",
-      properties: { owner: { type: "string" }, repo: { type: "string" }, state: { type: "string" }, perPage: { type: "number" } },
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        state: { type: "string", enum: ["open", "closed", "all"] },
+        sort: { type: "string", enum: ["created", "updated", "popularity", "long-running"] },
+        direction: { type: "string", enum: ["asc", "desc"] },
+        perPage: { type: "number" },
+      },
       required: ["owner", "repo"],
     },
   },
@@ -75,6 +84,28 @@ export const GITHUB_TOOLS: RemoteToolDef[] = [
     },
   },
   { name: "create_issue", inputSchema: { type: "object", properties: { owner: { type: "string" } }, required: ["owner"] } },
+];
+
+/** Like GitHub's remote server (decision 0020, schemas from its tool list on 2026-10-31): the read tools P-Dot uses, and one write tool. */
+export const GITHUB_TOOLS: RemoteToolDef[] = [
+  ...GITHUB_TOOLS_BEFORE,
+  { name: "get_me", description: POISON, inputSchema: { type: "object", properties: {} } },
+  { name: "search_pull_requests", inputSchema: { type: "object", properties: SEARCH_PROPERTIES, required: ["query"] } },
+  {
+    name: "search_repositories",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        sort: { type: "string", enum: ["stars", "forks", "help-wanted-issues", "updated"] },
+        order: { type: "string", enum: ["asc", "desc"] },
+        minimal_output: { type: "boolean", default: true },
+        page: { type: "number" },
+        perPage: { type: "number" },
+      },
+      required: ["query"],
+    },
+  },
 ];
 
 export interface AppSpec {
@@ -402,7 +433,7 @@ export async function seedConnection(
   accounts: FakeMcpAccounts,
   app: FakeApp,
   server: McpServerId,
-  options: { userId?: string; subject?: string; accessExpiresAt?: number; noRefresh?: boolean } = {},
+  options: { userId?: string; subject?: string; accessExpiresAt?: number; noRefresh?: boolean; tools?: RemoteToolDef[] } = {},
 ) {
   const { MCP_SERVERS } = await import("@/server/mcp/catalog");
   const { pinTools } = await import("@/server/mcp/pins");
@@ -423,7 +454,7 @@ export async function seedConnection(
     accessToken: tokens.access_token,
     accessExpiresAt: options.accessExpiresAt ?? Date.now() + 3_600_000,
     refreshToken: options.noRefresh ? null : (tokens.refresh_token ?? null),
-    pins: await pinTools(catalog, spec.tools),
+    pins: await pinTools(catalog, options.tools ?? spec.tools),
     claim: null,
   });
   await accounts.saveMcp(server, subject, spec.scope ? [spec.scope] : [...catalog.acceptedScopes], sealed, userId);

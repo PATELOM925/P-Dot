@@ -8,7 +8,7 @@ export type McpCardState =
   | { kind: "load_failed" }
   | { kind: "not_connected" }
   | { kind: "needs_reconnect" }
-  | { kind: "connected"; connectedAt: string; ready: string[]; missing: string[]; noRefresh: boolean };
+  | { kind: "connected"; connectedAt: string; ready: string[]; missing: string[]; noRefresh: boolean; newToolsMissing: boolean };
 
 const TOOL_LABELS: Record<string, string> = {
   notion_search: "Search pages",
@@ -20,6 +20,8 @@ const TOOL_LABELS: Record<string, string> = {
   github_search_issues: "Search issues",
   github_list_pull_requests: "List open pull requests",
   github_read_file: "Read a file",
+  github_my_work: "Your pull requests and issues",
+  github_find_repo: "Find your repository by name",
 };
 
 export function mcpToolLabel(name: string): string {
@@ -42,6 +44,7 @@ export function mcpCardState(
     ready: view.ready.map(mcpToolLabel),
     missing: view.missing.map(mcpToolLabel),
     noRefresh: view.noRefresh,
+    newToolsMissing: view.newToolsMissing === true,
   };
 }
 

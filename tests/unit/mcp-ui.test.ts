@@ -46,7 +46,12 @@ describe("mcpCardState", () => {
       ready: ["Search pages"],
       missing: ["Read a page"],
       noRefresh: true,
+      newToolsMissing: false,
     });
+    // A GitHub connection made before github_my_work and github_find_repo (decision 0020).
+    expect(
+      mcpCardState(true, view({ server: "github", ready: ["github_search_issues"], missing: ["github_my_work", "github_find_repo"], newToolsMissing: true }), false),
+    ).toMatchObject({ kind: "connected", missing: ["Your pull requests and issues", "Find your repository by name"], newToolsMissing: true });
     const todoist = mcpCardState(
       true,
       view({ server: "todoist", ready: ["todoist_list_tasks", "todoist_find_tasks"] }),

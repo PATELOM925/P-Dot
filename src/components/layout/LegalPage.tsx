@@ -1,13 +1,11 @@
-import Link from "next/link";
+import { BrandLink } from "@/components/layout/BrandLink";
 import { SiteFooter } from "./SiteFooter";
 
 export function LegalPage({ title, updated, children }: { title: string; updated: string; children: React.ReactNode }) {
   return (
     <div className="landing">
       <header className="landing-header">
-        <Link href="/" className="brand">
-          P-Dot
-        </Link>
+        <BrandLink />
       </header>
       <main className="legal-page">
         <h1>{title}</h1>

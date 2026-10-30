@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { BrandLink } from "@/components/layout/BrandLink";
 import { signOutAction } from "@/features/auth/actions";
 import { InstallButton } from "@/features/pwa/InstallButton";
 import type { Mode } from "@/types/api";
@@ -9,9 +9,7 @@ import { ThemeToggle } from "./ThemeToggle";
 export function WorkspaceHeader({ email, trial, mode }: { email: string | null; trial: boolean; mode: Mode }) {
   return (
     <header className="workspace-header" data-mode={mode}>
-      <Link href="/chat" className="brand">
-        P-Dot
-      </Link>
+      <BrandLink href="/chat" />
       <NavLinks />
       <div className="header-account">
         <InstallButton />

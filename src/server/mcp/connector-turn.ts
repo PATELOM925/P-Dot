@@ -3,10 +3,12 @@ import type { McpAccountRepository } from "@/server/db/connected-accounts";
 import type { FetchLike } from "@/server/google/http";
 import type { Logger } from "@/server/log";
 import type { AssistantToolName } from "@/types/api";
-import { MCP_SERVERS, type CatalogTool, type McpServer, type McpServerId } from "./catalog";
+import { MCP_SERVERS, isToolPinned, remoteSteps, type CatalogTool, type McpServer, type McpServerId } from "./catalog";
 import { McpError, openMcpSession, type McpSession } from "./client";
 import { openBundle } from "./bundle";
 import { ID_REFUSAL, PHRASE_REFUSAL, TurnIds, isUserPhrase } from "./outbound";
+import { canonicalJson } from "./pins";
+import { StepStop, type StepCaller } from "./steps";
 import { MAX_RESULT_CHARS, MAX_TURN_CHARS, cleanText, resultJson, resultText, untrustedConnectorBlock } from "./results";
 import { McpAccessError, openMcpAccess, type McpAccess } from "./token-store";
 
@@ -73,7 +75,7 @@ export function createConnectorServices(deps: ConnectorDeps): ConnectorServices 
         const server = MCP_SERVERS[row.provider];
         const bundle = await openBundle(deps.key, deps.userId, server, row.subject, row.tokenCiphertext);
         if (!bundle) continue;
-        const pinned = new Set(server.tools.filter((tool) => bundle.pins[tool.remote]).map((tool) => tool.name));
+        const pinned = new Set(server.tools.filter((tool) => isToolPinned(tool, bundle.pins)).map((tool) => tool.name));
         if (pinned.size > 0) tools.set(row.provider, pinned);
       }
       return tools;
@@ -83,6 +85,9 @@ export function createConnectorServices(deps: ConnectorDeps): ConnectorServices 
       const ids = new TurnIds(userMessage, servers.map((id) => MCP_SERVERS[id]));
       const sessions = new Map<McpServerId, Promise<{ access: McpAccess; session: McpSession }>>();
       let used = 0;
+      // Remote calls made in this turn, for each app, and the answers of calls that may run again (decision 0020).
+      const remoteCalls = new Map<McpServerId, number>();
+      const answers = new Map<string, Promise<{ json: unknown; text: string }>>();
       const log = (event: string, fields: Record<string, string>) => deps.log("warn", event, { requestId, ...fields });
 
       const open = (server: McpServer) => {
@@ -125,23 +130,58 @@ export function createConnectorServices(deps: ConnectorDeps): ConnectorServices 
           }
           if (used >= MAX_TURN_CHARS) return "The limit for app data in this turn is reached. Nothing was read.";
 
-          try {
-            const { access, session } = await open(server);
-            const pin = access.pins[tool.remote];
-            if (!pin) return `${server.name} does not offer this read. Nothing was read.`;
-            if ((await session.pinOfTool(tool.remote)) !== pin) {
-              log("mcp_pin_changed", { server: server.id, tool: tool.name });
-              return `${server.name} changed the tool ${tool.remote} after the user connected it. P-Dot did not use it. Tell the user to connect ${server.name} again on Connectors.`;
+          const call = async (remote: string, remoteArgs: Record<string, unknown>) => {
+            if (!remoteSteps(tool).some((step) => step.remote === remote)) throw new StepStop("P-Dot does not use this read. Nothing was read.");
+            const limit = server.maxRemoteCallsPerTurn;
+            const count = remoteCalls.get(server.id) ?? 0;
+            if (limit !== undefined && count >= limit) {
+              throw new StepStop(`The limit of ${limit} ${server.name} reads for this message is reached. Nothing more was read. Answer with what you have.`);
             }
-            const result = await session.callTool(tool.remote, tool.remoteArgs(outbound));
-            if (result.isError) return `${server.name} reported an error. Nothing was read.`;
-            ids.addFromResult(server, resultJson(result));
-            const { text, cut } = cleanText(resultText(result), Math.min(MAX_RESULT_CHARS, MAX_TURN_CHARS - used));
-            used += text.length;
-            if (!text.trim()) return `${server.name} returned nothing.`;
-            return untrustedConnectorBlock(server.id, tool.name, cut ? `${text}\n[cut]` : text);
+            const { access, session } = await open(server);
+            const pin = access.pins[remote];
+            if (!pin) throw new StepStop(`${server.name} does not offer this read. Nothing was read.`);
+            if ((await session.pinOfTool(remote)) !== pin) {
+              log("mcp_pin_changed", { server: server.id, tool: tool.name });
+              throw new StepStop(
+                `${server.name} changed the tool ${remote} after the user connected it. P-Dot did not use it. Tell the user to connect ${server.name} again on Connectors.`,
+              );
+            }
+            remoteCalls.set(server.id, count + 1);
+            const result = await session.callTool(remote, remoteArgs);
+            if (result.isError) throw new StepStop(`${server.name} reported an error. Nothing was read.`);
+            return { json: resultJson(result), text: resultText(result) };
+          };
+
+          try {
+            let text: string;
+            if (tool.steps) {
+              const caller: StepCaller = {
+                call(remote, remoteArgs) {
+                  const key = `${server.id}:${remote}:${canonicalJson(remoteArgs)}`;
+                  let answer = answers.get(key);
+                  if (!answer) {
+                    answer = call(remote, remoteArgs);
+                    answers.set(key, answer);
+                    // A call that failed may run again later in the turn.
+                    answer.catch(() => answers.delete(key));
+                  }
+                  return answer;
+                },
+                allowId: (id) => ids.add(server, id),
+              };
+              text = await tool.run(caller, outbound);
+            } else {
+              const result = await call(tool.remote, tool.remoteArgs(outbound));
+              ids.addFromResult(server, result.json);
+              text = result.text;
+            }
+            const cleaned = cleanText(text, Math.min(MAX_RESULT_CHARS, MAX_TURN_CHARS - used));
+            used += cleaned.text.length;
+            if (!cleaned.text.trim()) return `${server.name} returned nothing.`;
+            return untrustedConnectorBlock(server.id, tool.name, cleaned.cut ? `${cleaned.text}\n[cut]` : cleaned.text);
           } catch (error) {
             if (signal.aborted) throw error;
+            if (error instanceof StepStop) return error.text;
             if (error instanceof McpAccessError) {
               log("mcp_access_failed", { server: server.id, reason: error.reason });
               return `${server.name} ${ACCESS_TEXT[error.reason]} Nothing was read.`;

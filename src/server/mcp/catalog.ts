@@ -2,6 +2,8 @@ import "server-only";
 import { z } from "zod";
 import type { AssistantToolName } from "@/types/api";
 import { MCP_SERVER_IDS, type McpServerId } from "@/lib/connectors";
+import { githubFindRepo, githubMyWork } from "./github-tools";
+import type { RemoteStep, StepCaller } from "./steps";
 
 // The MCP servers P-Dot can connect, and the read tools P-Dot owns for each
 // (decision 0016). The model sees only the names, descriptions and argument
@@ -12,20 +14,53 @@ export { MCP_SERVER_IDS, type McpServerId };
 /** Which argument goes out under which outbound rule (src/server/mcp/outbound.ts). */
 export type OutboundRule = { kind: "words"; field: string } | { kind: "id"; field: string } | { kind: "none" };
 
-export interface CatalogTool<Args extends Record<string, unknown> = Record<string, unknown>> {
+interface CatalogToolBase<Args extends Record<string, unknown>> {
   name: AssistantToolName;
-  /** The server's tool name. */
-  remote: string;
   description: string;
   guidance: string;
   args: z.ZodType<Args>;
   outbound: OutboundRule;
+  maxCallsPerTurn: number;
+  statusQuery(args: Args): string | undefined;
+  /**
+   * The tool came after the first release of its app. A connection made before
+   * it has no pin for it, so chat and the Connectors card tell the user to
+   * connect the app again (decision 0020).
+   */
+  addedLater?: boolean;
+}
+
+/** A tool that makes one remote call. */
+export interface OneCallTool<Args extends Record<string, unknown> = Record<string, unknown>> extends CatalogToolBase<Args> {
+  /** The server's tool name. */
+  remote: string;
   /** The arguments P-Dot sends. Built only from the checked arguments and constants. */
   remoteArgs(args: Args): Record<string, unknown>;
   /** The argument names `remoteArgs` can send, for the compatibility check at Connect. */
   sends: readonly string[];
-  maxCallsPerTurn: number;
-  statusQuery(args: Args): string | undefined;
+  steps?: undefined;
+  run?: undefined;
+}
+
+/** A tool that makes several remote calls in an order written in code (src/server/mcp/steps.ts). */
+export interface StepsTool<Args extends Record<string, unknown> = Record<string, unknown>> extends CatalogToolBase<Args> {
+  /** Every remote tool `run` can call. All must be pinned for the tool to be ready. */
+  steps: readonly RemoteStep[];
+  /** The text for the model. Calls only remote tools in `steps`, through `caller`. */
+  run(caller: StepCaller, args: Args): Promise<string>;
+  remote?: undefined;
+}
+
+export type CatalogTool<Args extends Record<string, unknown> = Record<string, unknown>> = OneCallTool<Args> | StepsTool<Args>;
+
+/** The remote tools a catalog tool calls. */
+export function remoteSteps(tool: CatalogTool): readonly RemoteStep[] {
+  return tool.steps ?? [{ remote: tool.remote, sends: tool.sends }];
+}
+
+/** True when every remote tool that the catalog tool calls has a pin. */
+export function isToolPinned(tool: CatalogTool, pins: Readonly<Record<string, string>>): boolean {
+  return remoteSteps(tool).every((step) => Boolean(pins[step.remote]));
 }
 
 export interface McpServer {
@@ -48,6 +83,8 @@ export interface McpServer {
   /** Scopes P-Dot accepts in a token answer and stores. Keep in step with connected_accounts_known_scopes. */
   acceptedScopes: readonly string[];
   tools: readonly CatalogTool[];
+  /** Most remote calls in one turn for this app, over all its tools. Unset: only each tool's own limit. */
+  maxRemoteCallsPerTurn?: number;
   /** The app's form of an ID, so two spellings of one ID compare equal. Null when it is not an ID of this app. */
   normalizeId(value: string): string | null;
   /** IDs with the app's format in the user's message. */
@@ -295,6 +332,7 @@ const github: McpServer = {
   authOrigins: ["https://github.com"],
   scope: null,
   acceptedScopes: ["read"],
+  maxRemoteCallsPerTurn: 3,
   normalizeId: githubId,
   idsInUserText: githubIdsInText,
   resultIds: () => [],
@@ -317,7 +355,7 @@ const github: McpServer = {
       remote: "list_pull_requests",
       description: "List the open pull requests of one GitHub repository, for example vercel/next.js. Returns up to 10.",
       guidance:
-        "github_list_pull_requests: list open pull requests. Use a repository (owner/name) or a GitHub link from the user's message.",
+        "github_list_pull_requests: list open pull requests. Use a repository (owner/name) or a GitHub link from the user's message. When the user names a repository without its owner, use github_find_repo.",
       args: z
         .object({ repo: z.string().trim().regex(/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/).describe("owner/name, from the user's message.") })
         .strict(),
@@ -344,6 +382,8 @@ const github: McpServer = {
       maxCallsPerTurn: 3,
       statusQuery: () => undefined,
     }),
+    tool(githubMyWork),
+    tool(githubFindRepo),
   ],
 };
 

@@ -50,6 +50,15 @@ export class TurnIds {
     this.ids.set(server.id, set);
   }
 
+  /** Adds one ID that a multi-call tool read from a typed field of this app's result. */
+  add(server: McpServer, raw: string): void {
+    const id = server.normalizeId(raw);
+    if (!id) return;
+    const set = this.ids.get(server.id) ?? new Set<string>();
+    set.add(id);
+    this.ids.set(server.id, set);
+  }
+
   /** The app's form of the ID when this turn allows it, else null. */
   allowed(server: McpServer, value: string): string | null {
     const id = server.normalizeId(value);
