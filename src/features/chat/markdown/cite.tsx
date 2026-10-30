@@ -21,16 +21,6 @@ export function hostOf(url: string): string {
   }
 }
 
-/** The numbers "[n]" in a reply that point to one of its sources. */
-export function citedNumbers(text: string, sourceCount: number): Set<number> {
-  const cited = new Set<number>();
-  for (const match of text.matchAll(/\[(\d{1,2})\](?!\()/g)) {
-    const n = Number(match[1]);
-    if (n >= 1 && n <= sourceCount) cited.add(n);
-  }
-  return cited;
-}
-
 /**
  * "[n]" as a small number chip. Hover or focus shows the host and title. A click
  * opens the source list at source n; it never opens the outside page itself.

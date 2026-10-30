@@ -1,11 +1,12 @@
 "use client";
 
-import { Fragment, useContext, useMemo, useState, type ReactNode } from "react";
-import { MAX_RICH_BLOCKS_PER_REPLY, parseRichBlock, richBlockKind, type RichBlockKind } from "@/lib/rich-blocks";
+import { Component, Fragment, useContext, useMemo, useState, type ReactNode } from "react";
+import type { RichBlockKind } from "@/lib/rich-blocks";
 import { toSafeHttpUrl } from "@/lib/safe-url";
 import { RichBlockView } from "../rich/RichBlocks";
 import { CiteChip, CiteContext } from "./cite";
 import { parseMarkdown, type Block, type Inline } from "./parse";
+import { planReply, type ReplyPlan } from "./plan";
 
 // Every node becomes a React element or text. No HTML string is ever inserted.
 
@@ -81,11 +82,7 @@ function CodeBlock({ lang, text }: { lang: string; text: string }) {
 }
 
 interface RenderState {
-  sourceCount: number;
-  /** Rich blocks shown so far in this reply. */
-  rich: number;
-  /** The text is still arriving, so an open block fence is not finished yet. */
-  streaming: boolean;
+  plan: ReplyPlan;
 }
 
 const RICH_LABELS: Record<RichBlockKind, string> = {
@@ -95,28 +92,44 @@ const RICH_LABELS: Record<RichBlockKind, string> = {
   steps: "steps",
 };
 
+function CardFallback({ lang, text }: { lang: string; text: string }) {
+  return (
+    <div>
+      <p className="hint rich-failed">P-Dot could not show this as a card.</p>
+      <CodeBlock lang={lang} text={text} />
+    </div>
+  );
+}
+
+/** One card that fails while it renders shows its code, and the rest of the reply still shows. */
+export class CardBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
 function renderCode(block: Extract<Block, { type: "code" }>, key: number, state: RenderState): ReactNode {
-  const kind = richBlockKind(block.lang);
-  if (!kind) return <CodeBlock key={key} lang={block.lang} text={block.text} />;
+  const card = state.plan.cards.get(block);
+  if (!card) return <CodeBlock key={key} lang={block.lang} text={block.text} />;
   // The JSON of a block never shows while it streams, only a placeholder of the card.
-  if (block.open && state.streaming) {
+  if (card.kind === "pending") {
     return (
       <div key={key} className="rich-card rich-pending" aria-hidden="true">
-        Preparing {RICH_LABELS[kind]}…
+        Preparing {RICH_LABELS[card.label]}…
       </div>
     );
   }
-  const rich = state.rich < MAX_RICH_BLOCKS_PER_REPLY ? parseRichBlock(kind, block.text, state.sourceCount) : null;
-  if (!rich) {
-    return (
-      <div key={key}>
-        <p className="hint rich-failed">P-Dot could not show this as a card.</p>
-        <CodeBlock lang={block.lang} text={block.text} />
-      </div>
-    );
-  }
-  state.rich += 1;
-  return <RichBlockView key={key} block={rich} />;
+  const fallback = <CardFallback lang={block.lang} text={block.text} />;
+  if (card.kind === "failed") return <Fragment key={key}>{fallback}</Fragment>;
+  return (
+    <CardBoundary key={key} fallback={fallback}>
+      <RichBlockView block={card.block} />
+    </CardBoundary>
+  );
 }
 
 function renderBlocks(blocks: Block[], state: RenderState): ReactNode[] {
@@ -186,8 +199,23 @@ function renderBlocks(blocks: Block[], state: RenderState): ReactNode[] {
 }
 
 /** An assistant reply as safe Markdown. Used for saved replies and for the text that streams in. */
-export function Markdown({ text, streaming = false }: { text: string; streaming?: boolean }) {
+/**
+ * An assistant reply as safe Markdown. Used for saved replies and for the text that streams in.
+ * `blocks` and `plan` come from `AssistantReply`, so the sources row counts the same citations.
+ */
+export function Markdown({
+  text,
+  streaming = false,
+  blocks: givenBlocks,
+  plan: givenPlan,
+}: {
+  text: string;
+  streaming?: boolean;
+  blocks?: Block[];
+  plan?: ReplyPlan;
+}) {
   const sourceCount = useContext(CiteContext)?.sources.length ?? 0;
-  const blocks = useMemo(() => parseMarkdown(text), [text]);
-  return <div className="message-content md">{renderBlocks(blocks, { sourceCount, rich: 0, streaming })}</div>;
+  const blocks = useMemo(() => givenBlocks ?? parseMarkdown(text), [givenBlocks, text]);
+  const plan = useMemo(() => givenPlan ?? planReply(blocks, sourceCount, streaming), [givenPlan, blocks, sourceCount, streaming]);
+  return <div className="message-content md">{renderBlocks(blocks, { plan })}</div>;
 }

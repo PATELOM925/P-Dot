@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AssistantReply } from "@/features/chat/AssistantReply";
+import { CardBoundary } from "@/features/chat/markdown/Markdown";
 import { mapsSearchUrl } from "@/lib/maps-url";
 import { MAX_RICH_BLOCK_CHARS, parseRichBlock, richBlockKind } from "@/lib/rich-blocks";
 import type { SourceRef } from "@/types/api";
@@ -123,6 +124,29 @@ describe("rich block rendering", () => {
     for (const match of card.matchAll(/href="([^"]*)"/g)) {
       expect(match[1]).toMatch(/^(https:\/\/www\.google\.com\/maps\/search\/\?api=1&amp;query=|#src-m1-\d)/);
     }
+  });
+
+  it("never throws on a lone surrogate: it is removed, and a name of only that fails to the code view", () => {
+    const loneHigh = JSON.parse('"\\ud800"') as string;
+    expect(() => mapsSearchUrl({ name: loneHigh })).not.toThrow();
+    expect(mapsSearchUrl({ name: loneHigh })).toBeNull();
+    const block = parseRichBlock("places", JSON.stringify({ items: [{ name: `Bar${loneHigh}`, area: `${loneHigh}x` }] }), 0);
+    expect(block?.kind === "places" && block.data.items[0]).toMatchObject({ name: "Bar", area: "x" });
+    expect(parseRichBlock("places", JSON.stringify({ items: [{ name: loneHigh }] }), 0)).toBeNull();
+    const emoji = parseRichBlock("places", JSON.stringify({ items: [{ name: "Bar 🍸" }] }), 0);
+    expect(emoji?.kind === "places" && emoji.data.items[0]?.name).toBe("Bar 🍸");
+    const out = render(fence("pdot-places", '{"items":[{"name":"\\ud800"}]}'));
+    expect(out).toContain("P-Dot could not show this as a card.");
+    const kept = render(fence("pdot-places", '{"items":[{"name":"Caf\\u00e9\\ud800"}]}'));
+    expect(kept).toContain("https://www.google.com/maps/search/?api=1&amp;query=Caf%C3%A9");
+  });
+
+  it("shows the code view when a card fails while it renders", () => {
+    expect(CardBoundary.getDerivedStateFromError()).toEqual({ failed: true });
+    const boundary = new CardBoundary({ fallback: "fallback", children: "card" });
+    expect(boundary.render()).toBe("card");
+    boundary.state = { failed: true };
+    expect(boundary.render()).toBe("fallback");
   });
 
   it("renders table, checklist and steps cards", () => {

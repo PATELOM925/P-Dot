@@ -11,12 +11,30 @@ export const MAX_RICH_BLOCK_CHARS = 6000;
 export const MAX_RICH_BLOCKS_PER_REPLY = 3;
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
-/** A lone UTF-16 surrogate: not valid text, and `encodeURIComponent` throws on it. */
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+/**
+ * Removes lone UTF-16 surrogates: they are not valid text, and `encodeURIComponent` throws on them.
+ * A loop, not a lookbehind regex, so older Safari can load this file.
+ */
+function dropLoneSurrogates(value: string): string {
+  let out = "";
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += value[i]! + value[i + 1]!;
+        i += 1;
+      }
+    } else if (code < 0xdc00 || code > 0xdfff) {
+      out += value[i]!;
+    }
+  }
+  return out;
+}
 
 /** Removes control characters and lone surrogates, so every card string is well-formed text. */
 export function cleanCardText(value: string): string {
-  return value.replace(CONTROL, "").replace(LONE_SURROGATE, "").trim();
+  return dropLoneSurrogates(value.replace(CONTROL, "")).trim();
 }
 
 const text = (max: number) =>

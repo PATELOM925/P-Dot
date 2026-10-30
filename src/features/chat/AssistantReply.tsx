@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SourceRef } from "@/types/api";
-import { CiteContext, citedNumbers } from "./markdown/cite";
+import { CiteContext } from "./markdown/cite";
 import { Markdown } from "./markdown/Markdown";
+import { parseMarkdown } from "./markdown/parse";
+import { planReply } from "./markdown/plan";
 import { SourceRow } from "./SourceRow";
 
 const HIGHLIGHT_MS = 1200;
@@ -41,15 +43,18 @@ export function AssistantReply({
     [messageId],
   );
   const context = useMemo(() => ({ sources: showSources ? sources : [], messageId, onCite }), [sources, showSources, messageId, onCite]);
-  const cited = useMemo(() => citedNumbers(text, showSources ? sources.length : 0), [text, sources.length, showSources]);
+  const sourceCount = showSources ? sources.length : 0;
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
+  // One plan for the text and the sources row: a citation inside a card counts as cited too.
+  const plan = useMemo(() => planReply(blocks, sourceCount, streaming), [blocks, sourceCount, streaming]);
 
   return (
     <CiteContext.Provider value={context}>
-      <Markdown text={text} streaming={streaming} />
+      <Markdown text={text} streaming={streaming} blocks={blocks} plan={plan} />
       {showSources && (
         <SourceRow
           sources={sources}
-          cited={cited}
+          cited={plan.cited}
           messageId={messageId}
           open={open}
           onToggle={() => setOpen((value) => !value)}
