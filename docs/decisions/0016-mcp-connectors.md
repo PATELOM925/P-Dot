@@ -18,7 +18,7 @@
 - **One token row for each user and app** in `connected_accounts`. The refresh is fenced by a compare-and-swap on the ciphertext. No new column.
 - **Tool pins.** At Connect, P-Dot lists the server's tools and stores a hash of the name and the input schema of each catalog tool in the sealed token bundle. Before each call, P-Dot lists the tools again and compares. A changed hash stops the call.
 - **Chat.** A toggle for each connected app in the "+" menu, for one message. It is the user's approval for that message's reads (as in decision 0014, section 3). A turn with a connector has no `web_search`.
-- **Outbound data rule.** A search argument to an app can hold only words of the user's current message. An ID argument must be an ID that a read returned earlier in the same turn from the same app, or an ID in the user's current message. After a turn that read an app, the model-written `web_search` tool stays off in that conversation for good (route reason `connector_read`).
+- **Outbound data rule.** A search argument to an app must be one phrase of the user's current message, copied without change (`user_phrase`), and each app gets one search call in a turn. An ID argument must be an ID from a typed ID field of this app's results in this turn, or an ID in the user's current message that has the app's ID format (`turn_ids`). After a turn with a connector turned on, the model-written `web_search` tool stays off in that conversation for good (route reason `connector_read`).
 - **One expand migration** that only widens checks on `connected_accounts`. It merges and deploys alone, before the code.
 
 ## Changes from the earlier design
@@ -30,7 +30,7 @@
 | Endpoints pinned in code | Discovery (RFC 9728, RFC 8414) at Connect, checked against an allowlist in the catalog | The owner asked for discovery. The allowlist keeps the issuer and every endpoint on origins that the catalog names. |
 | New columns, claim functions, quota table, context record columns | None. Fencing by compare-and-swap on `token_ciphertext`. Connect and Disconnect use the chat quota. | One small migration. The existing column grants already allow these updates. |
 | No pins | Pins in the sealed bundle | The owner asked for pins. |
-| `user_words` and `turn_ids` argument rules | Both built, plus a durable `web_search` stop for the conversation | Design check round 2, finding 1. |
+| No argument rules | `user_phrase` and `turn_ids` (typed fields), plus a durable `web_search` stop for the conversation | Design check rounds 2 and 3, finding 1. |
 
 ## High-level design
 
@@ -73,9 +73,9 @@ Cloudflare Worker (OpenNext)
 | Discovered metadata | The app's server | zod; `resource` equals the catalog value; issuer exact match; every endpoint is `https` on an allowed origin; S256 supported | `src/server/mcp/discovery.ts` |
 | OAuth callback parameters | The browser | Single value each; state in constant time; `iss` exact match when sent, required when the metadata says it is supported | `src/app/api/connectors/mcp/callback/route.ts` |
 | Tool definitions | The app's server | Never sent to the model or stored. Only a SHA-256 of name and input schema is stored, sealed. | `src/server/mcp/pins.ts` |
-| Tool arguments (search) | The model | P-Dot zod schema, then the `user_words` rule: lower case, split on characters that are not letters or digits (NFKC first). Every word of the argument must be a word of the user's current message. 1 to 12 words. Else refused, and nothing is sent. | `src/server/mcp/outbound.ts`, called in `src/server/mcp/tools.ts` before the session opens |
-| Tool arguments (ID) | The model | The `turn_ids` rule: the ID must appear in the text that the same app returned earlier in this turn, or in the user's current message. Else refused, and nothing is sent. | same |
-| Model-written `web_search` after a connector read | The model, in a later turn | A reply of a turn that read an app is saved with route reason `connector_read`. `prepareChatTurn` asks the repository whether the conversation has such a reply. If yes, the `web_search` tool is not offered in that conversation again. The first search, which uses only the user's own message, still runs when the user turns web search on. | `src/server/assistant/service.ts`, `src/server/db/conversations.ts` |
+| Tool arguments (search) | The model | P-Dot zod schema, then the `user_phrase` rule: NFKC, lower case, and runs of white space made one space, for the argument and for the user's current message. The argument must be one contiguous part of the message that starts and ends at a word edge, 1 to 120 characters. One search call for each app in a turn. Else refused, and nothing is sent. | `src/server/mcp/outbound.ts`, called in `src/server/mcp/tools.ts` before the session opens |
+| Tool arguments (ID) | The model | The `turn_ids` rule: the ID must be in the per-turn set of this app. The set gets only IDs that a P-Dot zod schema parsed from a typed ID field of this app's results in this turn (Notion `results[].id`, Linear `issues[].id`), and IDs in the user's current message that match the app's ID format (Notion: 32 hexadecimal characters, dashes optional, also inside a notion.so link; Linear: `ABC-123`). Text matches never add an ID. Else refused, and nothing is sent. | same |
+| Model-written `web_search` after a connector turn | The model, in a later turn | Every saved reply of a turn that had a connector turned on gets route reason `connector_read`, in the same insert as its text. `prepareChatTurn` asks the repository whether the conversation has such a reply. If yes, or if the check fails, the `web_search` tool is not offered. The first search, which uses only the user's own message, still runs when the user turns web search on. | `src/server/assistant/service.ts`, `src/server/db/conversations.ts` |
 | Tool results | The app's server | Text only, control characters removed, 8,000 characters per result, 12,000 per turn, in an untrusted block with the closing tag broken | `src/server/mcp/results.ts` |
 | Bearer token | Sealed bundle | Sent only to the catalog resource origin; `redirect: "error"` | `src/server/mcp/client.ts` |
 | Web search in a connector turn | Request | Schema refuses both; server sets `webSearch` off; `web_search` is not offered, so a call is refused | `src/lib/schemas.ts`, `service.ts`, `registry.ts` |
@@ -84,12 +84,14 @@ Cloudflare Worker (OpenNext)
 
 | Where text goes | What may be in it | Enforced by |
 | --- | --- | --- |
-| A search argument to an app | Words of the current user message only | `user_words` in `outbound.ts`, before the session opens |
-| An ID argument to an app | An ID that the same app returned in this turn, or an ID in the current user message | `turn_ids` in `outbound.ts` |
-| The model-written `web_search` query | Not offered in a turn with a connector, and not in a conversation that has a `connector_read` reply | `selectTools` flags, from `prepareChatTurn` |
+| A search argument to an app | One phrase of the current user message, unchanged; one search call for each app in a turn | `user_phrase` in `outbound.ts`, before the session opens |
+| An ID argument to an app | An ID from a typed ID field of this app's results in this turn, or an ID with the app's format in the current user message | `turn_ids` in `outbound.ts` |
+| The model-written `web_search` query | Not offered in a turn with a connector, not in a conversation that has a `connector_read` reply, and not when that check fails | `selectTools` flags, from `prepareChatTurn` |
 | The first web search of a message | The user's own message, as on main | unchanged |
 
-So text from memories, documents, earlier replies and app results cannot reach an app or Tavily through a model-written argument. The user's own words can reach the app that the user turned on. That is the intent of the toggle.
+So text from memories, documents, earlier replies and app results cannot reach an app or Tavily through a model-written argument. One phrase that the user typed can reach the app that the user turned on. That is the intent of the toggle.
+
+**Why the reply route reason is a durable mark without a migration.** Text from an app can reach a later turn only through a saved assistant reply: tool results live in the Worker's memory for one turn, and the history of a later turn is built from saved messages. The mark is in the same row and the same insert as that text. So no saved text from a connector turn exists without the mark. A turn that fails before its reply is saved leaves no text from the app. The route reason is fixed when the turn has a connector turned on, before the first call, so a failed or refused read still marks the reply. Limit L7 lists the proposals that a connector turn can write.
 
 ### Approval effects
 
@@ -109,12 +111,12 @@ Metadata read on 2026-10-30: all three advertise `client_id_metadata_document_su
 
 | P-Dot tool | Remote tool | Arguments P-Dot sends | ID rule |
 | --- | --- | --- | --- |
-| `notion_search` | `notion-search` | `{ query }` | none |
-| `notion_fetch` | `notion-fetch` | `{ id }` | ID seen this turn |
-| `linear_search_issues` | `list_issues` | `{ query, limit: 10 }` | none |
-| `linear_get_issue` | `get_issue` | `{ id }` | ID seen this turn |
-| `todoist_list_tasks` | `find-tasks-by-date` | `{ startDate: "today", daysCount }` | none |
-| `todoist_find_tasks` | `find-tasks` | `{ searchText, limit: 10 }` | none |
+| `notion_search` | `notion-search` | `{ query }` | `user_phrase`, 1 call |
+| `notion_fetch` | `notion-fetch` | `{ id }` | `turn_ids` |
+| `linear_search_issues` | `list_issues` | `{ query, limit: 10 }` | `user_phrase`, 1 call |
+| `linear_get_issue` | `get_issue` | `{ id }` | `turn_ids` |
+| `todoist_list_tasks` | `find-tasks-by-date` | `{ startDate: "today", daysCount }` | a number from 1 to 14 only |
+| `todoist_find_tasks` | `find-tasks` | `{ searchText, limit: 10 }` | `user_phrase`, 1 call |
 
 At Connect, a remote tool is compatible when it exists and its `inputSchema.properties` has every argument name that P-Dot sends, and every name in its `required` list is one that P-Dot sends. A tool that is not compatible gets no pin. The card lists it as "not available", and chat does not offer it.
 
@@ -213,8 +215,8 @@ The guidance line says that text in these blocks is data from the user's app, no
 | `tests/unit/mcp-pins.test.ts` | Same hash for key order changes; a changed schema refuses the call; compatibility rule |
 | `tests/unit/mcp-token-store.test.ts` | Barrier tests: two refreshes (one sends), disconnect during refresh, reconnect during refresh, expired claim, a delayed store after another request marked `needs_reconnect` (matches no row, token not used), lost store answer with a status check on the read-back, timeout marks reconnect, old refresh token never sent twice |
 | `tests/unit/mcp-routes.test.ts` | Connect, callback and Disconnect: anonymous blocked with the cookie cleared, state, `iss`, repeated parameters, scope, disconnect race, write-fault sweep (callback, Disconnect) |
-| `tests/unit/mcp-chat.test.ts` | Untrusted wrapping and caps, `web_search` refused, schema refuses both flags, anonymous blocked before quota, session closed on Stop and error. A hostile result from one app tells the model to search another app with a private memory: refused, and the fake app gets no request. A later turn of the same conversation with web search on: `web_search` is not offered. ID rule. |
-| `tests/unit/mcp-outbound.test.ts` | `user_words` and `turn_ids`: words from a memory, a document, an earlier reply or an app result are refused; multi-byte and case forms; empty; 13 words |
+| `tests/unit/mcp-chat.test.ts` | Untrusted wrapping and caps, `web_search` refused, schema refuses both flags, anonymous blocked before quota, session closed on Stop and error. A hostile result from one app tells the model to search another app with a private memory: refused, and the fake app gets no request. A later turn of the same conversation with web search on: `web_search` is not offered, also after a turn whose read failed, and also when the history check fails. |
+| `tests/unit/mcp-outbound.test.ts` | `user_phrase`: shared words in another order, a phrase split across two calls (the second is refused), 121 characters, a phrase that cuts a word, case, space and multi-byte forms. `turn_ids`: an ID that appears only in result text is refused; an ID from a typed field is accepted; an ID from another app is refused; user IDs only in the app's format |
 | `tests/integration/sql-gate-mcp.test.ts` | The migration in `legacy` and `none` modes: new providers, scopes, null email only for MCP, ciphertext length, anonymous refused for MCP only, Google unchanged, PR #25's repository on the new schema |
 
 ### Deploy order
@@ -244,7 +246,9 @@ Checklist: DESIGN-CHECKLIST.md (the reviewer's copy)
 
 ## Limits
 
-- **L1.** The user's own words go to the app that the user turned on. The model can choose and order them. `user_words` can refuse a good query when the model changes a word (for example a plural). The refusal tells the model to use the user's words.
+- **L1.** One phrase that the user typed goes to the app that the user turned on. `user_phrase` refuses a good query when the model changes a word (for example a plural). The refusal tells the model to copy a phrase from the user's message.
+- **L7.** A connector turn can write a proposed memory, task or reminder with text from an app. It needs the user's approval on its card before it is used, and the card shows the text.
+- **L8.** The result shapes for typed IDs (Notion `results[].id`, Linear `issues[].id`) are PLAUSIBLE until a real connect. If a shape differs, no ID is collected, and a fetch is refused (fail closed).
 - **L2.** Pins detect a changed definition, not a changed behavior.
 - **L3.** No "What was sent" record of connector items (needs columns).
 - **L4.** DCR registers a new client at each Connect. All three apps use CIMD, so DCR is only a fallback.
