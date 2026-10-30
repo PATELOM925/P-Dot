@@ -1,6 +1,4 @@
 import Link from "next/link";
-import { ConfigError } from "@/lib/supabase-config";
-import { getAuthContext } from "@/server/auth/session";
 import { TryWithoutAccount } from "@/features/auth/TryWithoutAccount";
 import { DynamicAgentCard } from "@/features/landing/DynamicAgentCard";
 import { SiteFooter } from "@/components/layout/SiteFooter";
@@ -13,20 +11,12 @@ const CONNECTORS = [
   { name: "Todoist", chip: "chip-neutral" },
 ];
 
-async function isSignedIn(): Promise<boolean> {
-  try {
-    return (await getAuthContext()) !== null;
-  } catch (error) {
-    // Auth not configured yet: show the signed-out page. Rethrow anything else
-    // (including Next.js's internal dynamic-rendering signal).
-    if (error instanceof ConfigError) return false;
-    throw error;
-  }
-}
+// Built once at build time, with no session read: the free Workers plan allows 10 ms of CPU
+// for each request. A signed-in visitor who picks "Try P-Dot now" keeps
+// the current session (startTrial), and "I have an account" goes on from /login to /chat.
+export const dynamic = "force-static";
 
-export default async function LandingPage() {
-  const signedIn = await isSignedIn();
-
+export default function LandingPage() {
   return (
     <div className="landing">
       <header className="landing-header">
@@ -34,20 +24,12 @@ export default async function LandingPage() {
           P-Dot
         </Link>
         <nav className="actions" aria-label="Account">
-          {signedIn ? (
-            <Link className="button button-primary" href="/chat">
-              Open your workspace
-            </Link>
-          ) : (
-            <>
-              <Link className="button" href="/login">
-                Sign in
-              </Link>
-              <Link className="button button-primary" href="/signup">
-                Create an account
-              </Link>
-            </>
-          )}
+          <Link className="button" href="/login">
+            Sign in
+          </Link>
+          <Link className="button button-primary" href="/signup">
+            Create an account
+          </Link>
         </nav>
       </header>
 
@@ -64,21 +46,13 @@ export default async function LandingPage() {
             see and edit everything it remembers.
           </p>
           <div className="actions">
-            {signedIn ? (
-              <Link className="button button-primary button-large" href="/chat">
-                Open your workspace
-              </Link>
-            ) : (
-              <>
-                <TryWithoutAccount />
-                <Link className="button button-large" href="/signup">
-                  Create an account
-                </Link>
-                <Link className="button button-large" href="/login">
-                  I have an account
-                </Link>
-              </>
-            )}
+            <TryWithoutAccount />
+            <Link className="button button-large" href="/signup">
+              Create an account
+            </Link>
+            <Link className="button button-large" href="/login">
+              I have an account
+            </Link>
           </div>
           <div className="connect-row">
             <span className="connect-label">Connect your tools</span>

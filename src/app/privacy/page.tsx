@@ -3,6 +3,9 @@ import { LegalPage } from "@/components/layout/LegalPage";
 
 export const metadata: Metadata = { title: "Privacy · P-Dot" };
 
+// Built once at build time, so a request does no rendering work.
+export const dynamic = "force-static";
+
 export default function PrivacyPage() {
   return (
     <LegalPage title="Privacy" updated="30 October 2026">
