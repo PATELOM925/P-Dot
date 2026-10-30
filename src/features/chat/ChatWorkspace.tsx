@@ -38,6 +38,7 @@ import { googleToolItem, toggleSource, type GoogleChatState } from "./composer-s
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
+import { composerLimit } from "./composer-limit";
 import { ChatSendKey } from "./send-key";
 import { StarterPrompts } from "./StarterPrompts";
 import type { StarterPrompt } from "./starter-prompts";
@@ -114,6 +115,8 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  // True while the tools on come from a starter prompt, so clearing its text turns them off.
+  const starterToolsRef = useRef(false);
   // One message only; it turns off at Send. `toggleSource` keeps one kind of source on at a time.
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
@@ -372,7 +375,7 @@ export function ChatWorkspace({
     const tempId = `pending-${now()}`;
     let accepted = false;
     // The user message this turn answers: the retried one, or the new one once the server saved it.
-    let turnUserId: string | null = action === "retry" ? (messages.at(-1)?.id ?? null) : null;
+    let turnUserId: string | null = action === "retry" ? ([...messages].reverse().find((m) => m.role === "user")?.id ?? null) : null;
     let finished = false;
 
     const restoreDraft = () => {
@@ -381,6 +384,7 @@ export function ChatWorkspace({
       setDraft((current) => (current ? current : text));
     };
 
+    const stoppedPartial = action === "send" ? stopped?.partial : undefined;
     setSending(true);
     setOpenMenu(null);
     stick.jump();
@@ -397,8 +401,24 @@ export function ChatWorkspace({
       dictation.cancel();
       setDraft("");
       setUseGoogle(false);
+      starterToolsRef.current = false;
       setMessages((current) => [
         ...current,
+        // A stopped reply stays on screen above the next message. It is not saved.
+        ...(stoppedPartial
+          ? [
+              {
+                id: `stopped-${tempId}`,
+                role: "assistant" as const,
+                content: stoppedPartial,
+                webSearch: "off" as const,
+                sources: [],
+                route: null,
+                createdAt: new Date().toISOString(),
+                stopped: true,
+              },
+            ]
+          : []),
         {
           id: tempId,
           role: "user",
@@ -509,7 +529,11 @@ export function ChatWorkspace({
         if (!accepted) restoreDraft();
         // Stop is not an error: the partial text stays, muted, and the user can retry or type again.
         if (leftStreamRef.current !== controller) {
-          if (accepted) setStopped({ partial: streamTextRef.current });
+          if (accepted) {
+            setStopped({ partial: streamTextRef.current });
+            // The prompt goes back in the box, so the user can change it and send again.
+            if (action === "send") setDraft((current) => (current ? current : text));
+          }
           setStatus("Reply stopped.");
           inputRef.current?.focus();
         }
@@ -572,6 +596,7 @@ export function ChatWorkspace({
   ];
 
   function toggleTool(key: string) {
+    starterToolsRef.current = false;
     if (key === "deep") {
       effortVersion.current += 1;
       setEffort((current) => (current === "deep" ? "auto" : "deep"));
@@ -593,6 +618,7 @@ export function ChatWorkspace({
     }
     effortVersion.current += 1;
     setEffort(prompt.effort);
+    starterToolsRef.current = prompt.webSearch || prompt.effort !== "auto";
     inputRef.current?.focus();
   }
 
@@ -639,10 +665,12 @@ export function ChatWorkspace({
     setStatus("Conversation deleted.");
   }
 
-  const last = messages.at(-1);
+  // A stopped reply on this screen only is not a reply to the message before it.
+  const last = [...messages].reverse().find((m) => !m.stopped);
   // A message whose last error said Retry cannot help keeps no Retry, also after Dismiss.
   const canRetry = canRetryLast({ sending, loadingMessages, activeId, last, noRetryIds });
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
+  const limit = composerLimit(draft.length);
 
   // Oldest first, so a reply's suggestions read in the order P-Dot made them.
   const conversationProposals = activeId
@@ -949,7 +977,16 @@ export function ChatWorkspace({
               id="composer-input"
               ref={inputRef}
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                setDraft(value);
+                if (!value.trim() && starterToolsRef.current) {
+                  starterToolsRef.current = false;
+                  setWebSearch(false);
+                  effortVersion.current += 1;
+                  setEffort("auto");
+                }
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
@@ -959,10 +996,15 @@ export function ChatWorkspace({
                 }
               }}
               rows={2}
-              maxLength={MAX_MESSAGE_CHARS}
               placeholder={sending ? "Press Stop to send a new message" : "Ask P-Dot anything"}
-              aria-describedby="composer-hint"
+              aria-describedby={limit.over ? "composer-hint composer-limit" : "composer-hint"}
+              aria-invalid={limit.over ? true : undefined}
             />
+            {limit.message && (
+              <p id="composer-limit" className="alert alert-warning small composer-limit" role="status">
+                {limit.message}
+              </p>
+            )}
             {dictation.listening && (
               <p className="dictation-live">
                 <span role="status">Listening… speak now. Tap the microphone or press Esc to stop.</span>
@@ -986,8 +1028,8 @@ export function ChatWorkspace({
               <span id="composer-hint" className="visually-hidden">
                 Enter to send. Shift and Enter for a new line.
               </span>
-              {draft.length > MAX_MESSAGE_CHARS * 0.9 && (
-                <span className="hint composer-count">
+              {limit.showCount && (
+                <span className={`hint composer-count${limit.over ? " is-over" : ""}`}>
                   {draft.length} / {MAX_MESSAGE_CHARS}
                 </span>
               )}
@@ -1015,11 +1057,13 @@ export function ChatWorkspace({
                 className={`round-button ${sending ? "round-button-stop" : "round-button-solid"}`}
                 aria-label={sending ? "Stop reply" : "Send message"}
                 title={sending ? "Stop reply" : "Send (Enter)"}
-                aria-disabled={!sending && !draft.trim() ? true : undefined}
+                aria-disabled={!sending && (!draft.trim() || limit.over) ? true : undefined}
                 onClick={(event) => {
                   if (sending) {
+                    // Stop puts the prompt back and turns this into Send before the click ends, so the click must not submit it.
+                    event.preventDefault();
                     abortRef.current?.abort();
-                  } else if (!draft.trim()) {
+                  } else if (!draft.trim() || limit.over) {
                     event.preventDefault();
                   }
                 }}
