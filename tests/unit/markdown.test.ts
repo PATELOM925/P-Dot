@@ -60,6 +60,8 @@ describe("parseMarkdown", () => {
     ["unmatched [", "[a ".repeat(20_000)],
     ["[x]( with no )", "[x](a ".repeat(10_000)],
     ["unmatched backticks", "`a ``b ".repeat(8_600)],
+    ["60,000 backticks in a row", "`".repeat(60_000)],
+    ["mixed backtick runs", Array.from({ length: 9_000 }, (_, k) => "`".repeat((k % 9) + 1) + "a").join(" ")],
     ["unmatched **", "**a ".repeat(15_000)],
     ["unmatched ~~ and _", "~~a _b ".repeat(8_600)],
   ];
@@ -72,6 +74,15 @@ describe("parseMarkdown", () => {
       expect(performance.now() - started).toBeLessThan(100);
     });
   }
+
+  it("ends a code span only at a run of the same length", () => {
+    expect(parseInline("``a`b`` and `c`")).toEqual([
+      { type: "code", text: "a`b" },
+      { type: "text", text: " and " },
+      { type: "code", text: "c" },
+    ]);
+    expect(parseInline("a ``` b")).toEqual([{ type: "text", text: "a ``` b" }]);
+  });
 
   it("reads a link destination with balanced parentheses", () => {
     expect(parseInline("[wiki](https://en.wikipedia.org/wiki/Lisbon_(city)) ok")[0]).toMatchObject({
