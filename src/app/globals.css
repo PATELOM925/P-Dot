@@ -2654,11 +2654,6 @@ label.button[aria-disabled="true"] {
     background: var(--surface);
   }
 
-  /* While the user types, the keyboard needs the room. */
-  .workspace:has(.composer textarea:focus) .bottom-nav {
-    display: none;
-  }
-
   .bottom-tab {
     flex: 1;
     display: inline-flex;
