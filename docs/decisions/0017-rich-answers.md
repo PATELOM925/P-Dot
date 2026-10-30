@@ -1,4 +1,4 @@
-# 0016: Rich answers: citations, sources and cards
+# 0017: Rich answers: citations, sources and cards
 
 - Status: Proposed (2026-10-30).
 - Related: [0013 tools](0013-ai-tools-and-scope.md), [0015 trial](0015-judge-demo-mode.md).
