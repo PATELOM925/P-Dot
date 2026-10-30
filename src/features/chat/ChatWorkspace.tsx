@@ -113,6 +113,8 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  // Deep research for the next message only (decision 0018). Web search is on with it.
+  const [research, setResearch] = useState(false);
   // One message only; it turns off at Send. `toggleSource` keeps one kind of source on at a time.
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
@@ -344,12 +346,21 @@ export function ChatWorkspace({
             action,
             message: text,
             webSearch,
+            ...(research && webSearch ? { research: true as const } : {}),
             effort,
             ...connectors,
             ...(useGoogle ? { useGoogle: true as const } : {}),
             ...(activeId ? { conversationId: activeId } : { mode }),
           }
-        : { action, conversationId: activeId!, webSearch, effort, ...connectors, ...(useGoogle ? { useGoogle: true as const } : {}) };
+        : {
+            action,
+            conversationId: activeId!,
+            webSearch,
+            ...(research && webSearch ? { research: true as const } : {}),
+            effort,
+            ...connectors,
+            ...(useGoogle ? { useGoogle: true as const } : {}),
+          };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
@@ -385,6 +396,10 @@ export function ChatWorkspace({
       dictation.cancel();
       setDraft("");
       setUseGoogle(false);
+      if (research) {
+        setResearch(false);
+        setWebSearch(false);
+      }
       setMessages((current) => [
         ...current,
         {
@@ -441,7 +456,7 @@ export function ChatWorkspace({
             setStatus(event.status === "used" ? "Web search complete. P-Dot is replying…" : (event.message ?? ""));
             break;
           case "status": {
-            const line = toolStatusLine(event.tool, event.query);
+            const line = toolStatusLine(event.tool, event.query, event.count);
             setStreaming((current) => ({
               text: current?.text ?? "",
               search: current?.search ?? null,
@@ -534,7 +549,16 @@ export function ChatWorkspace({
       chip: "Web search",
       chipClass: "chip-web",
       icon: "web",
-      on: webSearch,
+      on: webSearch && !research,
+    },
+    {
+      key: "research",
+      title: "Deep research",
+      description: "Reads the top pages and writes a cited brief. Slower. This message only.",
+      chip: "Deep research",
+      chipClass: "chip-web",
+      icon: "web",
+      on: research,
     },
     {
       key: "deep",
@@ -566,8 +590,9 @@ export function ChatWorkspace({
       return;
     }
     if (key === "google" && google !== "connected") return;
-    const next = toggleSource({ webSearch, useGoogle, apps }, key, connectedApps);
+    const next = toggleSource({ webSearch, useGoogle, apps, ...(research ? { research: true as const } : {}) }, key, connectedApps);
     setWebSearch(next.webSearch);
+    setResearch(next.research === true);
     setUseGoogle(next.useGoogle);
     setApps(next.apps);
   }
@@ -575,6 +600,7 @@ export function ChatWorkspace({
   function pickStarter(prompt: StarterPrompt) {
     setDraft(prompt.text);
     setWebSearch(prompt.webSearch);
+    setResearch(false);
     if (prompt.webSearch) {
       setUseGoogle(false);
       setApps([]);
@@ -868,7 +894,9 @@ export function ChatWorkspace({
                 <div className="message-content">
                   <span className="muted">
                     {webSearch && !streaming.search
-                      ? "Searching the web…"
+                      ? research
+                        ? "Searching the web (deep)…"
+                        : "Searching the web…"
                       : streaming.tier === "heavy"
                         ? "Thinking harder…"
                         : "Thinking…"}

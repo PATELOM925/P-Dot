@@ -66,3 +66,19 @@ describe("googleToolItem", () => {
     expect(item.unavailable!.href).toBeUndefined();
   });
 });
+
+describe("toggleSource with deep research", () => {
+  it("turns web search on with deep research and turns Google and the apps off", () => {
+    expect(toggleSource({ ...NONE, useGoogle: true }, "research", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [], research: true });
+    expect(toggleSource({ ...NONE, apps: ["notion"] }, "research", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [], research: true });
+  });
+
+  it("turns deep research off with Google or an app, and swaps with plain web search", () => {
+    const research: MessageSources = { webSearch: true, useGoogle: false, apps: [], research: true };
+    expect(toggleSource(research, "google", CONNECTED)).toEqual({ webSearch: false, useGoogle: true, apps: [] });
+    expect(toggleSource(research, "app:notion", CONNECTED)).toEqual({ webSearch: false, useGoogle: false, apps: ["notion"] });
+    expect(toggleSource(research, "web", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [] });
+    expect(toggleSource(research, "research", CONNECTED)).toEqual(NONE);
+    expect(toggleSource({ ...NONE, webSearch: true }, "research", CONNECTED).research).toBe(true);
+  });
+});
