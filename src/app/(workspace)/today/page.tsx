@@ -42,9 +42,10 @@ export default async function TodayPage() {
           <section className="panel" aria-labelledby="brief-heading">
             <h2 id="brief-heading">Daily brief</h2>
             <p className="muted">
-              No brief yet. A daily brief is built from your email and calendar, and connectors are not available yet.
+              P-Dot does not make a daily brief yet. To ask about your email and calendar now, connect Google, then
+              turn on &ldquo;Use Google&rdquo; in chat.
             </p>
-            <Link href="/connectors">See planned connectors</Link>
+            <Link href="/connectors">Open Connectors</Link>
           </section>
 
           <TaskList key={mode} mode={mode} initialTasks={tasks} />

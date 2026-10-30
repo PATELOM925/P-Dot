@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { usePopover } from "@/components/ui/usePopover";
 import { APPROVAL_MODES, APPROVAL_MODE_LABELS, MAX_AUTO_ACTIONS_PER_REPLY, type ApprovalMode } from "@/lib/approval-policy";
 import { setApprovalMode, useApprovalMode, useApprovalModeChosen } from "./approval-mode";
@@ -30,7 +30,7 @@ function ModeIcon({ mode }: { mode: ApprovalMode }) {
  * The two modes as radio cards with what each does. Used in Settings, in the
  * first-run setup and in the composer menu. `onPicked` runs after a choice.
  */
-export function ApprovalModeOptions({ onPicked, autoFocusChecked = false }: { onPicked?: () => void; autoFocusChecked?: boolean }) {
+export function ApprovalModeOptions({ onPicked }: { onPicked?: () => void }) {
   const mode = useApprovalMode();
   const name = useId();
   return (
@@ -42,7 +42,6 @@ export function ApprovalModeOptions({ onPicked, autoFocusChecked = false }: { on
             name={name}
             value={value}
             checked={mode === value}
-            autoFocus={autoFocusChecked && mode === value}
             onChange={() => {
               setApprovalMode(value);
               onPicked?.();
@@ -90,6 +89,14 @@ export function ApprovalModeMenu({
   const dismiss = useCallback(() => setOpen(false), [setOpen]);
   usePopover({ open, menuRef, triggerRef: buttonRef, onClose: dismiss });
 
+  // Focus goes into the menu when it opens: to the chosen mode.
+  useEffect(() => {
+    if (!open) return;
+    const radios = menuRef.current?.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    const checked = Array.from(radios ?? []).find((radio) => radio.checked) ?? radios?.[0];
+    checked?.focus();
+  }, [open]);
+
   const close = () => {
     setOpen(false);
     buttonRef.current?.focus();
@@ -100,7 +107,7 @@ export function ApprovalModeMenu({
       {open && (
         <div id={menuId} ref={menuRef} role="dialog" aria-label="When P-Dot acts" className="tools-menu approval-menu">
           <p className="approval-menu-title">When P-Dot acts</p>
-          <ApprovalModeOptions onPicked={close} autoFocusChecked />
+          <ApprovalModeOptions onPicked={close} />
           <Link href="/settings#approvals" className="small" onClick={() => setOpen(false)}>
             What always asks
           </Link>

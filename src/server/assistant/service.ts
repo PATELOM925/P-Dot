@@ -349,6 +349,7 @@ export async function prepareChatTurn(
       mode,
       toolGuidance: toolsBound.map((tool) => tool.guidance),
       serverNote: google?.note,
+      tier: route.tier,
     });
     const toolDefinitionsBound = toolsBound.map(toToolDefinition);
     // The first attempt can run on any model of the tier (the breaker can skip
@@ -651,6 +652,7 @@ async function* runChatTurn(
     toolGuidance: tools.map((tool) => tool.guidance),
     memories,
     serverNote: turn.google?.note,
+    tier: turn.route.tier,
   });
   const plan = deps.routing[turn.route.tier];
   const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null) : null;

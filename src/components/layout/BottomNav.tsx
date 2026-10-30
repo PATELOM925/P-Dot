@@ -7,6 +7,7 @@ import { useModal } from "@/components/ui/useModal";
 import { usePopover } from "@/components/ui/usePopover";
 import { signOutAction } from "@/features/auth/actions";
 import { WaitingApprovalsBadge } from "@/features/actions/WaitingApprovalsBadge";
+import { useKeyboardOpen } from "./useKeyboardOpen";
 
 const TABS = [
   { href: "/today", label: "Today" },
@@ -31,6 +32,7 @@ export function BottomNav({ trial }: { trial: boolean }) {
   const doneRef = useRef<HTMLButtonElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
+  const keyboardOpen = useKeyboardOpen();
   usePopover({ open, menuRef: sheetRef, triggerRef: moreRef, onClose: close });
   useModal(open, sheetRef, backdropRef);
 
@@ -50,7 +52,7 @@ export function BottomNav({ trial }: { trial: boolean }) {
 
   return (
     <>
-      <nav aria-label="Workspace" className="bottom-nav">
+      <nav aria-label="Workspace" className="bottom-nav" data-keyboard={keyboardOpen ? "open" : undefined}>
         {TABS.map((tab) => (
           <Link key={tab.href} href={tab.href} className="bottom-tab" aria-current={pathname === tab.href ? "page" : undefined}>
             {tab.label}

@@ -8,6 +8,8 @@ export interface UiMessage extends MessageDTO {
   /** Shown optimistically before the server confirms it was saved. */
   pending?: boolean;
   truncated?: boolean;
+  /** A reply the user stopped. Kept on this screen only; the server has no copy. */
+  stopped?: boolean;
 }
 
 const SEARCH_NOTICES: Partial<Record<WebSearchStatus, string>> = {
@@ -23,6 +25,17 @@ export function SearchNotice({ status, message }: { status: WebSearchStatus; mes
 
 export function MessageItem({ message, state }: { message: UiMessage; state?: TurnState }) {
   const isUser = message.role === "user";
+  if (message.stopped) {
+    return (
+      <article className="message message-assistant message-partial">
+        <p className="message-author">P-Dot</p>
+        <p className="turn-state" data-state="stopped">
+          You stopped this reply. It is not saved.
+        </p>
+        <AssistantReply text={message.content} sources={[]} messageId={message.id} showSources={false} />
+      </article>
+    );
+  }
   return (
     <article className={`message ${isUser ? "message-user" : "message-assistant"}`}>
       <p className="message-author">{isUser ? "You" : "P-Dot"}</p>
