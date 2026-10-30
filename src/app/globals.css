@@ -975,6 +975,15 @@ textarea::placeholder {
   white-space: nowrap;
 }
 
+.composer-count.is-over {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.composer-limit {
+  margin: 0 0.5rem;
+}
+
 .round-button {
   flex-shrink: 0;
   width: 2.75rem;
