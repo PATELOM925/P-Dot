@@ -49,3 +49,62 @@ export function localTime(now: Date, timeZone: string): { date: string; time: st
     offset,
   };
 }
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+/** "Wed 2026-11-04" for a calendar date. Month and day may overflow, as in Date.UTC. */
+function dayLabel(year: number, month: number, day: number): string {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return `${WEEKDAYS[date.getUTCDay()]} ${date.toISOString().slice(0, 10)}`;
+}
+
+function zonedParts(date: Date, timeZone: string): Record<string, string> {
+  return Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  );
+}
+
+/**
+ * Today and the next days in `timeZone`, each as "Wed 2026-11-04" with the UTC
+ * offset of that day, for the prompt. The model copies a weekday from this
+ * list and does not work it out (live test, 2026-10-30: it wrote "Thu Nov 4").
+ */
+export function upcomingDays(now: Date, timeZone: string, count = 15): { day: string; offset: string }[] {
+  const parts = zonedParts(now, timeZone);
+  const [year, month, day] = [Number(parts.year), Number(parts.month), Number(parts.day)];
+  return Array.from({ length: count }, (_, index) => ({
+    day: dayLabel(year, month, day + index),
+    offset: localTime(new Date(Date.UTC(year, month - 1, day + index, 12)), timeZone).offset,
+  }));
+}
+
+/** An ISO date-time as { day: "Wed 2026-11-04", time: "10:00" } in `timeZone`. Null when it is not a date-time. */
+export function zonedDayTime(iso: string, timeZone: string): { day: string; time: string } | null {
+  if (!/\d{2}:\d{2}/.test(iso)) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = zonedParts(date, timeZone);
+  return {
+    day: dayLabel(Number(parts.year), Number(parts.month), Number(parts.day)),
+    time: `${parts.hour}:${parts.minute}`,
+  };
+}
+
+/** A date (YYYY-MM-DD) as "Wed 2026-11-04", moved by `shiftDays`. Null when it is not a valid date. */
+export function dateDay(date: string, shiftDays = 0): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return dayLabel(year, month, day + shiftDays);
+}

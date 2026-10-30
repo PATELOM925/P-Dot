@@ -310,3 +310,35 @@ describe("rich block rules", () => {
     expect(text).toContain("cafes, bars, restaurants, shops, things to see), put the places the sources name in this block, not in a table or a list");
   });
 });
+
+describe("the list of days (live test, 2026-10-30: 'Thu Nov 4' and 'Time (IST)' on -05:00 times)", () => {
+  const friday = new Date("2026-10-30T22:47:00Z");
+  const system = (timeZone?: string) =>
+    buildPromptMessages({ history: [{ role: "user", content: "What is on Wednesday?" }], webSearch: "off", results: [], now: friday, mode: "personal", timeZone })[0]!
+      .content;
+
+  it("names today and the next 14 days with their weekdays and the offset change", () => {
+    const text = system("America/Toronto");
+    expect(text).toContain("The user's local date and time now is Friday, 2026-10-30 18:47.");
+    expect(text).toContain("Days in the user's time zone: Fri 2026-10-30 (today), Sat 2026-10-31, Sun 2026-11-01 UTC-05:00,");
+    expect(text).toContain("Wed 2026-11-04 UTC-05:00");
+    expect(text).toContain("Fri 2026-11-13 UTC-05:00.");
+    expect(text).not.toContain("2026-11-14");
+    expect(text).toContain("Never work out a weekday yourself.");
+    expect(text).toContain("Show every time in the user's time zone (America/Toronto). Name the time zone once");
+    expect(text).toContain("Never ask the user to convert a time.");
+  });
+
+  it("starts the list on the user's date, which can be one day after the UTC date", () => {
+    const text = system("Asia/Kolkata");
+    expect(text).toContain("Days in the user's time zone: Sat 2026-10-31 (today), Sun 2026-11-01, Mon 2026-11-02,");
+    expect(text).not.toMatch(/Sun 2026-11-01 UTC/);
+  });
+
+  it("gives the list in UTC when the time zone is not known", () => {
+    const text = system();
+    expect(text).toContain("Today's date (UTC) is 2026-10-30.");
+    expect(text).toContain("Days in UTC: Fri 2026-10-30 (today), Sat 2026-10-31,");
+    expect(text).toContain("Show every time in UTC.");
+  });
+});
