@@ -133,19 +133,18 @@ export function ApprovalModeMenu({
  * Shown once in chat on a device where no mode was chosen yet. Choosing either
  * mode, or keeping the default, hides it for good on this device.
  */
-export function ApprovalModeSetup() {
+export function ApprovalModeSetup({ onChoose }: { onChoose: () => void }) {
   const chosen = useApprovalModeChosen();
   if (chosen) return null;
   return (
-    <section className="approval-setup" aria-labelledby="approval-setup-heading">
-      <div className="panel-heading">
-        <h2 id="approval-setup-heading">How should P-Dot act?</h2>
-        <button type="button" className="link-button small" onClick={() => setApprovalMode("manual")}>
-          Keep Ask first
-        </button>
-      </div>
-      <ApprovalModeOptions />
-      <p className="hint">You can change this any time with the button next to the message box, or in Settings.</p>
-    </section>
+    <p className="approval-setup-line">
+      <span>P-Dot asks before it acts. You can let it add tasks and reminders on its own.</span>
+      <button type="button" className="link-button small" onClick={onChoose}>
+        Choose
+      </button>
+      <button type="button" className="link-button small" onClick={() => setApprovalMode("manual")}>
+        Keep Ask first
+      </button>
+    </p>
   );
 }

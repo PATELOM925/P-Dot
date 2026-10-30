@@ -8,7 +8,9 @@ export type Inline =
   | { type: "code"; text: string }
   | { type: "link"; href: string; children: Inline[] }
   | { type: "image"; href: string; alt: string }
-  | { type: "break" };
+  | { type: "break" }
+  /** A citation mark "[n]": source n of the reply (1-based). */
+  | { type: "cite"; n: number };
 
 export interface ListItem {
   task: "open" | "done" | null;
@@ -25,11 +27,16 @@ export type Block =
   | { type: "table"; head: Inline[][]; rows: Inline[][][]; align: ("left" | "center" | "right" | null)[] }
   | { type: "rule" };
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 // Line rules are plain scans or regexes with one unambiguous quantifier, so a long line costs
 // linear time. No nested or adjacent overlapping quantifiers (tests/unit/markdown.test.ts).
 const HEADING_START = /^ {0,3}(#{1,6})(?=[ \t]|$)/;
 const QUOTE = /^ {0,3}>\s?(.*)$/;
+
+function isFenceLine(line: string): boolean {
+  const fence = FENCE.exec(line);
+  return fence !== null && !(fence[1]![0] === "`" && fence[2]!.includes("`"));
+}
 const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 const SEPARATOR_CELL = /^:?-+:?$/;
 
@@ -71,7 +78,7 @@ function isTableSeparator(line: string): boolean {
 const MAX_DEPTH = 8;
 
 function isBlockStart(line: string): boolean {
-  return FENCE.test(line) || readHeading(line) !== null || isRule(line) || QUOTE.test(line) || LIST_ITEM.test(line);
+  return isFenceLine(line) || readHeading(line) !== null || isRule(line) || QUOTE.test(line) || LIST_ITEM.test(line);
 }
 
 function splitRow(line: string): string[] {
@@ -117,7 +124,7 @@ export function parseMarkdown(source: string, depth = 0): Block[] {
       continue;
     }
 
-    const fence = FENCE.exec(line);
+    const fence = isFenceLine(line) ? FENCE.exec(line) : null;
     if (fence) {
       const marker = fence[1]!;
       const body: string[] = [];
@@ -133,7 +140,7 @@ export function parseMarkdown(source: string, depth = 0): Block[] {
         body.push(current);
         i += 1;
       }
-      blocks.push({ type: "code", lang: fence[2] ?? "", text: body.join("\n"), open });
+      blocks.push({ type: "code", lang: (fence[2] ?? "").trim(), text: body.join("\n"), open });
       continue;
     }
 
@@ -255,6 +262,7 @@ function parseList(lines: string[], depth: number): Block {
 
 const BARE_URL = /https?:\/\/[^\s<>()]+/y;
 const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "'", '"']);
+const CITE = /\[(\d{1,2})\]/y;
 
 /** Longest link destination read, so a "(" with no ")" costs at most this much. */
 const MAX_DESTINATION_CHARS = 2100;
@@ -367,6 +375,16 @@ export function parseInline(text: string, depth = 0): Inline[] {
         i += tickCount;
       }
       continue;
+    }
+    if (char === "[") {
+      CITE.lastIndex = i;
+      const cite = CITE.exec(text);
+      if (cite && text[i + cite[0].length] !== "(") {
+        flush();
+        out.push({ type: "cite", n: Number(cite[1]) });
+        i += cite[0].length;
+        continue;
+      }
     }
     if ((char === "[" || (char === "!" && text[i + 1] === "[")) && depth < MAX_DEPTH) {
       const image = char === "!";

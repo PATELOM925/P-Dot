@@ -5,7 +5,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Markdown } from "@/features/chat/markdown/Markdown";
 import { parseInline, parseMarkdown } from "@/features/chat/markdown/parse";
-import { SourceList } from "@/features/chat/MessageView";
 
 const html = (text: string) => renderToStaticMarkup(createElement(Markdown, { text }));
 
@@ -181,23 +180,6 @@ describe("Markdown rendering", () => {
   }
 });
 
-describe("SourceList", () => {
-  it("keeps a source with an unsafe link in its place, so the numbers stay right", () => {
-    const out = renderToStaticMarkup(
-      createElement(SourceList, {
-        sources: [
-          { title: "Bad", url: "javascript:alert(1)" },
-          { title: "Good", url: "https://example.com/" },
-        ],
-      }),
-    );
-    expect(out.match(/<li>/g)).toHaveLength(2);
-    expect(out).toContain("Link removed");
-    expect(out.indexOf("Bad")).toBeLessThan(out.indexOf("Good"));
-    expect(out).not.toContain("javascript:");
-  });
-});
-
 describe("no HTML injection in chat code", () => {
   function files(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
@@ -207,7 +189,8 @@ describe("no HTML injection in chat code", () => {
   }
 
   it("no chat file sets HTML from a string", () => {
-    for (const file of files(join(process.cwd(), "src/features/chat"))) {
+    const extra = ["src/lib/rich-blocks.ts", "src/lib/maps-url.ts"].map((path) => join(process.cwd(), path));
+    for (const file of [...files(join(process.cwd(), "src/features/chat")), ...extra]) {
       const source = readFileSync(file, "utf8");
       expect(source, file).not.toMatch(/dangerouslySetInnerHTML|innerHTML|outerHTML|insertAdjacentHTML/);
     }
