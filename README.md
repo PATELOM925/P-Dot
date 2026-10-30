@@ -18,7 +18,7 @@ Open https://pdot.iampatelom.com. Sign in with the demo account `demo@pdot.iampa
 6. **What was sent.** Under any reply, open **What was sent**. It shows the model, the context size, the memories and documents used, web search use and tokens.
 7. **Theme.** Use the theme button in the header (on a phone: **More**, then **Theme**) to switch between System, Light and Dark.
 
-**Google sign-in and the Gmail and Calendar connection work only for test users.** The Google app is in testing mode, so Google refuses other accounts. Use the demo account or "Try P-Dot now" for everything else. Notion, Linear and Todoist connect with your own account.
+**Gmail and Calendar are already connected on the demo account.** It is linked to a demo inbox (`demo.pdot@gmail.com`) with sample emails and calendar events. Sign in as the demo account and ask "Check my latest emails and tell me what's on my calendar next week". Connecting your own Google account works only for test users, because the Google app is in testing mode. Please do not click Disconnect Google on the demo account: other judges use it too.
 
 ## What works today
 
