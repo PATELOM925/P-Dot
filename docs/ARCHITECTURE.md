@@ -17,6 +17,7 @@ Cloudflare Worker (OpenNext): Next.js API routes
    |-- assistant orchestration (src/server/assistant)
    |     |-- router: picks a model tier (no model call)
    |     |-- executor: retries, fallbacks, hedge, breaker
+   |     |-- tool loop: up to 2 tool hops, then a final pass with tools off
    |     |-- Nebius Token Factory: streamed model inference
    |     `-- Tavily: optional web retrieval
    `-- persistence (src/server/db) -> Supabase Postgres with row-level security
@@ -62,6 +63,7 @@ src/
     auth/                  getClaims-based session, proxy helper
     assistant/             context budget, prompt assembly, orchestration,
                            model router, tiers, executor, circuit breaker
+      tools/               the tool registry and one file for each tool
     providers/             model.ts (provider interface), nebius/ (SSE streaming),
                            tavily/, shared errors/timeouts
     google/                Google OAuth, AES-GCM token sealing, token store, Gmail and
@@ -107,7 +109,30 @@ RLS allows each user to select and insert only their own rows and to delete only
 
 Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_URL}/chat/completions` with `stream: true`, `stream_options.include_usage` (token usage for the spend guard) and `chat_template_kwargs.enable_thinking` (off, or on with `thinking_token_budget` for the heavy tier), and parses server-sent events, including errors sent mid-stream. Reasoning fields and a leading `<think>` block are never shown or saved. The base URL and the model chains are configuration.
 
-Model routing ([decision 0007](decisions/0007-model-routing.md)): a rule-based router picks a tier (`fast`, `standard`, `heavy` or `vision`) from the message, the conversation size, web search and the user's effort choice. The executor runs the tier's model chain through a provider interface (`src/server/providers/model.ts`). It retries and falls back only before the first visible token, uses one deadline for all attempts, hedges slow fast-tier calls once, and skips a failing model with a soft breaker in isolate memory (best effort, not shared). Each attempt holds and settles spend through the spend guard. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data. The assistant has no tools, so retrieved content cannot trigger actions.
+Model routing ([decision 0007](decisions/0007-model-routing.md)): a rule-based router picks a tier (`fast`, `standard`, `heavy` or `vision`) from the message, the conversation size, web search and the user's effort choice. The executor runs the tier's model chain through a provider interface (`src/server/providers/model.ts`). It retries and falls back only before the first visible token, uses one deadline for all attempts, hedges slow fast-tier calls once, and skips a failing model with a soft breaker in isolate memory (best effort, not shared). Each attempt holds and settles spend through the spend guard. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data.
+
+## Tools
+
+Decision [0013](decisions/0013-ai-tools-and-scope.md). The assistant can call tools through the `ModelProvider` interface. The Nebius adapter sends `tools` and `tool_choice: "auto"` and joins streamed `delta.tool_calls` into whole calls. `runChatTurn` runs at most 2 tool hops, then one final pass with tools off. Each attempt of each hop holds and settles spend through the same `AttemptBudget` as a reply without tools, and all hops share the tier's deadline. A refused hold stops the turn with `budget_exhausted`.
+
+`src/server/assistant/tools/` is the one place that defines tools. Each tool is a `ToolSpec`:
+
+| Field | Purpose |
+| --- | --- |
+| `name`, `description` | What the model sees. The name is also in `AssistantToolName` (`src/types/api.ts`). |
+| `args` | A zod schema. The JSON schema for the model is made from it, and a call runs only after the arguments pass it. |
+| `kind` | `read` (changes nothing) or `propose` (writes a proposal that waits for approval). |
+| `guidance` | One line in the system prompt when the tool is offered. |
+| `maxCallsPerTurn` | Later calls get a refusal as their result. |
+| `offered(flags)` | Chooses the tool from request flags (`ToolFlags`), never from the model. `prepareChatTurn` sets the flags before the hold, so the hold prices the tools. |
+| `statusQuery(args)` | What the `status` event shows besides the tool name. |
+| `run(args, context)` | Does the work and returns the tool message for the model. |
+
+Tools today: `web_search`, offered only when the user turned search on, at most once in a turn, one Tavily credit held for each run.
+
+To add a tool, write a `ToolSpec`, add it to `TOOLS` in `tools/index.ts`, add its name to `AssistantToolName` and a status line in `src/features/chat/tool-status.ts`. A tool that a per-message toggle controls (for example "Use Google" for Gmail and Calendar tools, decision 0014) adds a flag to `ToolFlags`, a field to the chat request schema, and sets the flag in `prepareChatTurn`. A tool that changes anything is `propose` and writes an `action_proposals` row; a tool that reads private data outside P-Dot needs an approval step first (decision 0011, step 5).
+
+The `status` event carries only the tool name and, for a search, the query. It is never saved. Tool results are untrusted data in `tool` messages, and they cannot authorize an action: only the user's approval runs one.
 
 Reference documentation:
 

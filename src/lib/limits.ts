@@ -58,7 +58,8 @@ export const DOCUMENT_PROCESSING_STALE_MS = 10 * 60 * 1000;
 export const STALE_DOCUMENT_SETTLE_LIMIT = 5;
 /**
  * How long a claim to write a reply lasts (decision 0012). It must be longer
- * than the longest chat turn: the heavy tier deadline plus the search timeout.
+ * than the longest chat turn: the heavy tier deadline, which all tool hops
+ * share, plus the first search and one web_search tool call.
  */
 export const REPLY_CLAIM_LEASE_SECONDS = 300;
 export const MAX_REMINDER_TITLE_CHARS = 200;

@@ -8,6 +8,9 @@ export type MessageRole = "user" | "assistant";
 /** Which side of life a conversation or task belongs to. */
 export type Mode = "personal" | "work";
 
+/** Tools the assistant can call (src/server/assistant/tools). */
+export type AssistantToolName = "web_search";
+
 /** Outcome of web search for an assistant reply. */
 export type WebSearchStatus = "off" | "used" | "no_results" | "failed";
 
@@ -102,6 +105,11 @@ export type ChatStreamEvent =
       sources: SourceRef[];
       message?: string;
     }
+  /**
+   * A tool started. Carries only the tool name and, for a search, the query
+   * the user can see. Never saved, and never carries the model's text.
+   */
+  | { type: "status"; tool: AssistantToolName; query?: string }
   | { type: "delta"; text: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }
   | { type: "error"; code: ApiErrorCode; message: string; retryable: boolean };
