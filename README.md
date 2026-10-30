@@ -10,6 +10,7 @@ A personal assistant with a web interface, a Cloudflare Workers backend, Nebius 
 P-Dot is entered in the Nebius x NVIDIA Global AI Hackathon, **Personal AI Track**. The project started on 2026-10-09, inside the submission period.
 
 - Live app: https://pdot.iampatelom.com
+- Demo video: https://youtu.be/OhikQWepjOs
 - License: Apache 2.0 ([LICENSE](LICENSE))
 
 ### How P-Dot uses NVIDIA Nemotron through Nebius Token Factory
