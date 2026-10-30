@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { checkGoogleProposal, stripCited } from "@/server/assistant/google-proposal-guard";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import { selectTools, TOOLS, type GoogleServices } from "@/server/assistant/tools";
+import { eventEnd } from "@/server/assistant/tools/google";
 import type { ConnectedAccountRepository, GoogleTokenRow } from "@/server/db/connected-accounts";
 import type { NewActionProposal } from "@/server/db/action-proposals";
 import { sealText, tokenAssociatedData } from "@/server/google/crypto";
@@ -759,5 +760,75 @@ describe("calendar times in the user's time zone (live test, 2026-10-30)", () =>
     const text = await list();
     expect(text.split("\n")[0]).toBe("Times are in UTC, because the user's time zone is not known. Copy each weekday, date and time as written.");
     expect(text).toContain("[1] Dentist appointment | When: Wed 2026-11-04 15:00 to 16:00");
+  });
+});
+
+describe("propose_calendar_event works out the end (live test, 2026-10-30: 10 am to 11 am became 10 am to 5 pm)", () => {
+  const LIVE = "Add 'Dentist appointment' to my calendar on Wednesday November 4, 2026 from 10 am to 11 am Toronto time";
+  const START = "2026-11-04T10:00:00-05:00";
+  const propose = (args: Record<string, unknown>, id = "e") =>
+    call("propose_calendar_event", { title: "Dentist appointment", start: START, attendees: [], ...args }, id);
+  const run = async (steps: Step[], text = LIVE) => {
+    const s = await setup([...steps, { text: "Ok." }]);
+    await runTurn(s.deps, send(text, { timeZone: "America/Toronto" }));
+    return { s, results: toolResults(s.requests), ends: s.proposals.map((p) => (p.payload as { end: string }).end) };
+  };
+
+  it("adds durationMinutes to the start, with the start's offset", async () => {
+    const { ends, results } = await run([{ calls: [propose({ durationMinutes: 60 })] }]);
+    expect(ends).toEqual(["2026-11-04T11:00:00-05:00"]);
+    expect(results).toEqual(["Saved for the user's approval. Nothing was added. Say that the user can check and approve it below."]);
+  });
+
+  it("uses 60 minutes when the model gives no end and no length", async () => {
+    expect((await run([{ calls: [propose({})] }])).ends).toEqual(["2026-11-04T11:00:00-05:00"]);
+  });
+
+  it("still takes an end that the model wrote alone", async () => {
+    expect((await run([{ calls: [propose({ end: "2026-11-04T11:00:00-05:00" })] }])).ends).toEqual(["2026-11-04T11:00:00-05:00"]);
+  });
+
+  it("refuses an end that does not agree with durationMinutes, and saves the retry", async () => {
+    const { ends, results } = await run([
+      { calls: [propose({ end: "2026-11-04T17:00:00-05:00", durationMinutes: 60 }, "a")] },
+      { calls: [propose({ durationMinutes: 60 }, "b")] },
+    ]);
+    expect(results[0]).toMatch(/^The end and durationMinutes do not agree\. Nothing was saved\. .*call propose_calendar_event again/);
+    expect(ends).toEqual(["2026-11-04T11:00:00-05:00"]);
+  });
+
+  it.each([
+    ["an end before the start", { end: "2026-11-04T09:00:00-05:00" }, /^The end is not after the start\. Nothing was saved\./],
+    ["an end equal to the start", { end: START }, /^The end is not after the start\./],
+    ["13 hours", { durationMinutes: 13 * 60 }, /^The event is longer than 12 hours, and the user did not say "all day"\. Nothing was saved\./],
+    ["an end 20 hours later", { end: "2026-11-05T06:00:00-05:00" }, /^The event is longer than 12 hours/],
+  ])("refuses %s and saves nothing", async (_name, args, message) => {
+    const { ends, results, s } = await run([{ calls: [propose(args)] }]);
+    expect(results[0]).toMatch(message);
+    expect(ends).toEqual([]);
+    expect(JSON.stringify(s.logs)).not.toContain("Dentist");
+  });
+
+  it("allows a long event when the user's own message says all day", async () => {
+    const { ends } = await run([{ calls: [propose({ start: "2026-11-06T00:00:00-05:00", durationMinutes: 24 * 60 })] }], "Add an all-day offsite on Friday Nov 6 to my calendar.");
+    expect(ends).toEqual(["2026-11-07T00:00:00-05:00"]);
+  });
+
+  it("saves one event in a turn, even with a second good call", async () => {
+    const { ends, results } = await run([{ calls: [propose({ durationMinutes: 60 }, "a")] }, { calls: [propose({ durationMinutes: 30 }, "b")] }]);
+    expect(ends).toEqual(["2026-11-04T11:00:00-05:00"]);
+    expect(results[1]).toBe("An event was already proposed in this turn. Nothing new was added.");
+  });
+});
+
+describe("eventEnd", () => {
+  it("keeps the start's offset form", () => {
+    expect(eventEnd({ start: "2026-11-04T22:30:00+05:30", durationMinutes: 90 }, "")).toEqual({ ok: true, end: "2026-11-05T00:00:00+05:30" });
+    expect(eventEnd({ start: "2026-11-04T10:00:00Z", durationMinutes: 45 }, "")).toEqual({ ok: true, end: "2026-11-04T10:45:00Z" });
+    expect(eventEnd({ start: "2026-11-04T10:00:00.000-05:00" }, "")).toEqual({ ok: true, end: "2026-11-04T11:00:00-05:00" });
+  });
+
+  it("allows exactly 12 hours without all day", () => {
+    expect(eventEnd({ start: "2026-11-04T08:00:00-05:00", durationMinutes: 720 }, "")).toEqual({ ok: true, end: "2026-11-04T20:00:00-05:00" });
   });
 });
