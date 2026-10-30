@@ -84,8 +84,8 @@ export default async function LandingPage() {
           </div>
           <p className="muted small landing-note">
             <strong>Powered by NVIDIA Nemotron, deployed through Nebius</strong> on your own account, so you choose the
-            model and hold the keys. Memory, approvals and the action log are in place; replies do not use memories yet,
-            P-Dot does not propose actions in chat yet, and device actions are still being built.
+            model and hold the keys. Replies use the memories you keep, and P-Dot proposes tasks and reminders that wait
+            for your approval. Device actions are still being built.
           </p>
         </section>
 

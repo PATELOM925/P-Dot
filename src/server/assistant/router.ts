@@ -1,5 +1,6 @@
 import "server-only";
 import type { Effort, ModelTier, RouteReason } from "@/lib/routing";
+import type { ToolIntent } from "./tool-intent";
 
 // Deterministic model router. A pure function from request features to a
 // tier. It makes no model call, so it adds no latency.
@@ -16,6 +17,8 @@ export interface RouteFeatures {
   effort?: Effort;
   /** A caller (for example an agent loop step) that knows the tier it needs. */
   requestedTier?: ModelTier;
+  /** Why the own-data tools are offered (detectToolIntent), or null when they are not. */
+  toolIntent?: ToolIntent | null;
 }
 
 export interface RouteDecision {
@@ -105,6 +108,7 @@ export function reasoningSignals(message: string): Signal[] {
  * | Caller asks for a tier                        | that one | requested     |
  * | Image input                                   | vision   | image         |
  * | User chose "Think harder"                     | heavy    | user_deep     |
+ * | Own-data tools offered (detectToolIntent)     | standard | the intent    |
  * | Two or more reasoning signals, or a list of   | heavy    | multi_step    |
  * | three or more steps or questions              |          |               |
  * | One signal in a long message                  | heavy    | the signal    |
@@ -118,6 +122,7 @@ export function routeRequest(features: RouteFeatures): RouteDecision {
   if (features.requestedTier) return { tier: features.requestedTier, reason: "requested" };
   if (features.hasImage) return { tier: "vision", reason: "image" };
   if (features.effort === "deep") return { tier: "heavy", reason: "user_deep" };
+  if (features.toolIntent) return { tier: "standard", reason: features.toolIntent };
 
   const message = features.message.trim();
   const long = message.length >= LONG_MESSAGE_CHARS;

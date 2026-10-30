@@ -1,5 +1,5 @@
 import "server-only";
-import { SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
+import { MAX_MEMORY_CHARS, MEMORY_CONTEXT_COUNT, SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
 import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
 import type { ApiErrorCode } from "@/types/api";
@@ -26,6 +26,13 @@ export const TAVILY_BASIC_SEARCH_CREDITS = 1;
  */
 export const SEARCH_RESULTS_MAX_BYTES =
   SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + MAX_SAFE_URL_CHARS + 128) + 512;
+
+/**
+ * Bytes that the saved memories block can add to the prompt: the most
+ * memories a turn takes, each at its longest with up to 4 UTF-8 bytes per
+ * character, and the wrapper text.
+ */
+export const MEMORY_BLOCK_MAX_BYTES = MEMORY_CONTEXT_COUNT * (MAX_MEMORY_CHARS * 4 + 64) + 512;
 
 /** The model's price. A model without a price is a configuration error: it is never called. */
 function requirePrice(model: string): ModelPrice {

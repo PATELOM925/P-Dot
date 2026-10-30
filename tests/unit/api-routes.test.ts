@@ -5,7 +5,20 @@ import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import { requestFingerprint } from "@/server/http/request-key";
 import { readChatStream } from "@/features/chat/stream";
-import { FakeContextRecords, FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps, testRouting } from "../support/fakes";
+import {
+  FakeContextRecords,
+  FakeOwnData,
+  FakeQuota,
+  FakeSpend,
+  MemoryRepository,
+  TEST_SPEND_CAPS,
+  fakeDeps,
+  testEmbedder,
+  testRouting,
+} from "../support/fakes";
+import { TITLE_MAX_OUTPUT_TOKENS } from "@/server/assistant/title";
+import { titleFromMessage } from "@/server/assistant/context";
+import type { CompletionChunk, ModelCallRequest, ModelProvider } from "@/server/providers/model";
 import { createBarrier } from "../support/barrier";
 import { collect } from "../support/streams";
 import {
@@ -183,7 +196,39 @@ describe("POST /api/chat when one write fails", () => {
   const MESSAGE = "Plan my week";
   const KEY = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const LEASE_MS = REPLY_CLAIM_LEASE_SECONDS * 1000;
-  type Variant = "new" | "existing" | "search";
+  type Variant = "new" | "existing" | "search" | "tools";
+  /** Asks for a task and a memory, so the own-data tools are offered and the model calls two of them. */
+  const TOOLS_MESSAGE = "Remember that I fly from BOM, and add a task to book flights";
+
+  /**
+   * A model for the tools variant: the first pass calls propose_task and
+   * save_memory, the next pass answers, and a title call gets a title.
+   */
+  function toolModel() {
+    const requests: ModelCallRequest[] = [];
+    const provider: ModelProvider = {
+      name: "nebius",
+      stream(request) {
+        requests.push(request);
+        const isTitle = request.maxOutputTokens === TITLE_MAX_OUTPUT_TOKENS;
+        const afterTools = request.messages.at(-1)?.role === "tool";
+        return (async function* (): AsyncGenerator<CompletionChunk> {
+          if (isTitle) yield { type: "text", text: "Flights from BOM" };
+          else if (request.tools && !afterTools) {
+            yield {
+              type: "tool_calls",
+              calls: [
+                { id: "c1", name: "propose_task", arguments: JSON.stringify({ title: "Book flights" }) },
+                { id: "c2", name: "save_memory", arguments: JSON.stringify({ content: "Flies from BOM" }) },
+              ],
+            };
+          } else yield { type: "text", text: "Approve the task and keep the memory below." };
+          yield { type: "finish", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5 } };
+        })();
+      },
+    };
+    return { provider, requests };
+  }
 
   /**
    * One chat turn with faults, then recovery as the chat screen does it: a
@@ -199,7 +244,7 @@ describe("POST /api/chat when one write fails", () => {
     const quota = new FakeQuota();
     const contextRecords = new FakeContextRecords();
     const existing = variant === "existing" ? await repo.createConversation(ALICE, "Earlier", "personal") : null;
-    faults.wrap(repo, ["findMessageByClientRequest", "findConversationByClientRequest", "getMessage"], { read: true });
+    faults.wrap(repo, ["findMessageByClientRequest", "findConversationByClientRequest", "getMessage", "nextUserMessageAt"], { read: true });
     faults.wrap(repo, ["createConversation", "insertMessage", "claimReply", "releaseReplyClaim"], {
       detail: (method, args) => (method === "insertMessage" ? String((args[1] as { role: string }).role) : ""),
     });
@@ -209,20 +254,36 @@ describe("POST /api/chat when one write fails", () => {
     });
     faults.wrap(quota, ["consume"]);
     faults.wrap(contextRecords, ["insertContextRecord"]);
-    const fake = fakeDeps({ repo, spend, quota, contextRecords });
+    const tools = variant === "tools";
+    const own = new FakeOwnData(ALICE, testEmbedder(spend), () => repo.messages.at(-1)?.createdAt ?? "2026-10-14T12:00:00.000Z");
+    const ownData = own.services();
+    const model = toolModel();
+    if (tools) {
+      faults.wrap(repo, ["renameConversation"]);
+      // Its spend writes are swept through FakeSpend; the call itself can only fail.
+      faults.wrap(ownData.embedder, ["embed"], { label: "Embedder", read: true });
+      faults.wrap(ownData.retrieval, ["matchMemories", "matchDocumentChunks"], { label: "Retrieval", read: true });
+      faults.wrap(ownData.proposals, ["hasProposalBetween"], { label: "Proposals", read: true });
+      faults.wrap(ownData.proposals, ["createProposal"], { label: "Proposals" });
+      faults.wrap(ownData.memories, ["hasAssistantMemoryFrom"], { label: "Memories", read: true });
+      faults.wrap(ownData.memories, ["createMemory"], { label: "Memories" });
+    }
+    const fake = fakeDeps({ repo, spend, quota, contextRecords, ...(tools ? { ownData, provider: model.provider } : {}) });
+    if (tools) fake.deps.titles = true;
     vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
     signInAs(ALICE);
 
     const webSearch = variant === "search";
+    // A title event can follow done; the checks below look at the reply's own last event.
     const events = async (response: Response) => {
       const read = response.status === 200 ? await collect(readChatStream(response.body!)) : [];
       await Promise.all(fake.waited.splice(0));
-      return read;
+      return read.filter((event) => event.type !== "title");
     };
     const send = () =>
       chatRoute.POST(
         chatRequest(
-          { action: "send", message: MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) },
+          { action: "send", message: tools ? TOOLS_MESSAGE : MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) },
           { "Idempotency-Key": KEY },
         ),
       );
@@ -271,6 +332,26 @@ describe("POST /api/chat when one write fails", () => {
     expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
     expect(fake.calls.length, `${at}: at most one provider call for each claim`).toBeLessThanOrEqual(quota.calls);
 
+    if (tools) {
+      // Tool hops and the title are extra calls; each claim still starts at most one first pass.
+      const firstPasses = model.requests.filter(
+        (r) => r.maxOutputTokens !== TITLE_MAX_OUTPUT_TOKENS && r.messages.at(-1)?.role !== "tool",
+      );
+      expect(firstPasses.length, `${at}: at most one first pass for each claim`).toBeLessThanOrEqual(quota.calls);
+      // A retry or resend never repeats a proposal or a memory, and nothing stays in another status.
+      expect(own.proposals.length, `${at}: at most one proposal`).toBeLessThanOrEqual(1);
+      expect(own.memories.length, `${at}: at most one suggested memory`).toBeLessThanOrEqual(1);
+      expect(own.proposals.every((p) => p.status === "proposed" && p.conversationId === target?.id), `${at}: proposal`).toBe(true);
+      expect(own.memories.every((m) => m.status === "proposed" && m.source === "assistant"), `${at}: memory`).toBe(true);
+      const ownFaults = sweepCase.some((f) => /^(Proposals|Memories|Embedder|Retrieval|FakeSpend)\./.test(f.label));
+      if (!ownFaults) {
+        expect(own.proposals, `${at}: the proposal is saved`).toHaveLength(1);
+        expect(own.memories, `${at}: the memory is saved`).toHaveLength(1);
+      }
+      const title = mine[0]?.title;
+      expect(["Flights from BOM", titleFromMessage(TOOLS_MESSAGE)], `${at}: a whole title`).toContain(title);
+    }
+
     const records = contextRecords.records.filter((r) => r.messageId === reply?.id);
     // A refused record write only logs a warning (decision 0009). A reply whose save could not be
     // confirmed in its own request (lost or delayed insert, refused read-back) has no record.
@@ -286,7 +367,7 @@ describe("POST /api/chat when one write fails", () => {
     expect(contextRecords.records.length, `${at}: no record without a saved reply`).toBeLessThanOrEqual(1);
   }
 
-  it.each(["new", "existing", "search"] as const)(
+  it.each(["new", "existing", "search", "tools"] as const)(
     "%s conversation: every write and read, up to two faults, ends with one message, its reply and its record",
     async (variant) => {
       const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase), {
@@ -304,10 +385,129 @@ describe("POST /api/chat when one write fails", () => {
         "FakeContextRecords.insertContextRecord",
         ...(variant === "existing" ? [] : ["MemoryRepository.findConversationByClientRequest", "MemoryRepository.createConversation"]),
         ...(variant === "search" ? ["FakeSpend.reserve:tavily"] : []),
+        ...(variant === "tools"
+          ? ["Proposals.createProposal", "Memories.createMemory", "Embedder.embed", "MemoryRepository.renameConversation"]
+          : []),
       ]) {
         expect(labels, label).toContain(label);
       }
     },
+    // More than 1,000 runs each; under a full parallel `npm test` this takes longer than the 5 s default.
+    60_000,
+  );
+
+  type Earlier = "none" | "proposal" | "memory";
+
+  /**
+   * "Retry reply" of a saved user message whose first attempt saved no reply,
+   * with faults armed, so the repeat's reads of earlier rows can fail. Then a
+   * further "Retry reply" when the turn has no reply yet. The first attempt
+   * left `earlier`: nothing, the task proposal, or the suggested memory.
+   */
+  async function repeatScenario(earlier: Earlier, faults: WriteFaults, sweepCase: SweepCase) {
+    const at = `repeat after ${earlier}, ${describeCase(sweepCase)}`;
+    const store = new MemoryRepository();
+    let clock = Date.UTC(2026, 9, 14, 12, 0, 0);
+    store.now = () => clock;
+    const spend = new FakeSpend();
+    const quota = new FakeQuota();
+    const contextRecords = new FakeContextRecords();
+    const own = new FakeOwnData(ALICE, testEmbedder(spend), () => store.messages.at(-1)?.createdAt ?? "2026-10-14T12:00:00.000Z");
+    const ownData = own.services();
+    const conversation = await store.createConversation(ALICE, "Flights", "personal");
+    const saved = await store.insertMessage(ALICE, { conversationId: conversation.id, role: "user", content: TOOLS_MESSAGE });
+    if (earlier === "proposal") {
+      await ownData.proposals.createProposal(ALICE, {
+        conversationId: conversation.id,
+        payload: { kind: "create_task", mode: "personal", title: "Book flights" },
+        summary: 'Add the task "Book flights".',
+      });
+    }
+    if (earlier === "memory") {
+      await ownData.memories.createMemory(
+        ALICE,
+        { mode: "personal", content: "Flies from BOM", status: "proposed", source: "assistant", sourceMessageId: saved.id },
+        null,
+      );
+    }
+    const before = { proposals: own.proposals.length, memories: own.memories.length };
+
+    faults.wrap(store, ["getMessage", "nextUserMessageAt"], { read: true });
+    faults.wrap(store, ["insertMessage", "claimReply", "releaseReplyClaim"], {
+      detail: (method, args) => (method === "insertMessage" ? String((args[1] as { role: string }).role) : ""),
+    });
+    faults.wrap(spend, ["reserve", "settle"], {
+      detail: (method, args) =>
+        method === "reserve" ? String(args[0]) : (spend.reservations.find((r) => r.id === args[0])?.provider ?? "unknown"),
+    });
+    faults.wrap(quota, ["consume"]);
+    faults.wrap(contextRecords, ["insertContextRecord"]);
+    faults.wrap(ownData.embedder, ["embed"], { label: "Embedder", read: true });
+    faults.wrap(ownData.retrieval, ["matchMemories", "matchDocumentChunks"], { label: "Retrieval", read: true });
+    faults.wrap(ownData.proposals, ["hasProposalBetween"], { label: "Proposals", read: true });
+    faults.wrap(ownData.proposals, ["createProposal"], { label: "Proposals" });
+    faults.wrap(ownData.memories, ["hasAssistantMemoryFrom"], { label: "Memories", read: true });
+    faults.wrap(ownData.memories, ["createMemory"], { label: "Memories" });
+    const model = toolModel();
+    const fake = fakeDeps({ repo: store, spend, quota, contextRecords, ownData, provider: model.provider });
+    vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
+    vi.mocked(createConversationRepository).mockReturnValue(store);
+    signInAs(ALICE);
+
+    const retry = async () => {
+      let response = await chatRoute.POST(chatRequest({ action: "retry", conversationId: conversation.id, webSearch: false }));
+      if (response.status === 409 && (await response.clone().json()).error.code === "busy") {
+        clock += LEASE_MS + 1000;
+        response = await chatRoute.POST(chatRequest({ action: "retry", conversationId: conversation.id, webSearch: false }));
+      }
+      const events = response.status === 200 ? await collect(readChatStream(response.body!)) : [];
+      await Promise.all(fake.waited.splice(0));
+      return { response, events };
+    };
+
+    const first = await retry();
+    faults.disarm();
+    await faults.flushDelayed();
+    const done = first.events.some((e) => e.type === "done");
+    if (first.events.length === 0) expect(first.response.status, `${at}: an error before the stream`).toBeGreaterThanOrEqual(500);
+    else if (!done) expect(first.events.at(-1)?.type, at).toBe("error");
+
+    if (!done) {
+      const again = await retry();
+      if (again.response.status === 409) expect((await again.response.json()).error.code, `${at}: further retry`).toBe("answered");
+      else expect(again.events.at(-1)?.type, `${at}: further retry`).toBe("done");
+    }
+
+    const thread = store.messages.filter((m) => m.conversationId === conversation.id);
+    expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
+    if (earlier === "none") {
+      expect(own.proposals.length, `${at}: at most one proposal`).toBeLessThanOrEqual(1);
+      expect(own.memories.length, `${at}: at most one memory`).toBeLessThanOrEqual(1);
+      const ownFaults = sweepCase.some((f) => /^(Proposals|Memories|Embedder|Retrieval|FakeSpend|MemoryRepository\.nextUserMessageAt)/.test(f.label));
+      if (!ownFaults) expect([own.proposals.length, own.memories.length], `${at}: the repeat wrote both`).toEqual([1, 1]);
+    } else {
+      expect({ proposals: own.proposals.length, memories: own.memories.length }, `${at}: the first attempt's rows only`).toEqual(before);
+    }
+  }
+
+  it.each(["none", "proposal", "memory"] as const)(
+    "Retry reply after a first attempt that left %s: every write and read, up to two faults, writes no second card",
+    async (earlier) => {
+      const cases = await sweepWriteFaults((faults, sweepCase) => repeatScenario(earlier, faults, sweepCase), {
+        faults: ALL_WRITE_FAULTS,
+        maxCases: 1500,
+      });
+      const labels = new Set(cases.map((c) => c.at(-1)!.label));
+      const reads =
+        earlier === "memory"
+          ? ["Memories.hasAssistantMemoryFrom"]
+          : ["Memories.hasAssistantMemoryFrom", "MemoryRepository.nextUserMessageAt", "Proposals.hasProposalBetween"];
+      for (const label of [...reads, "MemoryRepository.claimReply", "MemoryRepository.insertMessage:assistant"]) {
+        expect(labels, label).toContain(label);
+      }
+      if (earlier === "none") expect(labels).toContain("Proposals.createProposal");
+    },
+    60_000,
   );
 
   it.each([

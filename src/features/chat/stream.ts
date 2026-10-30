@@ -1,6 +1,6 @@
 import type { ChatStreamEvent } from "@/types/api";
 
-const EVENT_TYPES = new Set(["start", "search", "status", "delta", "done", "error"]);
+const EVENT_TYPES = new Set(["start", "search", "status", "delta", "done", "title", "error"]);
 
 function hasType(value: unknown): value is { type: string } {
   return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
