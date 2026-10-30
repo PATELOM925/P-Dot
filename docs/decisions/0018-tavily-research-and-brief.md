@@ -21,7 +21,7 @@ Both features are kinds of web retrieval inside the existing chat turn. They use
 | Saved as | A reply in the current conversation | A new conversation, "Brief for <local date>" |
 | Status lines | "Searching the web (deep)…", "Reading 3 pages…", "Writing the brief…" | "Searching today's news for “topic”…", "Writing the brief…" |
 
-Deep research and the brief are exclusive with Google and connected apps, like web search. The brief also takes no web search and no conversation ID.
+Deep research and the brief are exclusive with Google and connected apps. The brief also takes no web search and no conversation ID. (Since [decision 0021](0021-multi-source-turns.md), plain web search can be on with Google and apps; deep research and the brief cannot.)
 
 ## Low-level design
 
