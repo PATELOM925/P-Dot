@@ -156,6 +156,18 @@ Google sign-in and the Google connection ([decision 0014](decisions/0014-google-
 
 A rollback to a version from before step 2 is safe. That version does not read the new table. It leaves a proposal of a new kind out of its lists, and an approval of one answers 500.
 
+The Notion, Linear and Todoist connectors ([decision 0016](decisions/0016-mcp-connectors.md)) ship in two steps. There is no contract step.
+
+1. Database PR M1 (branch `om/mcp-connectors-db`, PR #29): migration `20261031000000_mcp_connectors.sql`. It adds no table, column, function or grant. Check 1: in the Supabase dashboard, the migration is in the history, and on `connected_accounts`:
+   - `connected_accounts_provider_check` lists `google`, `notion`, `linear` and `todoist`;
+   - the new constraint `connected_accounts_google_email` exists, and `account_email` allows NULL;
+   - `connected_accounts_known_scopes` has a branch for each of the four providers;
+   - `connected_accounts_token_ciphertext_check` allows 12,288 characters for a provider that is not `google`;
+   - the policies `connected_accounts_insert_own` and `connected_accounts_update_own` check `is_anonymous` for a provider that is not `google`.
+2. Code PR M2 (branch `om/mcp-connectors`): the MCP client, Connect, callback and Disconnect, the cards and the chat toggles. Merge it only after check 1. Before the migration, a callback fails at `save_connected_account` and stores nothing, and chat finds no row and offers no app. Do not use its Preview before check 1. After step 2, set `CONNECTOR_TOKEN_ENCRYPTION_KEY`; without it the cards show "Not set up".
+
+A rollback to a version from before step 2 is safe. That version reads only `provider = 'google'` rows.
+
 ## One-time setup (owner only)
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
