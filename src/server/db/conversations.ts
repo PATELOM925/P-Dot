@@ -110,6 +110,8 @@ export interface ConversationRepository {
   /** The right to write the reply to a user message, for the session user (claim_reply). */
   claimReply(messageId: string, leaseSeconds: number): Promise<ReplyClaim>;
   releaseReplyClaim(messageId: string, claimId: string): Promise<void>;
+  /** True when a reply in the conversation came from a turn with a connector turned on (decision 0016). */
+  hasConnectorReply(userId: string, conversationId: string): Promise<boolean>;
 }
 
 const conversationRow = z.object({
@@ -358,6 +360,19 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
         .maybeSingle();
       if (error) throw repositoryError("getMessage", error);
       return data ? toMessage(data) : null;
+    },
+
+    async hasConnectorReply(userId, conversationId) {
+      const { data, error } = await supabase
+        .from("messages")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("conversation_id", conversationId)
+        .eq("role", "assistant")
+        .eq("route_reason", "connector_read")
+        .limit(1);
+      if (error) throw repositoryError("hasConnectorReply", error);
+      return Array.isArray(data) && data.length > 0;
     },
 
     async nextUserMessageAt(userId, conversationId, message) {

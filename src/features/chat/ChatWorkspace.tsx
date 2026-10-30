@@ -9,6 +9,7 @@ import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
+import { MCP_SERVER_NAMES, type McpServerId } from "@/lib/connectors";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type {
   ActionProposalDTO,
@@ -77,9 +78,12 @@ const EMPTY_HINTS: Record<Mode, string> = {
 export function ChatWorkspace({
   initialConversationId,
   mode,
+  connectedApps,
 }: {
   initialConversationId: string | null;
   mode: Mode;
+  /** Apps the user connected that chat can read. Read on the server. */
+  connectedApps: McpServerId[];
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
@@ -88,6 +92,8 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  // Apps to read for the next message only. The server refuses them together with web search.
+  const [apps, setApps] = useState<McpServerId[]>([]);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
@@ -247,10 +253,12 @@ export function ChatWorkspace({
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
+    const sentApps = apps;
+    const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
     const body: ChatRequest =
       action === "send"
-        ? { action, message: text, webSearch, effort, ...(activeId ? { conversationId: activeId } : { mode }) }
-        : { action, conversationId: activeId!, webSearch, effort };
+        ? { action, message: text, webSearch, effort, ...connectors, ...(activeId ? { conversationId: activeId } : { mode }) }
+        : { action, conversationId: activeId!, webSearch, effort, ...connectors };
 
     const keyHeaders = action === "send" ? sendKey.headers(activeId ? { conversationId: activeId } : { mode }, text) : {};
     const sentEffort = { effort, version: effortVersion.current };
@@ -301,6 +309,8 @@ export function ChatWorkspace({
             if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
+            // One message only. An app the user turned on after Send stays on for the next message.
+            if (sentApps.length > 0) setApps((current) => current.filter((app) => !sentApps.includes(app)));
             setActiveId(event.conversation.id);
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
@@ -312,7 +322,7 @@ export function ChatWorkspace({
               search: current?.search ?? null,
               tier: event.route.tier,
             }));
-            setStatus(webSearch ? "Searching the web…" : "P-Dot is replying…");
+            setStatus(sentApps.length > 0 ? "Reading your apps…" : webSearch ? "Searching the web…" : "P-Dot is replying…");
             break;
           case "search":
             setStreaming((current) => ({
@@ -709,12 +719,37 @@ export function ChatWorkspace({
                     onKeyDown={(event) => event.key === "Escape" && setToolsOpen(false)}
                   >
                     <label className="tool-option">
-                      <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />
+                      <input
+                        type="checkbox"
+                        checked={webSearch}
+                        disabled={apps.length > 0}
+                        onChange={(event) => {
+                          setWebSearch(event.target.checked);
+                          if (event.target.checked) setApps([]);
+                        }}
+                      />
                       <span>
                         <strong>Search the web</strong>
                         <span className="hint">Powered by Tavily</span>
                       </span>
                     </label>
+                    {connectedApps.map((app) => (
+                      <label key={app} className="tool-option">
+                        <input
+                          type="checkbox"
+                          checked={apps.includes(app)}
+                          onChange={(event) => {
+                            const on = event.target.checked;
+                            setApps((current) => (on ? [...current.filter((a) => a !== app), app] : current.filter((a) => a !== app)));
+                            if (on) setWebSearch(false);
+                          }}
+                        />
+                        <span>
+                          <strong>Use {MCP_SERVER_NAMES[app]}</strong>
+                          <span className="hint">Read only, for this message</span>
+                        </span>
+                      </label>
+                    ))}
                   </div>
                 )}
                 <button
@@ -759,6 +794,17 @@ export function ChatWorkspace({
                   Web search · Tavily ×
                 </button>
               )}
+              {apps.map((app) => (
+                <button
+                  key={app}
+                  type="button"
+                  className="chip chip-button"
+                  onClick={() => setApps((current) => current.filter((a) => a !== app))}
+                  aria-label={`${MCP_SERVER_NAMES[app]} is on for this message. Turn off.`}
+                >
+                  {MCP_SERVER_NAMES[app]} ×
+                </button>
+              ))}
               <span id="composer-hint" className="hint composer-hint">
                 {draft.length > MAX_MESSAGE_CHARS * 0.9
                   ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`

@@ -65,6 +65,7 @@ import {
   type ToolSpec,
 } from "./tools";
 import type { MemoryMatch } from "@/server/db/retrieval";
+import type { ConnectorServices, ConnectorTurn } from "@/server/mcp/connector-turn";
 
 export interface AssistantDeps {
   repo: ConversationRepository;
@@ -98,6 +99,10 @@ export interface AssistantDeps {
   ownData?: OwnDataServices | null;
   /** Make a title with the model for a new conversation, after the reply. Off when missing. */
   titles?: boolean;
+  /** The verified `is_anonymous` claim of the session. A demo session never reads a connected app. */
+  anonymous?: boolean;
+  /** Reads of the user's connected apps (decision 0016). Null when connectors are not set up. */
+  connectors?: ConnectorServices | null;
 }
 
 /** A Nebius hold made before the stream starts and settled when it ends. */
@@ -189,6 +194,11 @@ export async function prepareChatTurn(
   input: { userId: string; requestId: string; request: ChatRequest; requestKey?: string | null },
 ): Promise<PrepareResult> {
   const { userId, requestId, request } = input;
+  const requestedApps = request.connectors ?? [];
+  // A demo session never reads a connected app: refused before the quota, any hold or any token (decision 0016).
+  if (requestedApps.length > 0 && (deps.anonymous === true || deps.connectors?.anonymous === true)) {
+    return { ok: false, status: 403, code: "account_required", message: "Create an account to use connected apps with P-Dot." };
+  }
 
   let existing: ConversationSummary | null = null;
   let recent: MessageDTO[] = [];
@@ -289,8 +299,16 @@ export async function prepareChatTurn(
     const ownData = Boolean(deps.ownData);
     const latest = pendingHistory.at(-1)?.content ?? "";
     const toolIntent = ownData ? detectToolIntent(latest) : null;
-    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted, ownData: toolIntent !== null });
-    const route = withToolTier(
+    const connectorTools =
+      requestedApps.length > 0 && deps.connectors ? await deps.connectors.available(requestedApps) : new Map();
+    // After a turn with an app on, the model never writes a web search in this conversation again (decision 0016).
+    const searchToolAllowed = searchWanted && requestedApps.length === 0 && !(await hadConnectorReply(deps, userId, existing));
+    const toolsBound = selectTools(TOOLS, {
+      webSearch: searchToolAllowed,
+      ownData: toolIntent !== null,
+      connectors: connectorTools,
+    });
+    const routed = withToolTier(
       routeRequest({
         message: latest,
         historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
@@ -300,6 +318,8 @@ export async function prepareChatTurn(
       }),
       toolsBound.length > 0,
     );
+    // The reply of a turn with an app on is marked in its own row, before any read (decision 0016).
+    const route: RouteDecision = requestedApps.length > 0 ? { ...routed, reason: "connector_read" } : routed;
     const plan = deps.routing[route.tier];
     const promptBound = buildPromptMessages({
       history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
@@ -387,7 +407,11 @@ export async function prepareChatTurn(
         webSearch: request.webSearch,
         searchBudgetExhausted,
         route,
-        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted, ownData: toolIntent !== null },
+        toolFlags: {
+          webSearch: searchToolAllowed && !searchBudgetExhausted,
+          ownData: toolIntent !== null,
+          connectors: connectorTools,
+        },
         holds,
       },
     };
@@ -404,6 +428,17 @@ export async function prepareChatTurn(
  * tool hops need a model that calls tools well, and the standard tier has no
  * hedge. "Think harder" keeps the heavy tier. The reason stays the router's.
  */
+/** True when the conversation has a reply from a turn with an app on. A failed check counts as true. */
+async function hadConnectorReply(deps: AssistantDeps, userId: string, conversation: ConversationSummary | null): Promise<boolean> {
+  if (!conversation) return false;
+  try {
+    return await deps.repo.hasConnectorReply(userId, conversation.id);
+  } catch {
+    deps.log("warn", "connector_history_check_failed", { route: "chat" });
+    return true;
+  }
+}
+
 function withToolTier(route: RouteDecision, offersTools: boolean): RouteDecision {
   return offersTools && route.tier === "fast" ? { ...route, tier: "standard" } : route;
 }
@@ -473,9 +508,15 @@ export async function* streamChatTurn(
     deps.waitUntil(settling);
     settles.push(settling);
   };
+  const apps = turn.toolFlags.connectors ? [...turn.toolFlags.connectors.keys()] : [];
+  const connectors =
+    apps.length > 0 && deps.connectors
+      ? deps.connectors.startTurn({ requestId: turn.requestId, userMessage: turn.userMessage.content, servers: apps, signal })
+      : null;
   try {
-    yield* runChatTurn(deps, turn, signal, holds, settle);
+    yield* runChatTurn(deps, turn, signal, holds, settle, connectors);
   } finally {
+    connectors?.close();
     // Gives back what no use took, for example the first hold after Stop during search.
     await releaseTurn(deps, turn);
     await Promise.all(settles);
@@ -488,6 +529,7 @@ async function* runChatTurn(
   signal: AbortSignal,
   holds: TurnHolds,
   settle: (hold: NebiusHold, amount: number) => void,
+  connectors: ConnectorTurn | null,
 ): AsyncGenerator<ChatStreamEvent> {
   const startedAt = Date.now();
   const logBase = { requestId: turn.requestId, route: "chat" };
@@ -762,6 +804,7 @@ async function* runChatTurn(
             earlierAttemptWrote,
             signal: toolSignal,
             sources,
+            connectors,
           });
           result = outcome.content;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);
