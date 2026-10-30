@@ -123,6 +123,23 @@ a:hover {
   outline-offset: 2px;
 }
 
+.skip-link {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 700;
+  transform: translateY(-200%);
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
