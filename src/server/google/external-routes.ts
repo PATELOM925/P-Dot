@@ -155,7 +155,19 @@ export async function recoverExternal(
     }
   }
 
+  // Open Google access before the reclaim: a reclaim starts a new lease, so it must happen
+  // only when this request can call Google at once.
   const ready = await prepareExternalAction(deps(auth, requestId, "actions.recover"), "create_calendar_event");
+  if (!ready.ok) {
+    return ready.reason === "unavailable" || ready.reason === "not_set_up"
+      ? errorResponse(503, "provider_unavailable", "Google did not answer. P-Dot did not check again. Try again in a few minutes.", requestId)
+      : errorResponse(
+          409,
+          "conflict",
+          "P-Dot cannot reach this Google account now. Connect Google again on the Connectors page, or tell P-Dot if it happened.",
+          requestId,
+        );
+  }
   const reclaimed = await proposals.reclaimExternal(proposalId, EXTERNAL_ACTION_LEASE_SECONDS);
   switch (reclaimed.outcome) {
     case "not_found":
@@ -169,7 +181,6 @@ export async function recoverExternal(
       return errorResponse(409, "conflict", "P-Dot cannot check this by itself. Tell P-Dot if it happened.", requestId);
     case "claimed":
       if (!reclaimed.claimId) return unknownOutcome(reclaimed.proposal, requestId);
-      if (!ready.ok) return unknownOutcome(reclaimed.proposal, requestId);
       return runClaimed(proposals, ready.access, { ...reclaimed, claimId: reclaimed.claimId }, requestId);
     default:
       return unknownOutcome(reclaimed.proposal, requestId);
