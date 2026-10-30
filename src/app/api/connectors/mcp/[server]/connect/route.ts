@@ -3,7 +3,6 @@ import { getAssistantConfig, getSiteUrl } from "@/server/config";
 import { createQuotaGate } from "@/server/db/quota";
 import { isSiteHost, secureCookies } from "@/server/google/connect-flow";
 import { pkceChallenge, randomToken } from "@/server/google/crypto";
-import { accountRequired } from "@/server/http/account";
 import { withAuthenticatedRoute } from "@/server/http/route";
 import { logEvent } from "@/server/log";
 import { mcpServer } from "@/server/mcp/catalog";
@@ -21,9 +20,7 @@ const ROUTE = "connectors.mcp.connect";
  * that is bound to the signed-in user.
  */
 export async function POST(request: Request, context: { params: Promise<{ server: string }> }): Promise<Response> {
-  return withAuthenticatedRoute(request, { route: ROUTE, sameOrigin: true }, async ({ auth, requestId }) => {
-    const refused = accountRequired(auth, requestId);
-    if (refused) return refused;
+  return withAuthenticatedRoute(request, { route: ROUTE, sameOrigin: true, requireAccount: true }, async ({ auth, requestId }) => {
     const server = mcpServer((await context.params).server);
     if (!server) return backToConnectors(request, null, "error");
     const key = readyMcpKey(requestId, ROUTE);

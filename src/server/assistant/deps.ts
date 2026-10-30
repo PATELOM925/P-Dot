@@ -1,4 +1,5 @@
 import "server-only";
+import { hasAccount } from "@/lib/auth-identity";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
 import { getMcpConfig, type AssistantConfig } from "@/server/config";
@@ -47,7 +48,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
     titles: true,
-    anonymous: auth.isAnonymous === true,
+    anonymous: !hasAccount(auth),
     connectors: connectorServicesFor(auth),
     ownData: {
       embedder: createBudgetedEmbedder({
@@ -69,7 +70,7 @@ export function connectorServicesFor(auth: AuthContext): ConnectorServices | nul
     repo: createMcpAccountRepository(auth.supabase),
     key: config.encryptionKey,
     userId: auth.userId,
-    anonymous: auth.isAnonymous === true,
+    anonymous: !hasAccount(auth),
     fetch: mcpFetch,
     log: logEvent,
   });

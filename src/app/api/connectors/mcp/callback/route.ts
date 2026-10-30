@@ -3,7 +3,7 @@ import { getAuthContext } from "@/server/auth/session";
 import { getSiteUrl } from "@/server/config";
 import { createMcpAccountRepository } from "@/server/db/connected-accounts";
 import { sameText } from "@/server/google/crypto";
-import { accountRequired } from "@/server/http/account";
+import { hasAccount } from "@/lib/auth-identity";
 import { newRequestId } from "@/server/http/responses";
 import { logEvent } from "@/server/log";
 import { MAX_SEALED_CHARS, sealBundle } from "@/server/mcp/bundle";
@@ -41,7 +41,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       login.cookies.set(MCP_STATE_COOKIE, "", { path: MCP_STATE_PATH, maxAge: 0, httpOnly: true });
       return login;
     }
-    if (accountRequired(auth, requestId)) return done("account_required", "account");
+    if (!hasAccount(auth)) return done("account_required", "account");
     const key = readyMcpKey(requestId, ROUTE);
     if (!key) return done("not_set_up", "config");
 

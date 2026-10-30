@@ -1,7 +1,6 @@
 import { getAssistantConfig } from "@/server/config";
 import { createMcpAccountRepository } from "@/server/db/connected-accounts";
 import { createQuotaGate } from "@/server/db/quota";
-import { accountRequired } from "@/server/http/account";
 import { withAuthenticatedRoute } from "@/server/http/route";
 import { logEvent } from "@/server/log";
 import { openBundle } from "@/server/mcp/bundle";
@@ -19,9 +18,7 @@ const ROUTE = "connectors.mcp.disconnect";
  * refresh, after the read stays, and the answer says so.
  */
 export async function POST(request: Request, context: { params: Promise<{ server: string }> }): Promise<Response> {
-  return withAuthenticatedRoute(request, { route: ROUTE, sameOrigin: true }, async ({ auth, requestId }) => {
-    const refused = accountRequired(auth, requestId);
-    if (refused) return refused;
+  return withAuthenticatedRoute(request, { route: ROUTE, sameOrigin: true, requireAccount: true }, async ({ auth, requestId }) => {
     const server = mcpServer((await context.params).server);
     if (!server) return backToConnectors(request, null, "disconnect_error");
 
