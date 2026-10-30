@@ -23,6 +23,17 @@ export const SEARCH_MAX_RESULTS = 5;
 export const SEARCH_EXCERPT_CHARS = 1_200;
 export const SEARCH_QUERY_CHARS = 400;
 
+/** Deep research (decision 0018): one advanced search, then the text of its top pages. */
+export const RESEARCH_MAX_RESULTS = 8;
+export const RESEARCH_PAGES = 3;
+export const RESEARCH_PAGE_CHARS = 3_000;
+
+/** Morning brief (decision 0018): one news search for each topic. */
+export const BRIEF_MAX_TOPICS = 3;
+export const BRIEF_TOPIC_CHARS = 60;
+export const BRIEF_RESULTS_PER_TOPIC = 3;
+export const BRIEF_DATE_CHARS = 40;
+
 /** Messages returned when reopening a conversation (no pagination in the MVP). */
 export const CONVERSATION_MESSAGE_LIMIT = 200;
 

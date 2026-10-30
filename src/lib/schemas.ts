@@ -17,6 +17,9 @@ import {
   MAX_REMINDER_TITLE_CHARS,
   MAX_TASK_CHARS,
   MAX_TITLE_CHARS,
+  BRIEF_DATE_CHARS,
+  BRIEF_MAX_TOPICS,
+  BRIEF_TOPIC_CHARS,
 } from "./limits";
 import { EFFORTS } from "./routing";
 import type { ChatRequest } from "@/types/api";
@@ -42,6 +45,29 @@ const oneSource = (value: { webSearch: boolean; connectors?: unknown[]; useGoogl
   [value.webSearch, (value.connectors?.length ?? 0) > 0, value.useGoogle === true].filter(Boolean).length <= 1;
 const mixedSources = { message: "Use only one of web search, Google or connected apps for a message.", path: ["webSearch"] };
 
+/** Deep research is a kind of web search, so it needs web search on (decision 0018). */
+const researchNeedsWeb = (value: { webSearch: boolean; research?: true }) => value.research !== true || value.webSearch;
+const researchWithoutWeb = { message: "Deep research needs web search.", path: ["research"] };
+
+const briefSchema = z.strictObject({
+  topics: z
+    .array(z.string().trim().min(1, "A topic cannot be empty.").max(BRIEF_TOPIC_CHARS, `A topic must be at most ${BRIEF_TOPIC_CHARS} characters.`))
+    .min(1, "Add at least one topic.")
+    .max(BRIEF_MAX_TOPICS, `Use at most ${BRIEF_MAX_TOPICS} topics.`),
+  date: z
+    .string()
+    .trim()
+    .min(1)
+    .max(BRIEF_DATE_CHARS)
+    .regex(/^[\p{L}\p{N} ,./-]+$/u, "The date has characters that are not allowed."),
+});
+
+/** The brief starts a new conversation and does its own searches, so it takes no other source. */
+const briefAlone = (value: { webSearch: boolean; research?: true; useGoogle?: true; connectors?: unknown[]; conversationId?: string; brief?: unknown }) =>
+  value.brief === undefined ||
+  (!value.webSearch && value.research === undefined && value.useGoogle === undefined && (value.connectors?.length ?? 0) === 0 && value.conversationId === undefined);
+const briefMixed = { message: "The brief starts a new conversation and uses no other source.", path: ["brief"] };
+
 // `.strict()` rejects unknown keys, so a client cannot smuggle in fields such
 // as a user ID. Identity always comes from the verified session.
 const sendSchema = z
@@ -59,9 +85,13 @@ const sendSchema = z
     // Only sent when the "Use Google" toggle is on (decision 0014), so an older server still accepts a send without it.
     useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
+    research: z.literal(true).optional(),
+    brief: briefSchema.optional(),
   })
   .strict()
-  .refine(oneSource, mixedSources);
+  .refine(oneSource, mixedSources)
+  .refine(researchNeedsWeb, researchWithoutWeb)
+  .refine(briefAlone, briefMixed);
 
 const retrySchema = z
   .object({
@@ -71,9 +101,11 @@ const retrySchema = z
     effort: effortSchema,
     useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
+    research: z.literal(true).optional(),
   })
   .strict()
-  .refine(oneSource, mixedSources);
+  .refine(oneSource, mixedSources)
+  .refine(researchNeedsWeb, researchWithoutWeb);
 
 export const chatRequestSchema: z.ZodType<ChatRequest> = z.discriminatedUnion("action", [
   sendSchema,

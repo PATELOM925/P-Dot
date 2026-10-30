@@ -18,7 +18,7 @@ import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
 import { createNebiusProvider } from "@/server/providers/model";
-import { searchWeb } from "@/server/providers/tavily/client";
+import { extractPages, searchWeb } from "@/server/providers/tavily/client";
 import { limitsFor } from "@/server/trial-limits";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
 import { createBudgetedEmbedder, type Embedder } from "./embed";
@@ -55,6 +55,12 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     spend,
     routing: config.routing,
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
+    research: tavily
+      ? {
+          search: (query, options, signal) => searchWeb(tavily, query, { ...options, signal }),
+          extract: (urls, signal) => extractPages(tavily, urls, { signal }),
+        }
+      : null,
     provider: createNebiusProvider(config.nebius),
     breaker,
     now: () => new Date(),

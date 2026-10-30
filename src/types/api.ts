@@ -29,6 +29,9 @@ export type AssistantToolName =
   | "todoist_list_tasks"
   | "todoist_find_tasks";
 
+/** Steps of deep research and the morning brief that show a status line (decision 0018). They are not tools. */
+export type ResearchStep = "research_search" | "research_read" | "research_write" | "brief_search";
+
 /** Outcome of web search for an assistant reply. */
 export type WebSearchStatus = "off" | "used" | "no_results" | "failed";
 
@@ -113,8 +116,26 @@ export type ChatRequest =
       connectors?: McpServerId[];
       /** Gmail and Calendar for this message only (decision 0014). Never together with web search or apps. */
       useGoogle?: true;
+      /** Deep research for this message (decision 0018). Only with web search on. */
+      research?: true;
+      /** The morning brief (decision 0018): a new conversation with news for each topic. No other source. */
+      brief?: BriefRequest;
     }
-  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort; connectors?: McpServerId[]; useGoogle?: true };
+  | {
+      action: "retry";
+      conversationId: string;
+      webSearch: boolean;
+      effort?: Effort;
+      connectors?: McpServerId[];
+      useGoogle?: true;
+      research?: true;
+    };
+
+/** The topics of a morning brief and the user's local date for its title. */
+export interface BriefRequest {
+  topics: string[];
+  date: string;
+}
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once
@@ -140,7 +161,7 @@ export type ChatStreamEvent =
    * A tool started. Carries only the tool name and, for a search, the query
    * the user can see. Never saved, and never carries the model's text.
    */
-  | { type: "status"; tool: AssistantToolName; query?: string }
+  | { type: "status"; tool: AssistantToolName | ResearchStep; query?: string; count?: number }
   | { type: "delta"; text: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }
   /** After `done` for a new conversation: the title the model made, already saved. */
