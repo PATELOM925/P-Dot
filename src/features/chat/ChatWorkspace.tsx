@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalModeMenu, ApprovalModeSetup } from "@/features/actions/ApprovalModePicker";
@@ -29,6 +28,7 @@ import {
   renameConversation,
 } from "./api";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
+import { ToolChips, ToolsMenu, type ComposerToolState } from "./ComposerTools";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -47,15 +47,6 @@ interface StreamingReply {
   /** The tool that runs now, until the next search result or text arrives. */
   tool?: string;
 }
-
-const EFFORT_OPTIONS: { value: Effort; label: string; title: string }[] = [
-  { value: "auto", label: "Auto", title: "P-Dot chooses a model for each message." },
-  {
-    value: "deep",
-    label: "Think harder",
-    title: "Use the strongest model for the next message only. It is slower and uses more of the daily limit.",
-  },
-];
 
 interface ErrorState {
   message: string;
@@ -98,7 +89,8 @@ export function ChatWorkspace({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
+  // One composer menu at a time.
+  const [openMenu, setOpenMenu] = useState<"tools" | "approval" | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [savingRename, setSavingRename] = useState(false);
@@ -269,6 +261,7 @@ export function ChatWorkspace({
     };
 
     setSending(true);
+    setOpenMenu(null);
     setError(null);
     setStreaming({ text: "", search: null });
     setStatus("Sending…");
@@ -342,6 +335,8 @@ export function ChatWorkspace({
             break;
           case "done":
             finished = true;
+            // Web search is for one message, like "Think harder": a forgotten switch would spend credits.
+            setWebSearch(false);
             setMessages((current) => [...current, { ...event.message, truncated: event.truncated }]);
             setStreaming(null);
             setSuggestionsKey((key) => key + 1);
@@ -376,6 +371,16 @@ export function ChatWorkspace({
     } finally {
       setSending(false);
       if (abortRef.current === controller) abortRef.current = null;
+    }
+  }
+
+  const tools: ComposerToolState = { webSearch, deep: effort === "deep" };
+  function toggleTool(tool: keyof ComposerToolState) {
+    if (tool === "webSearch") {
+      setWebSearch((on) => !on);
+    } else {
+      effortVersion.current += 1;
+      setEffort((current) => (current === "deep" ? "auto" : "deep"));
     }
   }
 
@@ -604,8 +609,9 @@ export function ChatWorkspace({
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
               <p>{EMPTY_HINTS[mode]}</p>
-              <p className="muted small">Turn on web search when you want current sources. Or start with an example:</p>
+              <p className="muted small">Start with an example, or ask anything.</p>
               <StarterPrompts mode={mode} onPick={pickStarter} />
+              <p className="disclaimer">P-Dot can make mistakes. Check important facts.</p>
             </div>
           )}
           {messages.map((message) => (
@@ -662,6 +668,7 @@ export function ChatWorkspace({
           }}
         >
           <div className="composer-box">
+            <ToolChips tools={tools} onToggle={toggleTool} disabled={sending} inputRef={inputRef} />
             <label htmlFor="composer-input" className="visually-hidden">
               Message
             </label>
@@ -673,14 +680,14 @@ export function ChatWorkspace({
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
-                  void submit("send");
+                  if (!sending) void submit("send");
                 } else if (event.key === "Escape" && dictation.listening) {
                   dictation.toggle();
                 }
               }}
               rows={2}
               maxLength={MAX_MESSAGE_CHARS}
-              placeholder="Ask P-Dot anything…"
+              placeholder={sending ? "Press Stop to send a new message" : "Ask P-Dot anything"}
               aria-describedby="composer-hint"
             />
             {dictation.listening && (
@@ -691,71 +698,26 @@ export function ChatWorkspace({
               </p>
             )}
             <div className="composer-bar">
-              <div className="tools-anchor">
-                {toolsOpen && (
-                  <div
-                    id="composer-tools"
-                    className="tools-menu"
-                    onKeyDown={(event) => event.key === "Escape" && setToolsOpen(false)}
-                  >
-                    <label className="tool-option">
-                      <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />
-                      <span>
-                        <strong>Search the web</strong>
-                        <span className="hint">Powered by Tavily</span>
-                      </span>
-                    </label>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="round-button"
-                  aria-label="Add tools"
-                  aria-expanded={toolsOpen}
-                  aria-controls="composer-tools"
-                  onClick={() => setToolsOpen((open) => !open)}
-                >
-                  +
-                </button>
-              </div>
-              <div role="group" aria-label="Effort" className="mode-toggle effort-toggle">
-                {EFFORT_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className="mode-option"
-                    aria-pressed={effort === option.value}
-                    title={option.title}
-                    onClick={() => {
-                      effortVersion.current += 1;
-                      setEffort(option.value);
-                    }}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              {webSearch && (
-                <button
-                  type="button"
-                  className="chip chip-button"
-                  onClick={() => setWebSearch(false)}
-                  aria-label="Web search with Tavily is on. Turn off."
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9" />
-                    <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
-                  </svg>
-                  Web search · Tavily ×
-                </button>
-              )}
-              <span id="composer-hint" className="hint composer-hint">
-                {draft.length > MAX_MESSAGE_CHARS * 0.9
-                  ? `${draft.length} / ${MAX_MESSAGE_CHARS} characters`
-                  : "Enter to send · Shift+Enter for a new line"}
+              <ToolsMenu
+                open={openMenu === "tools"}
+                onOpenChange={(open) => setOpenMenu(open ? "tools" : null)}
+                tools={tools}
+                onToggle={toggleTool}
+                disabled={sending}
+              />
+              <ApprovalModeMenu
+                open={openMenu === "approval"}
+                onOpenChange={(open) => setOpenMenu(open ? "approval" : null)}
+                disabled={sending}
+              />
+              <span id="composer-hint" className="visually-hidden">
+                Enter to send. Shift and Enter for a new line.
               </span>
-              {/* Kept apart from the effort switch, whose "Auto" is about models, not approvals. */}
-              <ApprovalModeMenu />
+              {draft.length > MAX_MESSAGE_CHARS * 0.9 && (
+                <span className="hint composer-count">
+                  {draft.length} / {MAX_MESSAGE_CHARS}
+                </span>
+              )}
               <button
                 type="button"
                 className={`round-button${dictation.listening ? " is-listening" : ""}`}
@@ -774,19 +736,31 @@ export function ChatWorkspace({
                   <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
                 </svg>
               </button>
-              {sending ? (
-                <button type="button" className="round-button round-button-solid" aria-label="Stop" onClick={() => abortRef.current?.abort()}>
+              {/* One element for Send and Stop, so focus stays on it when the label changes. */}
+              <button
+                type={sending ? "button" : "submit"}
+                className={`round-button ${sending ? "round-button-stop" : "round-button-solid"}`}
+                aria-label={sending ? "Stop reply" : "Send message"}
+                title={sending ? "Stop reply" : "Send (Enter)"}
+                aria-disabled={!sending && !draft.trim() ? true : undefined}
+                onClick={(event) => {
+                  if (sending) {
+                    abortRef.current?.abort();
+                  } else if (!draft.trim()) {
+                    event.preventDefault();
+                  }
+                }}
+              >
+                {sending ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
-                </button>
-              ) : (
-                <button type="submit" className="round-button round-button-solid" aria-label="Send message" disabled={!draft.trim()}>
+                ) : (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M12 19V5M5 12l7-7 7 7" />
                   </svg>
-                </button>
-              )}
+                )}
+              </button>
             </div>
           </div>
           {dictation.error && (
@@ -794,13 +768,6 @@ export function ChatWorkspace({
               {dictation.error}
             </p>
           )}
-          {approvalMode === "auto" && (
-            <p className="approval-mode-hint small">
-              <strong>Auto is on:</strong> tasks and reminders are added on their own, with Undo. Deleting, memories,
-              outside accounts and private data still ask. <Link href="/settings#approvals">What always asks</Link>
-            </p>
-          )}
-          <p className="disclaimer">P-Dot is an AI and can make mistakes, so please double-check anything important.</p>
         </form>
 
         <p className="visually-hidden" role="status" aria-live="polite">
