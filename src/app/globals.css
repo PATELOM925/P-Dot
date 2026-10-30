@@ -2192,7 +2192,7 @@ label.button[aria-disabled="true"] {
 
 .trial-banner {
   margin: 0;
-  padding: 0.5rem 1.5rem;
+  padding: 0.375rem 1rem;
   background: var(--butter);
   color: var(--butter-text);
   font-size: 0.875rem;
@@ -2203,6 +2203,20 @@ label.button[aria-disabled="true"] {
 .trial-banner a {
   color: inherit;
   font-weight: 700;
+}
+
+.trial-banner-short {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .trial-banner-long {
+    display: none;
+  }
+
+  .trial-banner-short {
+    display: inline;
+  }
 }
 
 .header-trial {

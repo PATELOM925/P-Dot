@@ -3,8 +3,11 @@ import Link from "next/link";
 export function TrialBanner() {
   return (
     <p className="trial-banner">
-      You are trying P-Dot without an account. When you sign out, you lose these chats.{" "}
-      <Link href="/signup">Create an account</Link> to keep your chats.
+      <span className="trial-banner-long">
+        Trial without an account. When you end the trial, you cannot open these chats again.
+      </span>
+      <span className="trial-banner-short">Trial. Chats end when the trial ends.</span>{" "}
+      <Link href="/signup">Create an account</Link>
     </p>
   );
 }
