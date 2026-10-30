@@ -1706,8 +1706,19 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+/* An email body keeps its line breaks, so the card shows the message as it will be sent. */
+.approval-details dd {
+  white-space: pre-wrap;
+}
+
 .approval-outcome {
   color: var(--sage-text);
+  font-weight: 600;
+}
+
+/* An external action with no known outcome yet: neutral, not the success colour. */
+.approval-pending {
+  color: var(--text-muted);
   font-weight: 600;
 }
 

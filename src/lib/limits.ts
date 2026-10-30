@@ -63,6 +63,22 @@ export const STALE_DOCUMENT_SETTLE_LIMIT = 5;
  */
 export const REPLY_CLAIM_LEASE_SECONDS = 300;
 export const MAX_REMINDER_TITLE_CHARS = 200;
+
+/** External actions (decision 0014). The same limits as normalize_action_payload in the migration. */
+export const MAX_EMAIL_RECIPIENTS = 10;
+export const MAX_EMAIL_ADDRESS_CHARS = 254;
+/** All recipients together, so a proposal stays readable on its card. */
+export const MAX_EMAIL_RECIPIENTS_TOTAL_CHARS = 2000;
+export const MAX_EMAIL_SUBJECT_CHARS = 200;
+export const MAX_EMAIL_BODY_CHARS = 4000;
+export const MAX_EVENT_TITLE_CHARS = 200;
+export const MAX_EVENT_ATTENDEES = 20;
+export const MAX_EVENT_DAYS = 31;
+/**
+ * A claimed external action that has no outcome after this long can be
+ * recovered. Much more than a token refresh (10 s) plus the Google call (15 s).
+ */
+export const EXTERNAL_ACTION_LEASE_SECONDS = 120;
 export const REMINDER_LIST_LIMIT = 200;
 export const MAX_ACTION_SUMMARY_CHARS = 300;
 export const ACTION_LIST_LIMIT = 100;

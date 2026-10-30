@@ -137,7 +137,7 @@ class FakeDb {
     } else if (action.kind === "create_reminder") {
       this.tables.reminders!.push({ ...base, title: action.title, due_at: action.dueAt, status: "scheduled", proposal_id: id });
       row.result = { reminderId: newId };
-    } else {
+    } else if (action.kind === "save_memory") {
       this.tables.memories!.push({
         ...base,
         content: action.content,

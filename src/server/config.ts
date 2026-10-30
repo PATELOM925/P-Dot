@@ -171,6 +171,54 @@ function spendCaps(day: number, period: number, userDay: number): SpendCaps {
   return { day, period, userDay: Math.min(userDay, day) };
 }
 
+/** Google Connect (decision 0014). Read per call; never at import time. */
+export interface GoogleConfig {
+  clientId: string;
+  clientSecret: string;
+  /** 32 bytes for AES-256-GCM. */
+  encryptionKey: Uint8Array;
+  /** `${SITE_URL}/api/connectors/google/callback`. */
+  redirectUri: string;
+}
+
+export type GoogleConfigState =
+  | { status: "ready"; config: GoogleConfig }
+  /** `invalid` names the variables that have a bad value. Empty when all three are missing. */
+  | { status: "not_set_up"; invalid: string[] };
+
+export const GOOGLE_ENV_NAMES = ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_TOKEN_ENCRYPTION_KEY"] as const;
+
+function decodeKey(value: string): Uint8Array | null {
+  try {
+    const binary = atob(value.trim());
+    return binary.length === 32 ? Uint8Array.from(binary, (char) => char.charCodeAt(0)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Missing or bad values give "not_set_up", so Google features say so and
+ * nothing else breaks. The caller logs `invalid` (names only, never values).
+ */
+export function getGoogleConfig(env: NodeJS.ProcessEnv = process.env): GoogleConfigState {
+  const clientId = blankToUndefined(env.GOOGLE_OAUTH_CLIENT_ID)?.trim();
+  const clientSecret = blankToUndefined(env.GOOGLE_OAUTH_CLIENT_SECRET)?.trim();
+  const rawKey = blankToUndefined(env.GOOGLE_TOKEN_ENCRYPTION_KEY);
+  if (!clientId && !clientSecret && !rawKey) return { status: "not_set_up", invalid: [] };
+  const encryptionKey = rawKey ? decodeKey(rawKey) : null;
+  const invalid = [
+    !clientId || clientId.length > 256 ? "GOOGLE_OAUTH_CLIENT_ID" : null,
+    !clientSecret || clientSecret.length > 256 ? "GOOGLE_OAUTH_CLIENT_SECRET" : null,
+    !encryptionKey ? "GOOGLE_TOKEN_ENCRYPTION_KEY" : null,
+  ].filter((name): name is string => name !== null);
+  if (invalid.length > 0 || !clientId || !clientSecret || !encryptionKey) return { status: "not_set_up", invalid };
+  return {
+    status: "ready",
+    config: { clientId, clientSecret, encryptionKey, redirectUri: `${getSiteUrl(env)}/api/connectors/google/callback` },
+  };
+}
+
 /** Public base URL used in auth emails (verification and password recovery). */
 export function getSiteUrl(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = blankToUndefined(env.SITE_URL);

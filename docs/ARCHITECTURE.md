@@ -37,6 +37,7 @@ src/
     (workspace)/           today, chat, memory, workflows, connectors, action-log,
                            devices, settings (server-side auth guard in layout)
     auth/confirm/          email verification and recovery link handler
+    auth/callback/         Google sign-in return (Supabase PKCE code exchange)
     api/
       chat/                POST: streamed assistant reply (NDJSON)
       conversations/       GET list; [id]/ GET detail, PATCH rename, DELETE
@@ -44,6 +45,7 @@ src/
       memories/, documents/, actions/, action-log/, reminders/,
       messages/[id]/context/   decision 0009
       health/              GET liveness + configured integrations
+      connectors/google/   connect, callback, disconnect (decision 0014)
   components/layout/       workspace header, navigation, mode switch
   components/ui/           LocalTime (dates in the viewer's time zone)
   features/
@@ -53,7 +55,7 @@ src/
     actions/               approval cards, action log list, display helpers
     memory/, documents/    the Memory page (memories, documents)
     reminders/, today/     reminders panel, to-do list
-    connectors/            live status lines for the built-in tools
+    connectors/            live status lines for the built-in tools, the Google card
     pwa/                   service worker registration, install prompt, notifications
   server/                  server-only modules
     config.ts              env validation (lazy; build needs no secrets)
@@ -64,6 +66,8 @@ src/
       tools/               the tool registry and one file for each tool
     providers/             model.ts (provider interface), nebius/ (SSE streaming),
                            tavily/, shared errors/timeouts
+    google/                Google OAuth, AES-GCM token sealing, token store, Gmail and
+                           Calendar calls with plain fetch (decision 0014)
     db/                    Supabase client, conversation repository, quota gate, spend guard
     http/                  body limits, origin check, error responses, NDJSON
   lib/                     limits, zod schemas, URL safety, Supabase public config
@@ -96,6 +100,7 @@ Defined in `supabase/migrations/20261014000000_initial_schema.sql`:
 - `conversations`: ID, owner, title, created/updated time. A trigger bumps `updated_at` when a message is added.
 - `messages`: ID, conversation, owner, role (`user`/`assistant`), content, web-search outcome (`off`/`used`/`no_results`/`failed`), source references (`[{title, url}]`), created time, and for assistant replies the model, tier, route reason and fallback flag (nullable; `NULL` for replies saved before model routing, [decision 0007](decisions/0007-model-routing.md)). Only completed assistant replies are stored, so there is no per-message completion status; an unanswered trailing user message is what the UI offers to retry. A reply stores `reply_to`, its user message (unique: one reply for each message). A user message stores the request key and fingerprint of the send that made it, and the claim of the request that writes its reply, with a 300-second lease ([decision 0012](decisions/0012-resend-idempotency.md)). `conversations`, `memories` and `documents` also store the request key and fingerprint. All are `NULL` on older rows.
 - `usage_windows`: per-user request count per fixed window, written only by `consume_chat_quota()`.
+- `connected_accounts`: one row for each user and provider (Google today): the account's stable ID and address, the granted scopes, the refresh token sealed with AES-GCM under a Worker key, and a status. Owner-only RLS ([decision 0014](decisions/0014-google-sign-in-and-connection.md)).
 - `spend_counters` and `spend_reservations`: global spend for Nebius (micro-dollars) and Tavily (credits) per UTC day, month and all time, plus one row per held call. No user content. Users cannot read or write them; only `reserve_provider_spend()` and `settle_provider_spend()` do ([decision 0006](decisions/0006-global-spend-guard.md)).
 
 RLS allows each user to select and insert only their own rows and to delete only their own conversations (messages cascade). Updates are revoked. Repository methods also filter by the session user ID. Each chat request holds a worst-case Nebius cost (and one Tavily credit when search is on) before the paid call, and settles the real cost from the token usage after it. A hold above $0.25 is refused, never reduced; `src/server/assistant/spend.ts` computes every hold. Global caps refuse a request with `budget_exhausted` before streaming ([decision 0006](decisions/0006-global-spend-guard.md)).
