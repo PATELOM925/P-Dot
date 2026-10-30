@@ -1,0 +1,54 @@
+{
+  "deep-1280": [
+    {
+      "action": "send",
+      "message": "Should I get a heat pump for my cold flat? Compare the options.",
+      "webSearch": true,
+      "research": true,
+      "effort": "auto",
+      "mode": "personal"
+    }
+  ],
+  "brief-1280": [
+    {
+      "action": "send",
+      "mode": "personal",
+      "message": "Make my morning brief for Fri 30 Oct 2026. Topics: AI chips; cricket; local elections.",
+      "webSearch": false,
+      "brief": {
+        "topics": [
+          "AI chips",
+          "cricket",
+          "local elections"
+        ],
+        "date": "Fri 30 Oct 2026"
+      }
+    }
+  ],
+  "deep-393": [
+    {
+      "action": "send",
+      "message": "Should I get a heat pump for my cold flat? Compare the options.",
+      "webSearch": true,
+      "research": true,
+      "effort": "auto",
+      "mode": "personal"
+    }
+  ],
+  "brief-393": [
+    {
+      "action": "send",
+      "mode": "personal",
+      "message": "Make my morning brief for Fri 30 Oct 2026. Topics: AI chips; cricket; local elections.",
+      "webSearch": false,
+      "brief": {
+        "topics": [
+          "AI chips",
+          "cricket",
+          "local elections"
+        ],
+        "date": "Fri 30 Oct 2026"
+      }
+    }
+  ]
+}
