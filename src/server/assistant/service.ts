@@ -538,6 +538,7 @@ async function* runChatTurn(
         usage = chunk.usage;
         continue;
       }
+      if (chunk.type === "tool_calls") continue;
       const room = MAX_ASSISTANT_CHARS - content.length;
       const text = chunk.text.slice(0, room);
       if (text) {
