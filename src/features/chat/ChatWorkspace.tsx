@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { Mascot } from "@/components/ui/Mascot";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalModeMenu, ApprovalModeSetup } from "@/features/actions/ApprovalModePicker";
 import { useModal } from "@/components/ui/useModal";
@@ -97,6 +98,7 @@ const EMPTY_TITLES: Record<Mode, string> = {
 export function ChatWorkspace({
   userId,
   initialConversationId,
+  initialDraft = "",
   mode,
   google = null,
   trial = false,
@@ -105,6 +107,8 @@ export function ChatWorkspace({
   /** Keys this device's pinned conversations to the signed-in user. */
   userId: string;
   initialConversationId: string | null;
+  /** Text to put in the message box, for example from the Today page's quick ask. It is never sent on its own. */
+  initialDraft?: string;
   mode: Mode;
   google?: GoogleChatState;
   /** A trial user (decision 0015): limit errors say so. */
@@ -117,7 +121,7 @@ export function ChatWorkspace({
   const [activeId, setActiveId] = useState<string | null>(initialConversationId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft);
   const [webSearch, setWebSearch] = useState(false);
   // Deep research for the next message only (decision 0018). Web search is on with it.
   const [research, setResearch] = useState(false);
@@ -955,7 +959,8 @@ export function ChatWorkspace({
           {loadingMessages && <p className="muted">Loading conversation…</p>}
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
-              <p>{EMPTY_TITLES[mode]}</p>
+              <Mascot className="empty-mascot" size={84} float />
+              <p className="empty-title">{EMPTY_TITLES[mode]}</p>
               <p className="muted small">P-Dot asks before it adds a task, a reminder or a memory. You can say no.</p>
               <StarterPrompts mode={mode} onPick={pickStarter} />
               <p className="disclaimer">P-Dot can make mistakes. Check important facts.</p>

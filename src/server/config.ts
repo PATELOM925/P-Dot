@@ -18,7 +18,7 @@ export interface AssistantConfig {
   /** Model tiers: chains, output limits and timing (docs/decisions/0007-model-routing.md). */
   routing: RoutingConfig;
   /** Null when TAVILY_API_KEY is not set; search requests then report failure. */
-  tavily: { apiKey: string } | null;
+  tavily: { apiKey: string; baseUrl?: string } | null;
   quota: {
     requestsPerWindow: number;
     windowSeconds: number;
@@ -59,6 +59,16 @@ function chainEnvName(tier: ModelTier): string {
   return `NEBIUS_${tier.toUpperCase()}_MODELS`;
 }
 
+/**
+ * A base URL that sends the Tavily key somewhere other than api.tavily.com. It
+ * exists so web search can be pointed at a local simulator (`npm run mock:providers`),
+ * so it must be https, or http to this machine only.
+ */
+const localOrHttpsUrl = z.url().refine((value) => {
+  const url = new URL(value);
+  return url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname));
+}, "Use https, or http to localhost.");
+
 const assistantEnvSchema = z.object({
   NEBIUS_API_KEY: z.string().trim().min(1),
   NEBIUS_BASE_URL: z.url().default("https://api.tokenfactory.nebius.com/v1"),
@@ -72,6 +82,7 @@ const assistantEnvSchema = z.object({
   NEBIUS_HEAVY_THINKING_BUDGET: z.coerce.number().int().min(0).max(4096).default(1024),
   NEBIUS_HEDGE_AFTER_MS: z.coerce.number().int().min(0).max(10_000).default(1500),
   TAVILY_API_KEY: z.string().trim().optional(),
+  TAVILY_BASE_URL: localOrHttpsUrl.optional(),
   CHAT_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).max(10_000).default(30),
   CHAT_WINDOW_SECONDS: z.coerce.number().int().min(60).max(2_678_400).default(3600),
   NEBIUS_DAILY_CAP_USD: usd(0.01, 100, 1),
@@ -116,6 +127,7 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
     NEBIUS_BASE_URL: blankToUndefined(env.NEBIUS_BASE_URL),
     ...Object.fromEntries(ROUTING_ENV_NAMES.map((name) => [name, blankToUndefined(env[name])])),
     TAVILY_API_KEY: blankToUndefined(env.TAVILY_API_KEY),
+    TAVILY_BASE_URL: blankToUndefined(env.TAVILY_BASE_URL),
     CHAT_REQUESTS_PER_WINDOW: blankToUndefined(env.CHAT_REQUESTS_PER_WINDOW),
     CHAT_WINDOW_SECONDS: blankToUndefined(env.CHAT_WINDOW_SECONDS),
     ...Object.fromEntries(SPEND_ENV_NAMES.map((name) => [name, blankToUndefined(env[name])])),
@@ -150,7 +162,9 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
       heavyThinkingBudgetTokens: e.NEBIUS_HEAVY_THINKING_BUDGET,
       hedgeAfterMs: e.NEBIUS_HEDGE_AFTER_MS,
     }),
-    tavily: e.TAVILY_API_KEY ? { apiKey: e.TAVILY_API_KEY } : null,
+    tavily: e.TAVILY_API_KEY
+      ? { apiKey: e.TAVILY_API_KEY, ...(e.TAVILY_BASE_URL ? { baseUrl: e.TAVILY_BASE_URL.replace(/\/+$/, "") } : {}) }
+      : null,
     quota: {
       requestsPerWindow: e.CHAT_REQUESTS_PER_WINDOW,
       windowSeconds: e.CHAT_WINDOW_SECONDS,

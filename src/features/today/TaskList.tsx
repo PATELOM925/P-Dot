@@ -1,11 +1,13 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { MAX_TASK_CHARS } from "@/lib/limits";
 import type { Mode, TaskDTO } from "@/types/api";
 import { createTask, deleteTask, updateTask } from "./api";
 
 export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: TaskDTO[] }) {
+  const router = useRouter();
   const [tasks, setTasks] = useState(initialTasks);
   // A server refresh (for example after an approved "add a task" action) brings a new list.
   const [shownInitial, setShownInitial] = useState(initialTasks);
@@ -29,6 +31,7 @@ export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: Tas
       const task = await createTask(mode, title);
       setTasks((current) => [...current, task]);
       setDraft("");
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not add the task.");
     } finally {
@@ -41,6 +44,7 @@ export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: Tas
     setTasks((current) => current.map((t) => (t.id === task.id ? { ...t, done: !t.done } : t)));
     try {
       await updateTask(task.id, { done: !task.done });
+      router.refresh();
     } catch (err) {
       setTasks((current) => current.map((t) => (t.id === task.id ? { ...t, done: task.done } : t)));
       setError(err instanceof Error ? err.message : "Could not update the task.");
@@ -52,13 +56,14 @@ export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: Tas
     try {
       await deleteTask(task.id);
       setTasks((current) => current.filter((t) => t.id !== task.id));
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete the task.");
     }
   }
 
   return (
-    <section className="panel" aria-labelledby="tasks-heading">
+    <section className="panel" id="tasks" aria-labelledby="tasks-heading">
       <div className="panel-heading">
         <h2 id="tasks-heading">{mode === "work" ? "Work to-do list" : "To-do list"}</h2>
         <span className="muted small">
@@ -66,7 +71,7 @@ export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: Tas
         </span>
       </div>
 
-      {tasks.length === 0 && <p className="muted">Add your first task below.</p>}
+      {tasks.length === 0 && <p className="muted">A clean slate. Add the first thing you want to get done today.</p>}
       <ul className="task-list">
         {tasks.map((task) => (
           <li key={task.id} className="task-item">

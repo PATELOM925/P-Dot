@@ -13,7 +13,8 @@ const BASELINE = join(process.cwd(), "tests", "integration", "frozen-migrations.
 
 function readBaseline(): Map<string, string> {
   const entries = new Map<string, string>();
-  for (const line of readFileSync(BASELINE, "utf8").split("\n")) {
+  // A Windows checkout can turn LF into CRLF, so accept both.
+  for (const line of readFileSync(BASELINE, "utf8").split(/\r?\n/)) {
     if (!line.trim()) continue;
     const match = /^([0-9a-f]{64}) {2}(\S+)$/.exec(line);
     if (!match) throw new Error(`Bad line in ${BASELINE}: ${line}`);
@@ -22,7 +23,11 @@ function readBaseline(): Map<string, string> {
   return entries;
 }
 
-const sha256 = (file: string) => createHash("sha256").update(readFileSync(join(MIGRATIONS_DIR, file))).digest("hex");
+// Hash the file with LF line endings, as committed, so a CRLF checkout on Windows gives the same hash.
+const sha256 = (file: string) =>
+  createHash("sha256")
+    .update(readFileSync(join(MIGRATIONS_DIR, file), "utf8").replace(/\r\n/g, "\n"))
+    .digest("hex");
 
 describe("frozen migrations", () => {
   const baseline = readBaseline();

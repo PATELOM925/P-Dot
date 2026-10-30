@@ -14,8 +14,7 @@ import { createAbortScope, discardBody, kindFromStatus, ProviderError } from "..
 // https://docs.tavily.com/documentation/api-reference/endpoint/search
 // https://docs.tavily.com/documentation/api-reference/endpoint/extract
 
-const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
-const TAVILY_EXTRACT_URL = "https://api.tavily.com/extract";
+const TAVILY_BASE_URL = "https://api.tavily.com";
 export const TAVILY_TIMEOUT_MS = 10_000;
 
 export interface WebSearchResult {
@@ -60,7 +59,7 @@ function clean(text: string, maxChars: number): string {
 }
 
 export async function searchWeb(
-  settings: { apiKey: string },
+  settings: { apiKey: string; /** Only for a local simulator. Defaults to api.tavily.com. */ baseUrl?: string },
   query: string,
   options: SearchOptions = {},
 ): Promise<WebSearchResult[]> {
@@ -73,7 +72,7 @@ export async function searchWeb(
   try {
     let response: Response;
     try {
-      response = await fetchImpl(TAVILY_SEARCH_URL, {
+      response = await fetchImpl(`${settings.baseUrl ?? TAVILY_BASE_URL}/search`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${settings.apiKey}`,
@@ -141,7 +140,7 @@ const extractSchema = z.object({
  * or is empty is left out. Only pages in `urls` come back.
  */
 export async function extractPages(
-  settings: { apiKey: string },
+  settings: { apiKey: string; /** Only for a local simulator. Defaults to api.tavily.com. */ baseUrl?: string },
   urls: string[],
   options: Omit<SearchOptions, "maxResults" | "depth" | "topic" | "timeRange"> = {},
 ): Promise<PageText[]> {
@@ -155,7 +154,7 @@ export async function extractPages(
   try {
     let response: Response;
     try {
-      response = await fetchImpl(TAVILY_EXTRACT_URL, {
+      response = await fetchImpl(`${settings.baseUrl ?? TAVILY_BASE_URL}/extract`, {
         method: "POST",
         headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ urls: asked, extract_depth: "basic", format: "text", include_images: false }),

@@ -29,3 +29,6 @@ Thumbs.db
 
 # Eval output (npm run eval:live). Never commit it.
 tests/evals/reports/
+
+# Local test login (created for manual testing)
+.local-test-login.txt

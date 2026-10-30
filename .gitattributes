@@ -1,0 +1,3 @@
+# The frozen-migrations test hashes these files, so they must keep LF line endings on every OS.
+supabase/migrations/*.sql text eol=lf
+tests/integration/frozen-migrations.sha256 text eol=lf
