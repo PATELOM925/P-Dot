@@ -57,6 +57,13 @@ const TOKENS_FOR_TOOLS = 1_024;
 const TOKENS_PER_TOOL = 128;
 const TOKENS_PER_TOOL_CALL = 64;
 const TOKENS_PER_TOOL_RESULT = 64;
+/**
+ * Input tokens one image can make. An estimate, not a measurement: the
+ * browser sends at most 1,600 px on the long side, which vision models with
+ * tiles of 448 to 512 px turn into a few thousand tokens. Chosen well above
+ * that (decision 0019); the settle uses the real usage.
+ */
+export const TOKENS_PER_IMAGE = 16_384;
 
 /**
  * An upper bound on the input tokens of a prompt. Byte-level tokenizers never
@@ -72,6 +79,9 @@ export function inputTokenBound(messages: ChatMessage[], extraBytes = 0, tools: 
   let toolParts = tools.length;
   for (const message of messages) {
     tokens += size(message.content);
+    if ((message.role === "user" || message.role === "system") && message.images) {
+      tokens += message.images.length * TOKENS_PER_IMAGE;
+    }
     if (message.role === "tool") {
       tokens += size(message.toolCallId) + TOKENS_PER_TOOL_RESULT;
       toolParts += 1;
