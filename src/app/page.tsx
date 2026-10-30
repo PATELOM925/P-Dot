@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ConfigError } from "@/lib/supabase-config";
 import { getAuthContext } from "@/server/auth/session";
+import { TryWithoutAccount } from "@/features/auth/TryWithoutAccount";
 import { DynamicAgentCard } from "@/features/landing/DynamicAgentCard";
 
 async function isSignedIn(): Promise<boolean> {
@@ -60,8 +61,9 @@ export default async function LandingPage() {
               </Link>
             ) : (
               <>
-                <Link className="button button-primary button-large" href="/signup">
-                  Get started free
+                <TryWithoutAccount />
+                <Link className="button button-large" href="/signup">
+                  Create an account
                 </Link>
                 <Link className="button button-large" href="/login">
                   I have an account

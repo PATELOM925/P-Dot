@@ -24,19 +24,40 @@ export default async function SettingsPage() {
 
       <section className="card stack" aria-labelledby="account-heading">
         <h2 id="account-heading">Account</h2>
-        <p>
-          Signed in as <strong>{auth.email ?? "your account"}</strong>
-        </p>
-        <div className="actions">
-          <Link className="button" href="/reset-password">
-            Change password
-          </Link>
-          <form action={signOutAction}>
-            <button type="submit" className="button">
-              Sign out
-            </button>
-          </form>
-        </div>
+        {auth.isAnonymous ? (
+          <>
+            <p>
+              You are trying P-Dot without an account. A trial has no email and no password. When you end the trial,
+              you cannot open its chats again.
+            </p>
+            <div className="actions">
+              <Link className="button button-primary" href="/signup">
+                Create an account
+              </Link>
+              <form action={signOutAction}>
+                <button type="submit" className="button">
+                  End trial
+                </button>
+              </form>
+            </div>
+          </>
+        ) : (
+          <>
+            <p>
+              Signed in as <strong>{auth.email ?? "your account"}</strong>
+            </p>
+            <div className="actions">
+              <Link className="button" href="/reset-password">
+                Change password
+              </Link>
+              <form action={signOutAction}>
+                <button type="submit" className="button">
+                  Sign out
+                </button>
+              </form>
+            </div>
+          </>
+        )}
       </section>
 
       <section id="approvals" className="card stack" aria-labelledby="approvals-heading">

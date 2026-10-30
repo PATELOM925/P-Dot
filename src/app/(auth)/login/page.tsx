@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { signInAction } from "@/features/auth/actions";
 import { AuthForm } from "@/features/auth/AuthForm";
+import { TryWithoutAccount } from "@/features/auth/TryWithoutAccount";
 import { safeNextPath } from "@/lib/safe-url";
 
 export const metadata: Metadata = { title: "Sign in · P-Dot" };
@@ -33,6 +34,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           { name: "password", label: "Password", type: "password", autoComplete: "current-password" },
         ]}
       />
+      <p className="or-divider">or</p>
+      <TryWithoutAccount className="button button-large try-trial-button" />
       <p className="muted">
         <Link href="/forgot-password">Forgot your password?</Link>
       </p>

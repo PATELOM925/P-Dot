@@ -111,6 +111,11 @@ export default async function ConnectorsPage() {
             Not available yet. They need secure account linking (OAuth) and encrypted token storage, which are still
             being planned. These cards preview the plan; nothing can be connected today.
           </p>
+          {auth.isAnonymous && (
+            <p className="alert alert-notice">
+              Create an account to connect other accounts. <Link href="/signup">Create an account</Link>
+            </p>
+          )}
         </div>
         <div className="card-grid">
           {PLANNED.map((connector) => (

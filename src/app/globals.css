@@ -2187,3 +2187,92 @@ label.button[aria-disabled="true"] {
     margin-left: auto;
   }
 }
+
+/* Trial without an account (decision 0015) */
+
+.trial-banner {
+  margin: 0;
+  padding: 0.5rem 1.5rem;
+  background: var(--butter);
+  color: var(--butter-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.trial-banner a {
+  color: inherit;
+  font-weight: 700;
+}
+
+.header-trial {
+  background: var(--butter);
+  color: var(--butter-text);
+}
+
+.try-trial {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.try-trial-button {
+  width: 100%;
+}
+
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.starter-prompts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.625rem;
+  width: 100%;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.starter-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.starter-prompt:hover {
+  border-color: var(--accent);
+}
+
+.starter-prompt-label {
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
