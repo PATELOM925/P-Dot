@@ -55,6 +55,7 @@ export function googleOutcomeMessage(value: unknown): { text: string; error: boo
       text: "Your Google connection changed in another tab while P-Dot disconnected the earlier one. The new connection stays. Disconnect again to remove it.",
       error: true,
     },
+    disconnect_unknown: { text: "We could not confirm that Google is disconnected. Check Connectors again.", error: true },
     account_required: { text: "Create an account to connect Google.", error: true },
   };
   return messages[value as GoogleOutcome];

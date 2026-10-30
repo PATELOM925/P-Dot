@@ -96,6 +96,9 @@ class FakeProposals implements ActionProposalRepository {
   async listProposals() {
     return [...this.rows.values()].map((row) => row.dto);
   }
+  async hasProposalBetween() {
+    return false;
+  }
   async getProposal(_userId: string, id: string) {
     const row = this.rows.get(id);
     return row ? { ...row.dto } : null;
@@ -358,6 +361,40 @@ describe("approving an external action", () => {
     expect(again.status).toBe(200);
     expect(await again.json()).toMatchObject({ status: "executed", verified: true });
     expect(google.events.size).toBe(1);
+  });
+
+  it("Check again during a token outage starts no new lease and calls no Calendar API", async () => {
+    const id = proposals.add(EVENT);
+    google.nextWrite = "lose_after_acting";
+    expect((await approve(id)).status).toBe(202);
+    const startedAt = proposals.rows.get(id)!.dto.executionStartedAt;
+    now += LEASE_MS + 1000;
+    google.tokenStatus = 503;
+    const reclaim = vi.spyOn(proposals, "reclaimExternal");
+    const inserts = () => google.google.calls.filter((call) => call.url.startsWith(EVENTS_URL)).length;
+    const before = inserts();
+    const check = await recover(id);
+    expect(check.status).toBe(503);
+    expect(reclaim).not.toHaveBeenCalled();
+    expect(proposals.rows.get(id)!.dto.executionStartedAt).toBe(startedAt);
+    expect(inserts()).toBe(before);
+    google.tokenStatus = 200;
+    expect((await recover(id)).status).toBe(200);
+    expect(google.events.size).toBe(1);
+  });
+
+  it("Check again without the calendar scope asks for a reconnect, not for the user's answer, and starts no lease", async () => {
+    const id = proposals.add(EVENT);
+    google.nextWrite = "lose_after_acting";
+    expect((await approve(id)).status).toBe(202);
+    now += LEASE_MS + 1000;
+    accounts.row!.scopes = ["https://www.googleapis.com/auth/gmail.send"];
+    const reclaim = vi.spyOn(proposals, "reclaimExternal");
+    const check = await recover(id);
+    expect(check.status).toBe(409);
+    expect((await check.json()).error).toMatchObject({ code: "reconnect_required", message: "Connect Google again to finish checking." });
+    expect(reclaim).not.toHaveBeenCalled();
+    expect(status(id)).toBe("executing");
   });
 
   it("does not insert into another account after a reconnect: the user answers instead", async () => {

@@ -26,6 +26,8 @@ export interface NewMemory {
 export interface MemoryRepository {
   /** Newest first. `status` filters by proposed or active; undefined returns both. */
   listMemories(userId: string, mode: Mode, status: MemoryStatus | undefined, limit: number): Promise<MemoryDTO[]>;
+  /** True when a memory the assistant suggested, in any status, links to the message. */
+  hasAssistantMemoryFrom(userId: string, messageId: string): Promise<boolean>;
   /** Returns null when no memory with that ID belongs to the user. */
   getMemory(userId: string, memoryId: string): Promise<MemoryDTO | null>;
   /** A null embedding stores no vector and no model name. */
@@ -103,6 +105,18 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
       const { data, error } = await query.order("created_at", { ascending: false }).limit(limit);
       if (error) throw new RepositoryError("listMemories");
       return (data ?? []).map(toMemory);
+    },
+
+    async hasAssistantMemoryFrom(userId, messageId) {
+      const { data, error } = await supabase
+        .from("memories")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("source_message_id", messageId)
+        .eq("source", "assistant")
+        .limit(1);
+      if (error) throw new RepositoryError("hasAssistantMemoryFrom");
+      return (data ?? []).length > 0;
     },
 
     async getMemory(userId, memoryId) {

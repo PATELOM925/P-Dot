@@ -83,8 +83,12 @@ export interface ConversationRepository {
   /** Newest first; `mode` limits the list to one side (personal or work). */
   listConversations(userId: string, limit: number, mode?: Mode): Promise<ConversationSummary[]>;
   createConversation(userId: string, title: string, mode: Mode, options?: NewConversation): Promise<ConversationSummary>;
-  /** Returns null when no conversation with that ID belongs to the user. */
-  renameConversation(userId: string, conversationId: string, title: string): Promise<ConversationSummary | null>;
+  /**
+   * Returns null when no conversation with that ID belongs to the user. With
+   * `ifTitle`, the update applies only while the stored title still equals it
+   * (the comparison is in the update), and returns null otherwise.
+   */
+  renameConversation(userId: string, conversationId: string, title: string, ifTitle?: string): Promise<ConversationSummary | null>;
   /** Returns false when no conversation with that ID belongs to the user. */
   deleteConversation(userId: string, conversationId: string): Promise<boolean>;
   /** The most recent `limit` messages, oldest first. */
@@ -92,6 +96,12 @@ export interface ConversationRepository {
   insertMessage(userId: string, message: NewMessage): Promise<MessageDTO>;
   /** Returns null when no message with that ID belongs to the user. */
   getMessage(userId: string, messageId: string): Promise<MessageDTO | null>;
+  /**
+   * The `created_at`, as stored, of the first other user message in the
+   * conversation at or after `message.createdAt`, or null. An equal time is
+   * returned as is: the caller cannot tell which of the two came first.
+   */
+  nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }): Promise<string | null>;
   findMessageByClientRequest(userId: string, key: string): Promise<KeyedMessage | null>;
   findConversationByClientRequest(
     userId: string,
@@ -133,6 +143,7 @@ const MESSAGE_COLUMNS =
 const ROUTE_COLUMNS = new Set(["model", "model_tier", "route_reason", "model_fallback"]);
 
 const keyedRow = z.object({ conversation_id: z.string(), client_request_hash: z.string() });
+const createdAtRow = z.object({ created_at: z.string() });
 
 const claimRow = z.object({
   outcome: z.enum(["claimed", "answered", "busy", "not_found"]),
@@ -264,14 +275,10 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
       return toConversation(data);
     },
 
-    async renameConversation(userId, conversationId, title) {
-      const { data, error } = await supabase
-        .from("conversations")
-        .update({ title })
-        .eq("id", conversationId)
-        .eq("user_id", userId)
-        .select(CONVERSATION_COLUMNS)
-        .maybeSingle();
+    async renameConversation(userId, conversationId, title, ifTitle) {
+      let query = supabase.from("conversations").update({ title }).eq("id", conversationId).eq("user_id", userId);
+      if (ifTitle !== undefined) query = query.eq("title", ifTitle);
+      const { data, error } = await query.select(CONVERSATION_COLUMNS).maybeSingle();
       if (error) throw new RepositoryError("renameConversation");
       return data ? toConversation(data) : null;
     },
@@ -351,6 +358,22 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
         .maybeSingle();
       if (error) throw repositoryError("getMessage", error);
       return data ? toMessage(data) : null;
+    },
+
+    async nextUserMessageAt(userId, conversationId, message) {
+      const { data, error } = await supabase
+        .from("messages")
+        .select("created_at")
+        .eq("user_id", userId)
+        .eq("conversation_id", conversationId)
+        .eq("role", "user")
+        .neq("id", message.id)
+        .gte("created_at", message.createdAt)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw repositoryError("nextUserMessageAt", error);
+      return data ? createdAtRow.parse(data).created_at : null;
     },
 
     async findMessageByClientRequest(userId, key) {

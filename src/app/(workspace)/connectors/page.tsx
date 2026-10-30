@@ -74,7 +74,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
       href: "/memory#documents",
       link: "Open your documents",
       status: status.documents,
-      can: "keep text and Markdown files you add. Replies do not use them yet.",
+      can: "keep text and Markdown files you add. P-Dot can search them when you ask about your notes, documents or files.",
     },
   ];
 
@@ -93,8 +93,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           <h2 id="built-in-heading">Built in</h2>
           <p className="muted">
             P-Dot&apos;s own lists and files, shown for {MODE_LABELS[mode]} mode. An action proposed in chat can add to a
-            list only after you approve it on its card. P-Dot does not propose actions in chat yet; that step is still
-            being built.
+            list only after you approve it on its card.
           </p>
         </div>
         <div className="card-grid">
