@@ -1,6 +1,7 @@
 // Contracts shared by the browser and the API routes. No secrets or server-only types here.
 import type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
 import type { McpServerId } from "@/lib/connectors";
+import type { DocumentMediaType } from "@/lib/document-types";
 
 export type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
 
@@ -178,7 +179,7 @@ export interface MemoryDTO {
   updatedAt: string;
 }
 
-export type DocumentMediaType = "text/plain" | "text/markdown";
+export type { DocumentMediaType };
 export type DocumentStatus = "processing" | "ready" | "failed";
 
 export interface DocumentDTO {

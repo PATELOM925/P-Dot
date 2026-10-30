@@ -29,7 +29,8 @@ export interface ToolDefinition {
 }
 
 export type ChatMessage =
-  | { role: "system" | "user"; content: string }
+  /** `images`: data URLs sent after the text as `image_url` parts (the image text route, decision 0019). */
+  | { role: "system" | "user"; content: string; images?: string[] }
   | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
   | { role: "tool"; toolCallId: string; content: string };
 
@@ -186,6 +187,15 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
         type: "function",
         function: { name: call.name, arguments: call.arguments },
       })),
+    };
+  }
+  if (message.role === "user" && message.images && message.images.length > 0) {
+    return {
+      role: "user",
+      content: [
+        { type: "text", text: message.content },
+        ...message.images.map((url) => ({ type: "image_url", image_url: { url } })),
+      ],
     };
   }
   return { role: message.role, content: message.content };
