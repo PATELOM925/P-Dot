@@ -93,6 +93,15 @@ So text from memories, documents, earlier replies and app results cannot reach a
 
 **Why the reply route reason is a durable mark without a migration.** Text from an app can reach a later turn only through a saved assistant reply: tool results live in the Worker's memory for one turn, and the history of a later turn is built from saved messages. The mark is in the same row and the same insert as that text. So no saved text from a connector turn exists without the mark. A turn that fails before its reply is saved leaves no text from the app. The route reason is fixed when the turn has a connector turned on, before the first call, so a failed or refused read still marks the reply. Limit L7 lists the proposals that a connector turn can write.
 
+### One outside source for each message
+
+Google tools (decision 0014, section 3, PR #30) and these connectors are exclusive for each message: at most one of "Search the web", "Use Google" or "Use <app>" (one or more apps) is on.
+
+- The request schema refuses a message with two of them (400). The chat UI turns the others off and disables them.
+- The conversation stop for the model-written `web_search` checks **both** route reasons, `google_request` and `connector_read`. A failed check counts as a match.
+- If PR #30 merges first, its `usedGoogle` check is extended to cover both reasons. If this code merges first, PR #30 adds `google_request` to this check.
+- A `gmail_search` query goes only to the user's own Google account, under the Google rules of decision 0014.
+
 ### Approval effects
 
 The reads are `read_sensitive` (decision 0011). The toggle for one message is the approval for the reads of that message, as decision 0014 section 3 decided for Google. Auto mode never turns a toggle on. There are no writes.
@@ -237,7 +246,7 @@ Checklist: DESIGN-CHECKLIST.md (the reviewer's copy)
 - **C5 Spend and quota:** No paid call outside chat. Connect and Disconnect take one unit of the chat quota (persistent, per user). In chat, the tool definitions are in the first hold, and each later hop holds for its real messages, which include the results (at most 12,000 characters per turn). No new provider hold.
 - **C6 Claims in docs and UI text:** The card says only what the code does: "read only", "only for a message where you turn it on". Real connects to the three apps are not verified in this PR (label in the PR body).
 - **C7 Input bounds and parsers:** Callback parameters at most 2,048 characters and one value each. Token answer zod limits above. Sealed bundle at most 12,288 characters, checked before the save. Tool arguments: query 1 to 200 characters, ID 1 to 200, days 1 to 14. Results 8,000 per call, 12,000 per turn. MCP answers 256 KB. SQL checks use `is not true` style through `check` (a NULL scope element is refused by the existing check).
-- **C8 Deploy order and grants:** Table "Deploy order". No grant change. Gate in both modes, with PR #25's repository on the new schema.
+- **C8 Deploy order and grants:** Table "Deploy order" and the entry in DEPLOYMENT.md, "Expand, then contract". No grant change. The gate runs in both modes and runs the live Google statements (the queries of `src/server/db/connected-accounts.ts` from PR #25) on the new schema.
 - **C9 Merge hygiene:** PR 1 (migration) has base `main`. PR 2 (code) has base `main` and contains PR 1; it merges after PR 1 is deployed and checked. Shared files: `CHANGELOG.md`, `tests/integration/frozen-migrations.sha256`.
 - **C10 Time:** The access expiry and the claim `until` are Worker clock times. A claim is compared with `Date.now()` at the read. The owner does not send the refresh when less than 20 seconds of its 30-second claim are left. A lease that ends while its owner still works makes the next reader mark `needs_reconnect` (ciphertext unchanged). The owner's store names `status = 'connected'`, so it matches no row, and the owner discards the new token. Its read-back also checks the status. Equal times are not used as an order. Test: the delayed-store barrier in `mcp-token-store.test.ts`.
 - **C11 Model and stream semantics:** No change to the hop loop. Connector tools run in it like the other tools. The status event shows the tool and the query.
@@ -247,6 +256,7 @@ Checklist: DESIGN-CHECKLIST.md (the reviewer's copy)
 ## Limits
 
 - **L1.** One phrase that the user typed goes to the app that the user turned on. `user_phrase` refuses a good query when the model changes a word (for example a plural). The refusal tells the model to copy a phrase from the user's message.
+- **L9.** A remaining channel to an app: the choice of the phrase (from the user's message), of the app, and of the day count for `todoist_list_tasks` (1 to 14). This is a few bits for each turn, not free text.
 - **L7.** A connector turn can write a proposed memory, task or reminder with text from an app. It needs the user's approval on its card before it is used, and the card shows the text.
 - **L8.** The result shapes for typed IDs (Notion `results[].id`, Linear `issues[].id`) are PLAUSIBLE until a real connect. If a shape differs, no ID is collected, and a fetch is refused (fail closed).
 - **L2.** Pins detect a changed definition, not a changed behavior.
