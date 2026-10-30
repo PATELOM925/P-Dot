@@ -10,6 +10,7 @@ import {
 } from "../errors";
 import { readSseData, SseFormatError } from "./sse";
 import { createThinkFilter } from "./think";
+import { createToolMarkupFilter } from "./tool-markup";
 
 // Nebius Token Factory exposes an OpenAI-compatible chat completions API.
 // https://api.tokenfactory.nebius.com/docs
@@ -337,6 +338,8 @@ export async function* streamChatCompletion(
     let finishReason: string | null = null;
     let usage: TokenUsage | null = null;
     const think = createThinkFilter();
+    // Tool-call markup written as text never reaches the user (src/server/providers/nebius/tool-markup.ts).
+    const markup = createToolMarkupFilter(options.tools);
     const toolCalls = new Map<number, PartialToolCall>();
 
     try {
@@ -361,7 +364,7 @@ export async function* streamChatCompletion(
             : null;
         }
         for (const choice of chunk.choices ?? []) {
-          const text = choice.delta?.content ? think.push(choice.delta.content) : "";
+          const text = choice.delta?.content ? markup.push(think.push(choice.delta.content)) : "";
           if (text) yield { type: "text", text };
           else if (choice.delta?.content || choice.delta?.reasoning || choice.delta?.reasoning_content) {
             yield { type: "reasoning" };
@@ -382,9 +385,11 @@ export async function* streamChatCompletion(
     if (!completed && finishReason === null) {
       throw networkError(scope, options.signal);
     }
-    const rest = think.flush();
+    const rest = markup.push(think.flush()) + markup.flush();
     if (rest) yield { type: "text", text: rest };
-    const calls = finishToolCalls(toolCalls);
+    // A call written as text counts only when the response has no real tool call.
+    const native = finishToolCalls(toolCalls);
+    const calls = native.length > 0 ? native : markup.calls();
     if (calls.length > 0) yield { type: "tool_calls", calls };
     yield { type: "finish", finishReason, usage };
   } finally {
