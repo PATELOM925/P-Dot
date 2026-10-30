@@ -280,6 +280,8 @@ describe("proposal tools", () => {
     expect(own.proposals[0]!.payload).toEqual({ kind: "create_reminder", mode: "personal", title: "Call mom", dueAt: "2026-10-31T03:30:00.000Z" });
   });
 
+  // No timer or retry runs here. The first Intl time-zone format in a worker loads the ICU zone data
+  // (about 19 ms on a laptop, 0.1 ms after that); a busy build machine stretched it past 5 s.
   it("reads 6pm tomorrow in the user's time zone and stores the reminder in UTC", async () => {
     const { deps, own, requests, waited } = setup([
       { calls: [call("propose_reminder", { title: "Call mom", dueAt: "2026-10-15T18:00:00+05:30" })] },
@@ -290,7 +292,7 @@ describe("proposal tools", () => {
 
     expect(requests[0]!.messages[0]!.content).toContain("Asia/Kolkata (UTC+05:30)");
     expect(own.proposals[0]!.payload).toMatchObject({ kind: "create_reminder", dueAt: "2026-10-15T12:30:00.000Z" });
-  });
+   }, 20_000);
 
   it("save_memory writes a proposed memory from the assistant, linked to the user message, with a vector", async () => {
     const { deps, own, spend, waited } = setup([{ calls: [call("save_memory", { content: "Allergic to peanuts" })] }, { text: "Keep it below." }]);

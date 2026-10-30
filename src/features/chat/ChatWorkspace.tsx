@@ -935,6 +935,19 @@ export function ChatWorkspace({
           >
             Conversations
           </button>
+          {sidebarCollapsed && (
+            <button
+              type="button"
+              className="icon-button desktop-only"
+              aria-label="New conversation"
+              title="New conversation"
+              onClick={startNewConversation}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+          )}
           <h1 className="chat-title">{activeTitle ?? (activeId ? "Conversation" : "New conversation")}</h1>
         </div>
 

@@ -43,6 +43,9 @@ const SCHEDULE_MEETING = /\b(?:schedule|book|set\s+up)\s+(?:a\s+|an\s+|the\s+)?(
 /** Verbs that make a message a request to write, send or change, not a question to read. */
 const WRITE = new RegExp(String.raw`\b(?:send|write|draft|compose|reply|respond|forward|book|invite|create|add|cancel|reschedule|set\s+up)\b|${SCHEDULE_VERB}`, "i");
 
+/** Verbs that ask P-Dot to send an email. */
+const SEND = /\b(?:send|reply|forward)\b/i;
+
 export interface GoogleWords {
   mail: boolean;
   calendar: boolean;
@@ -50,6 +53,8 @@ export interface GoogleWords {
   read: boolean;
   /** The message asks to schedule a meeting or a call. */
   scheduleMeeting: boolean;
+  /** The message asks to send, reply to or forward an email. */
+  send: boolean;
 }
 
 export function googleWords(message: string): GoogleWords {
@@ -62,5 +67,6 @@ export function googleWords(message: string): GoogleWords {
     calendar,
     read: (mail || calendar) && !WRITE.test(message),
     scheduleMeeting,
+    send: mail && SEND.test(message),
   };
 }

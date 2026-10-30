@@ -111,8 +111,9 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
               list only after you approve it on its card.
             </p>
             <p>
-              Your accounts: P-Dot reads an account only for a message where you allow it. In chat, turn on Use Google,
-              Notion, Linear or Todoist in the + menu for that message.
+              Your accounts: P-Dot reads an account only for one message. A message that names Notion, Linear or Todoist,
+              or asks about your email or calendar, turns that account on. You can turn an account on or off in the + menu
+              before you send.
             </p>
           </>
         }

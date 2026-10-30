@@ -9,7 +9,7 @@ import { signOutAction } from "@/features/auth/actions";
 import { WaitingApprovalsBadge } from "@/features/actions/WaitingApprovalsBadge";
 import { useKeyboardOpen } from "./useKeyboardOpen";
 
-// Same order as the top nav. Six tabs do not fit a phone, so the last two go in "More".
+// Same order as the top nav. Six tabs do not fit a phone, so Activity, Settings and Devices go in "More".
 const TABS = [
   { href: "/chat", label: "Chat" },
   { href: "/today", label: "Today" },
