@@ -142,6 +142,11 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           <p className="muted">
             Not available yet. These cards preview the plan; none of them can be connected today.
           </p>
+          {auth.isAnonymous && (
+            <p className="alert alert-notice">
+              Create an account to connect other accounts. <Link href="/signup">Create an account</Link>
+            </p>
+          )}
         </div>
         <div className="card-grid">
           {PLANNED.map((connector) => (

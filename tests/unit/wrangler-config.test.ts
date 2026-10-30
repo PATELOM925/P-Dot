@@ -55,7 +55,7 @@ describe("wrangler.jsonc", () => {
       // The values in wrangler.jsonc are the code defaults.
       expect(parsed.routing).toEqual(getAssistantConfig({ NEBIUS_API_KEY: "k", NODE_ENV: "test" }).routing);
       expect(parsed.spend).toEqual({
-        nebius: { day: 1_000_000, period: 20_000_000, userDay: 250_000 },
+        nebius: { day: 10_000_000, period: 25_000_000, userDay: 500_000 },
         tavily: { day: 40, period: 800, userDay: 10 },
       });
     }
