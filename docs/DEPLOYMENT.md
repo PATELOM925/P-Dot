@@ -170,6 +170,58 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
 5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Done on 2026-10-19. The free plan does not allow email template changes without custom SMTP, so the templates from the README "Setup" section are not applied yet.
 6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP. On 2026-10-19 "Confirm email" was turned off for the hackathon, so sign-up works without an email. Password reset emails still reach only team members.
 
+7. **Trial without an account** ([decision 0015](decisions/0015-judge-demo-mode.md)). Not done yet. Until it is done, "Try P-Dot now, no account" shows "Trying P-Dot without an account is off right now." and nothing else changes.
+   - Turn it on: Supabase dashboard → Authentication → Sign In / Providers → "Allow anonymous sign-ins" → On → Save.
+   - Do not turn on CAPTCHA for Auth while the trial is in use. The trial button sends no CAPTCHA token, so every trial would fail. If you need CAPTCHA, turn the trial off.
+   - Check: open the live site in a private window, click "Try P-Dot now, no account", and send one message. The yellow trial banner shows on each page.
+   - Turn it off after judging with the same switch. Trial users that exist keep working until their session ends.
+
+### Abuse limits for trials
+
+A trial user is a real user in `auth.users` with `is_anonymous = true`. These limits apply:
+
+| Limit | Value | Where |
+| --- | --- | --- |
+| New trials for each public IP address | 30 each hour (Supabase default, configurable) | Supabase → Authentication → Rate Limits → "Anonymous sign-ins". The browser makes the call, so Supabase counts the visitor's IP, not the Worker's. Judges on one venue network share one limit. A person with many IPs gets more. |
+| Chat requests for each trial user | The lower of `CHAT_REQUESTS_PER_WINDOW` and 20 | `src/server/trial-limits.ts` |
+| Nebius spend for each trial user, each UTC day | The lower of `NEBIUS_USER_DAILY_CAP_USD` and $0.15 | `src/server/trial-limits.ts`, [decision 0006](decisions/0006-global-spend-guard.md) |
+| Tavily credits for each trial user, each UTC day | The lower of `TAVILY_USER_DAILY_CREDITS` and 5 | `src/server/trial-limits.ts` |
+| Nebius and Tavily spend for all users together | The global daily and total caps, unchanged | `wrangler.jsonc`, decision 0006 |
+
+The per-user limits are for fair use. They do not stop abuse, because one person can start many trials:
+
+- **Real use through the app.** Many trials can use up the global daily cap ($1.00). Then chat refuses every user until the next UTC day. Over many days they can use up the all-time cap ($20.00). That does not end on its own: add credit and reset the total counter (decision 0006, "How to change the caps").
+- **Direct RPC calls.** Any signed-in user, also a trial user, can call `reserve_provider_spend` with the public key and never settle (decision 0006, "Known limit"). This uses up the counters with no provider call and no charge. Turn the trial off, delete the trial users (below), then reset the counters in the SQL editor.
+
+In both cases the owner's money stays safe, because the global caps hold. The cost is loss of service. If it happens during judging, lower the anonymous sign-in limit, or turn the trial off.
+
+### Clean up old trial users (owner only, by 2027-01-31)
+
+Supabase does not delete anonymous users on its own. Sign-out, or a lost browser cookie, ends access to a trial, but it does not delete the data. After judging, and by 2027-01-31, turn the trial off and delete old trial users in the SQL editor.
+
+1. Choose a cutoff time, for example the end of judging. Count the trial users older than it:
+
+   ```sql
+   select count(*)
+   from auth.users
+   where is_anonymous is true
+     and created_at < '2026-11-15T00:00:00Z';
+   ```
+
+2. If the number looks right, delete them with the same `where`:
+
+   ```sql
+   delete from auth.users
+   where is_anonymous is true
+     and created_at < '2026-11-15T00:00:00Z';
+   ```
+
+- The delete removes each trial user's app rows by cascade (`on delete cascade`): conversations, messages, memories, documents, tasks, reminders, proposals, the action log, context records, usage windows and spend reservations.
+- It does not change `spend_counters`, so the global spend totals stay.
+- It never selects an account: `is_anonymous is true` matches only trials.
+- Backups keep copies until they expire. A copied access token stays valid until it expires (decision 0001).
+- `tests/integration/trial-cleanup.test.ts` runs this SQL on every migration.
+
 ## Manual deploy (owner only, fallback)
 
 Use this only when Workers Builds is not available. You need macOS, Linux or WSL and `npx wrangler login`.
