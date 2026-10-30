@@ -10,7 +10,6 @@ A personal assistant with a web interface, a Cloudflare Workers backend, Nebius 
 P-Dot is entered in the Nebius x NVIDIA Global AI Hackathon, **Personal AI Track**. The project started on 2026-10-09, inside the submission period.
 
 - Live app: https://pdot.iampatelom.com
-- Demo video: `<YOUTUBE LINK>`
 - License: Apache 2.0 ([LICENSE](LICENSE))
 
 ### How P-Dot uses NVIDIA Nemotron through Nebius Token Factory
@@ -21,14 +20,14 @@ Every chat reply is a runtime call to the Token Factory chat completions API (`h
 | --- | --- | --- | --- | --- |
 | fast | `nvidia/Nemotron-3_5-Lightning`, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/nemotron-3-super-120b-a12b` | Everyday messages | Off | 1,024 |
 | standard | `nvidia/nemotron-3-super-120b-a12b`, `nvidia/Nemotron-3_5-Lightning` | One reasoning signal (planning, analysis, math, code), long messages, long conversations, web search results | Off | 2,048 |
-| heavy | `nvidia/Nemotron-3-Ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b` | Multi-step requests and "Think harder" | On, 1,024-token budget | 4,096 |
+| heavy | `nvidia/Nemotron-3-Ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b` | Multi-step requests, one reasoning signal in a long message, and "Think harder" | On, 1,024-token budget | 4,096 |
 | vision | `nvidia/Nemotron-3.5-Super-VL` | Image input (router and tier ready; the chat API does not take images yet) | Off | 1,024 |
 
 The executor ([`src/server/assistant/executor.ts`](src/server/assistant/executor.ts)) adds retries with backoff, a move to the next model on 404, a first-token timeout per tier, one deadline per reply, a hedge on the fast tier after 1.5 s, and a circuit breaker. It never switches models after the first visible token. Under each reply, the chat shows the model and the reason (for example "Nemotron 3 Super · multi-step request"), and "What was sent" shows the model ID, the context size, memories, documents, web search use and tokens.
 
 Embeddings for memories and documents use `Qwen/Qwen3-Embedding-8B` on the same Token Factory key (1,024 dimensions), stored in Supabase with pgvector.
 
-A tool-calling loop (in review, landing 2026-10-30) on the same tiers: Nemotron calls `web_search`, `search_documents` and `search_memories`, and proposes `propose_task`, `propose_reminder` and `save_memory`, which become approval cards. Nemotron also writes chat titles.
+In review ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22)): a tool-calling loop on the same tiers, with `web_search` as the first tool. Planned: `search_documents`, `search_memories`, and the `propose_task`, `propose_reminder` and `save_memory` tools, which become approval cards, and chat titles written by Nemotron.
 
 ### Where Token Factory sped up the work
 
@@ -36,11 +35,11 @@ A tool-calling loop (in review, landing 2026-10-30) on the same tiers: Nemotron 
 - **One key for the whole family.** Five Nemotron models and an embedding model use the same key and base URL. A fallback chain is a list of model IDs in config, with no new code.
 - **Public prices.** The model catalog with prices let us build the spend guard's price table ([`src/server/providers/nebius/pricing.ts`](src/server/providers/nebius/pricing.ts)) and refuse any model without a price.
 - **Reasoning control per request.** `chat_template_kwargs.enable_thinking` and `thinking_token_budget` let each tier choose reasoning on or off without a different model.
-- **Fast first tokens.** Measured through the executor on 2026-10-19 (small sample): 431 to 467 ms on Lightning, 502 to 530 ms on Super, 559 to 869 ms on Ultra with reasoning.
+- **Fast first tokens.** Measured through the executor on 2026-10-19 (small sample): 431 to 467 ms on Lightning, 502 to 530 ms on Super, 559 to 869 ms on Ultra with reasoning (a 200-token reasoning budget for the test).
 
 ### Tavily
 
-When the user turns on web search (the "+" menu in chat), the server calls the Tavily Search API ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts)) with basic depth and up to 5 results. Excerpts are cut to 1,200 characters and unsafe URLs are dropped. Results go to Nemotron inside a delimited `<web_search_results>` block marked as untrusted, and the reply lists the sources with links. A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. Tavily credits have their own caps in the spend guard ([decision 0006](docs/decisions/0006-global-spend-guard.md)). Nemotron can also call `web_search` as a tool on its own (in review, landing 2026-10-30).
+When the user turns on web search (the "+" menu in chat), the server calls the Tavily Search API ([`src/server/providers/tavily/client.ts`](src/server/providers/tavily/client.ts)) with basic depth and up to 5 results. Excerpts are cut to 1,200 characters and unsafe URLs are dropped. Results go to Nemotron inside a delimited `<web_search_results>` block marked as untrusted, and the reply lists the sources with links. A failed or empty search, or a reached search budget, is shown to the user and told to the model, so it does not invent sources. Tavily credits have their own caps in the spend guard ([decision 0006](docs/decisions/0006-global-spend-guard.md)). In review ([PR #22](https://github.com/PATELOM925/P-Dot/pull/22)): with the toggle on, Nemotron calls `web_search` as a tool and picks the query itself.
 
 ### Other Nebius tools
 
@@ -305,6 +304,8 @@ Short version:
 Done and passing locally: lint, type-check, the unit tests (request validation, auth and ownership boundaries at the route level, rename, modes and tasks, provider error/timeout handling, prompt-injection delimiting, search-off/search-failure behavior, retry and persistence rules, spend guard holds, settles and refusals), production build, and the 6 row-level-security tests against a local Supabase database (including rename and tasks privacy, which need the `SUPABASE_TEST_*` variables described below).
 
 Deployed and checked on 2026-10-19: `/api/health` (auth configured, inference not configured), `/`, `/login`, `/signup` return 200, `/chat` redirects to `/login` when signed out, and `POST /api/chat` without a session returns 401. No CPU-limit or runtime errors in the Worker logs.
+
+Checked on 2026-10-30: `/api/health` reports auth, inference and web search configured.
 
 Spend guard SQL (2026-10-19): the migration was run on an in-memory Postgres (PGlite) with stand-ins for the Supabase roles and `auth.uid()`. Checked: hold and settle, settle once, no settle by another user, no negative or above-hold settle, parameter bounds, day, total and per-user caps, no direct table access for `anon` or `authenticated`. Not checked there: many requests at the same time (row locks).
 
