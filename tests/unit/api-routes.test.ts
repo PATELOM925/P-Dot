@@ -392,6 +392,8 @@ describe("POST /api/chat when one write fails", () => {
         expect(labels, label).toContain(label);
       }
     },
+    // More than 1,000 runs each; under a full parallel `npm test` this takes longer than the 5 s default.
+    60_000,
   );
 
   it.each([
