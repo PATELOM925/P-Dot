@@ -34,8 +34,8 @@ export interface OwnDataServices {
   /** Holds spend for each batch (createBudgetedEmbedder). */
   embedder: Embedder;
   retrieval: RetrievalRepository;
-  memories: Pick<MemoryRepository, "createMemory" | "listMemories">;
-  proposals: Pick<ActionProposalRepository, "createProposal" | "listProposals">;
+  memories: Pick<MemoryRepository, "createMemory" | "listMemoriesFromMessage">;
+  proposals: Pick<ActionProposalRepository, "createProposal" | "listTurnProposals">;
 }
 
 /** Server services a tool may use. AssistantDeps has all of them. */
@@ -56,6 +56,8 @@ export interface ToolContext {
   mode: Mode;
   conversationId: string;
   userMessageId: string;
+  /** When the user message was saved (database time). A turn's writes come at or after it. */
+  userMessageCreatedAt: string;
   signal: AbortSignal;
   /** Web sources the turn already has, in citation order. A tool adds only new URLs. */
   sources: readonly WebSearchResult[];

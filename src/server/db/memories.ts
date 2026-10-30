@@ -26,6 +26,8 @@ export interface NewMemory {
 export interface MemoryRepository {
   /** Newest first. `status` filters by proposed or active; undefined returns both. */
   listMemories(userId: string, mode: Mode, status: MemoryStatus | undefined, limit: number): Promise<MemoryDTO[]>;
+  /** Every memory linked to one message, oldest first, in any status. */
+  listMemoriesFromMessage(userId: string, messageId: string): Promise<MemoryDTO[]>;
   /** Returns null when no memory with that ID belongs to the user. */
   getMemory(userId: string, memoryId: string): Promise<MemoryDTO | null>;
   /** A null embedding stores no vector and no model name. */
@@ -102,6 +104,17 @@ export function createMemoryRepository(supabase: SupabaseClient): MemoryReposito
       if (status) query = query.eq("status", status);
       const { data, error } = await query.order("created_at", { ascending: false }).limit(limit);
       if (error) throw new RepositoryError("listMemories");
+      return (data ?? []).map(toMemory);
+    },
+
+    async listMemoriesFromMessage(userId, messageId) {
+      const { data, error } = await supabase
+        .from("memories")
+        .select(MEMORY_COLUMNS)
+        .eq("user_id", userId)
+        .eq("source_message_id", messageId)
+        .order("created_at", { ascending: true });
+      if (error) throw new RepositoryError("listMemoriesFromMessage");
       return (data ?? []).map(toMemory);
     },
 

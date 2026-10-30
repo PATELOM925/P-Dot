@@ -255,7 +255,7 @@ describe("POST /api/chat when one write fails", () => {
     faults.wrap(quota, ["consume"]);
     faults.wrap(contextRecords, ["insertContextRecord"]);
     const tools = variant === "tools";
-    const own = new FakeOwnData(ALICE, testEmbedder(spend));
+    const own = new FakeOwnData(ALICE, testEmbedder(spend), () => repo.messages.at(-1)?.createdAt ?? "2026-10-14T12:00:00.000Z");
     const ownData = own.services();
     const model = toolModel();
     if (tools) {
@@ -263,9 +263,9 @@ describe("POST /api/chat when one write fails", () => {
       // Its spend writes are swept through FakeSpend; the call itself can only fail.
       faults.wrap(ownData.embedder, ["embed"], { label: "Embedder", read: true });
       faults.wrap(ownData.retrieval, ["matchMemories", "matchDocumentChunks"], { label: "Retrieval", read: true });
-      faults.wrap(ownData.proposals, ["listProposals"], { label: "Proposals", read: true });
+      faults.wrap(ownData.proposals, ["listTurnProposals"], { label: "Proposals", read: true });
       faults.wrap(ownData.proposals, ["createProposal"], { label: "Proposals" });
-      faults.wrap(ownData.memories, ["listMemories"], { label: "Memories", read: true });
+      faults.wrap(ownData.memories, ["listMemoriesFromMessage"], { label: "Memories", read: true });
       faults.wrap(ownData.memories, ["createMemory"], { label: "Memories" });
     }
     const fake = fakeDeps({ repo, spend, quota, contextRecords, ...(tools ? { ownData, provider: model.provider } : {}) });

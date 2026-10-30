@@ -11,6 +11,10 @@ const BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 type Step = { text?: string; calls?: ToolCall[] };
 
+/**
+ * Answers by hop: the step is the number of tool rounds in the request so far.
+ * So a new turn or a retry starts again at the first step.
+ */
 function scripted(steps: Step[], onCall?: (request: ModelCallRequest) => void) {
   const requests: ModelCallRequest[] = [];
   const provider: ModelProvider = {
@@ -18,7 +22,8 @@ function scripted(steps: Step[], onCall?: (request: ModelCallRequest) => void) {
     stream(request) {
       requests.push(request);
       onCall?.(request);
-      const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
+      const hop = request.messages.filter((m) => m.role === "assistant" && m.toolCalls?.length).length;
+      const step = steps[Math.min(hop, steps.length - 1)]!;
       return (async function* (): AsyncGenerator<CompletionChunk> {
         if (step.text) yield { type: "text", text: step.text };
         if (step.calls) {
@@ -36,8 +41,8 @@ const call = (name: string, args: unknown, id = "c1"): ToolCall => ({ id, name, 
 
 function setup(steps: Step[], options: { repo?: MemoryRepository } = {}) {
   const spend = new FakeSpend();
-  const own = new FakeOwnData(ALICE, testEmbedder(spend));
   const repo = options.repo ?? new MemoryRepository();
+  const own = new FakeOwnData(ALICE, testEmbedder(spend), () => repo.messages.at(-1)?.createdAt ?? "2026-10-14T12:00:00.000Z");
   const contextRecords = new FakeContextRecords();
   const { provider, requests } = scripted(steps);
   const fake = fakeDeps({ repo, spend, provider, contextRecords, ownData: own.services() });
@@ -191,7 +196,7 @@ describe("search tools over the user's own data", () => {
 
 describe("proposal tools", () => {
   it("propose_task writes a waiting proposal with the conversation before done", async () => {
-    const own = new FakeOwnData(ALICE, testEmbedder(new FakeSpend()));
+    const own = new FakeOwnData(ALICE, testEmbedder(new FakeSpend()), () => "2026-10-30T12:00:00.000Z");
     let proposalsAtDone = -1;
     const { provider } = scripted([{ calls: [call("propose_task", { title: "Pay the invoice" })] }, { text: "Approve it below." }]);
     const { deps, waited } = fakeDeps({ provider, ownData: own.services() });
@@ -251,7 +256,7 @@ describe("proposal tools", () => {
 
   it("Retry reply after a failed save makes no second proposal or memory", async () => {
     const repo = new MemoryRepository();
-    const { deps, own, waited } = setup(
+    const { deps, own, requests, waited } = setup(
       [
         { calls: [call("propose_task", { title: "Book flights" }, "c1"), call("save_memory", { content: "Flies from BOM" }, "c2")] },
         { text: "Done." },
@@ -269,10 +274,52 @@ describe("proposal tools", () => {
       request: { action: "retry", conversationId: first.turn.conversation.id, webSearch: false },
     });
     if (!retry.ok) throw new Error(`refused: ${retry.code}`);
-    // The scripted provider repeats its steps from the start for the retry.
+    await collect(streamChatTurn(deps, retry.turn, new AbortController().signal));
+
+    // The retry called the write tools again, and they found this turn's rows.
+    const toolRounds = requests.filter((r) => r.tools && r.messages.at(-1)?.role === "user");
+    expect(toolRounds).toHaveLength(2);
+    expect(own.proposals).toHaveLength(1);
+    expect(own.memories).toHaveLength(1);
+  });
+
+  it("a later turn that asks for the same task or memory again gets a new card", async () => {
+    const repo = new MemoryRepository();
+    const { deps, own, waited } = setup(
+      [{ calls: [call("propose_task", { title: "Buy milk" }, "c1"), call("save_memory", { content: "Drinks oat milk" }, "c2")] }, { text: "Done." }],
+      { repo },
+    );
+    const first = await runTurn(deps, { action: "send", message: "Remember that I drink oat milk and add a task to buy milk", webSearch: false }, waited);
+
+    await runTurn(
+      deps,
+      { action: "send", conversationId: first.turn.conversation.id, message: "Remember that I drink oat milk, add a task to buy milk", webSearch: false },
+      waited,
+    );
+
+    expect(own.proposals.map((p) => p.payload)).toEqual([
+      { kind: "create_task", mode: "personal", title: "Buy milk" },
+      { kind: "create_task", mode: "personal", title: "Buy milk" },
+    ]);
+    expect(own.memories).toHaveLength(2);
+  });
+
+  it("counts a decided proposal of this turn as written: Retry reply after a browser approval makes no new card", async () => {
+    const repo = new MemoryRepository();
+    const { deps, own, waited } = setup([{ calls: [call("propose_task", { title: "Pay rent" })] }, { text: "Done." }], { repo });
+    repo.failInsertForRole = "assistant";
+    const first = await runTurn(deps, { action: "send", message: "Add a task to pay rent", webSearch: false }, waited);
+    own.proposals[0]!.status = "executed";
+
+    repo.failInsertForRole = null;
+    const retry = await prepareChatTurn(deps, {
+      userId: ALICE,
+      requestId: "r2",
+      request: { action: "retry", conversationId: first.turn.conversation.id, webSearch: false },
+    });
+    if (!retry.ok) throw new Error(retry.code);
     await collect(streamChatTurn(deps, retry.turn, new AbortController().signal));
 
     expect(own.proposals).toHaveLength(1);
-    expect(own.memories).toHaveLength(1);
   });
 });

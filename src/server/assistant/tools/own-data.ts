@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { MAX_MEMORY_CHARS, MAX_REMINDER_TITLE_CHARS, MAX_TASK_CHARS, PROPOSAL_DEDUPE_LIMIT, RETRIEVAL_MATCH_COUNT, SEARCH_QUERY_CHARS } from "@/lib/limits";
+import { MAX_MEMORY_CHARS, MAX_REMINDER_TITLE_CHARS, MAX_TASK_CHARS, RETRIEVAL_MATCH_COUNT, SEARCH_QUERY_CHARS } from "@/lib/limits";
 import type { ActionPayload } from "@/types/api";
 import { formatDocumentMatches, formatMemories } from "../prompt";
 import type { OwnDataServices, ToolContext, ToolSpec } from "./registry";
@@ -62,16 +62,17 @@ export const searchMemoriesTool: ToolSpec<z.infer<typeof query>> = {
 };
 
 /**
- * Writes a proposal unless the same conversation already has a waiting one
- * with the same payload, so "Retry reply" after a failed save does not make a
- * second card. There is no message link on proposals yet, so the check is by
- * conversation and payload.
+ * Writes a proposal unless this turn already wrote one with the same payload,
+ * so "Retry reply" after a failed save makes no second card. A turn is the
+ * conversation from its user message on: proposals have no message link yet,
+ * so the check reads every proposal of the conversation created at or after
+ * the user message, in any status. A later turn that asks again gets a card.
  */
 async function propose(context: ToolContext, payload: ActionPayload, summary: string): Promise<"created" | "exists"> {
   const { proposals } = data(context);
-  const waiting = await proposals.listProposals(context.userId, "proposed", PROPOSAL_DEDUPE_LIMIT);
+  const earlier = await proposals.listTurnProposals(context.userId, context.conversationId, context.userMessageCreatedAt);
   const same = JSON.stringify(payload);
-  if (waiting.some((p) => p.conversationId === context.conversationId && JSON.stringify(p.payload) === same)) return "exists";
+  if (earlier.some((p) => JSON.stringify(p.payload) === same)) return "exists";
   await proposals.createProposal(context.userId, { conversationId: context.conversationId, payload, summary });
   return "created";
 }
@@ -138,8 +139,9 @@ export const saveMemoryTool: ToolSpec<z.infer<typeof memoryArgs>> = {
   statusQuery: () => undefined,
   async run({ content }, context) {
     const { memories, embedder } = data(context);
-    const waiting = await memories.listMemories(context.userId, context.mode, "proposed", PROPOSAL_DEDUPE_LIMIT);
-    if (waiting.some((m) => m.sourceMessageId === context.userMessageId && m.content === content)) {
+    // Memories link to their message, so the check reads only this turn's.
+    const earlier = await memories.listMemoriesFromMessage(context.userId, context.userMessageId);
+    if (earlier.some((m) => m.source === "assistant" && m.content === content)) {
       return { content: "This memory is already waiting for the user. Nothing new was added." };
     }
     // The vector is written now, so a memory the user keeps without editing can be found.

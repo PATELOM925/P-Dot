@@ -67,8 +67,6 @@ export const REMINDER_LIST_LIMIT = 200;
 export const MAX_ACTION_SUMMARY_CHARS = 300;
 export const ACTION_LIST_LIMIT = 100;
 export const ACTION_LOG_LIMIT = 200;
-/** Waiting proposals or suggested memories read to avoid a second card for the same action. */
-export const PROPOSAL_DEDUPE_LIMIT = 100;
 /** Active memories put in each chat turn (decision 0013). */
 export const MEMORY_CONTEXT_COUNT = 4;
 /** Matches returned by similarity search (the database caps it at 20). */

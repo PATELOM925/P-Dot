@@ -17,7 +17,7 @@ import type { OwnDataServices } from "@/server/assistant/tools";
 import type { DocumentChunkMatch, MemoryMatch } from "@/server/db/retrieval";
 import type { NewMemory } from "@/server/db/memories";
 import type { NewActionProposal } from "@/server/db/action-proposals";
-import type { ActionProposalDTO, ActionStatus, MemoryDTO, MemoryStatus } from "@/types/api";
+import type { ActionProposalDTO, MemoryDTO } from "@/types/api";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
@@ -60,8 +60,11 @@ export class MemoryRepository implements ConversationRepository {
     return `00000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`;
   }
 
+  /** Rows saved with a server-picked ID still get a later time than the rows before them. */
+  private ticks = 0;
+
   private timestamp(): string {
-    return new Date(Date.UTC(2026, 9, 14, 12, 0, this.counter)).toISOString();
+    return new Date(Date.UTC(2026, 9, 14, 12, 0, this.counter + this.ticks)).toISOString();
   }
 
   async getConversation(userId: string, id: string) {
@@ -94,9 +97,9 @@ export class MemoryRepository implements ConversationRepository {
     return { id: conversation.id, title, mode, updatedAt: conversation.updatedAt };
   }
 
-  async renameConversation(userId: string, id: string, title: string) {
+  async renameConversation(userId: string, id: string, title: string, ifTitle?: string) {
     const found = this.conversations.find((c) => c.id === id && c.userId === userId);
-    if (!found) return null;
+    if (!found || (ifTitle !== undefined && found.title !== ifTitle)) return null;
     found.title = title;
     return { id: found.id, title: found.title, mode: found.mode, updatedAt: found.updatedAt };
   }
@@ -132,6 +135,7 @@ export class MemoryRepository implements ConversationRepository {
         throw new Error("duplicate key value violates unique constraint messages_reply_to_key");
       }
     }
+    if (message.id) this.ticks += 1;
     const stored: StoredMessage = {
       id: message.id ?? this.nextId(),
       role: message.role,
@@ -358,8 +362,15 @@ export class FakeOwnData {
   searches: { kind: "memories" | "documents"; mode: Mode; count: number }[] = [];
   failMatch = false;
   private counter = 0;
-  /** Set by the service; the user whose session the calls run with. */
-  constructor(readonly userId: string, readonly embedder: OwnDataServices["embedder"]) {}
+  /**
+   * `clock` gives the database time of a new row. Pass the conversation
+   * repository's latest message time, so rows sort with the messages.
+   */
+  constructor(
+    readonly userId: string,
+    readonly embedder: OwnDataServices["embedder"],
+    readonly clock: () => string = () => "2026-10-30T12:00:00.000Z",
+  ) {}
 
   private id(): string {
     this.counter += 1;
@@ -390,15 +401,17 @@ export class FakeOwnData {
             status: memory.status,
             source: memory.source,
             sourceMessageId: memory.sourceMessageId,
-            createdAt: "2026-10-30T12:00:00.000Z",
-            updatedAt: "2026-10-30T12:00:00.000Z",
+            createdAt: this.clock(),
+            updatedAt: this.clock(),
             userId,
           };
           this.memories.push(row);
           return row;
         },
-        listMemories: async (userId: string, mode: Mode, status: MemoryStatus | undefined) =>
-          this.memories.filter((m) => m.userId === userId && m.mode === mode && (!status || m.status === status)),
+        listMemoriesFromMessage: async (userId: string, messageId: string) =>
+          this.memories
+            .filter((m) => m.userId === userId && m.sourceMessageId === messageId)
+            .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
       },
       proposals: {
         createProposal: async (userId: string, proposal: NewActionProposal) => {
@@ -409,15 +422,17 @@ export class FakeOwnData {
             summary: actionSummarySchema.parse(proposal.summary),
             status: "proposed" as const,
             result: null,
-            createdAt: "2026-10-30T12:00:00.000Z",
+            createdAt: this.clock(),
             decidedAt: null,
             userId,
           } as ActionProposalDTO & { userId: string };
           this.proposals.push(row);
           return row;
         },
-        listProposals: async (userId: string, status: ActionStatus | undefined) =>
-          this.proposals.filter((p) => p.userId === userId && (!status || p.status === status)),
+        listTurnProposals: async (userId: string, conversationId: string, since: string) =>
+          this.proposals
+            .filter((p) => p.userId === userId && p.conversationId === conversationId && p.createdAt >= since)
+            .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
       },
     };
   }
