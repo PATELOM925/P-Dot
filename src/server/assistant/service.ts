@@ -745,6 +745,7 @@ async function* runChatTurn(
             mode: turn.conversation.mode,
             conversationId: turn.conversation.id,
             userMessageId: turn.userMessage.id,
+            userMessageCreatedAt: turn.userMessage.createdAt,
             signal: toolSignal,
             sources,
           });
@@ -896,7 +897,8 @@ async function* makeTitle(
   }
   const title = cleanTitle(text);
   if (!title || signal.aborted) return;
-  const renamed = await deps.repo.renameConversation(turn.userId, turn.conversation.id, title).catch(() => {
+  // Only while the title is still the one this turn started with: a rename by the user wins.
+  const renamed = await deps.repo.renameConversation(turn.userId, turn.conversation.id, title, turn.conversation.title).catch(() => {
     deps.log("warn", "title_save_failed", logBase);
     return null;
   });

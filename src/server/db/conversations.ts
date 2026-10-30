@@ -83,8 +83,12 @@ export interface ConversationRepository {
   /** Newest first; `mode` limits the list to one side (personal or work). */
   listConversations(userId: string, limit: number, mode?: Mode): Promise<ConversationSummary[]>;
   createConversation(userId: string, title: string, mode: Mode, options?: NewConversation): Promise<ConversationSummary>;
-  /** Returns null when no conversation with that ID belongs to the user. */
-  renameConversation(userId: string, conversationId: string, title: string): Promise<ConversationSummary | null>;
+  /**
+   * Returns null when no conversation with that ID belongs to the user. With
+   * `ifTitle`, the update applies only while the stored title still equals it
+   * (the comparison is in the update), and returns null otherwise.
+   */
+  renameConversation(userId: string, conversationId: string, title: string, ifTitle?: string): Promise<ConversationSummary | null>;
   /** Returns false when no conversation with that ID belongs to the user. */
   deleteConversation(userId: string, conversationId: string): Promise<boolean>;
   /** The most recent `limit` messages, oldest first. */
@@ -264,14 +268,10 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
       return toConversation(data);
     },
 
-    async renameConversation(userId, conversationId, title) {
-      const { data, error } = await supabase
-        .from("conversations")
-        .update({ title })
-        .eq("id", conversationId)
-        .eq("user_id", userId)
-        .select(CONVERSATION_COLUMNS)
-        .maybeSingle();
+    async renameConversation(userId, conversationId, title, ifTitle) {
+      let query = supabase.from("conversations").update({ title }).eq("id", conversationId).eq("user_id", userId);
+      if (ifTitle !== undefined) query = query.eq("title", ifTitle);
+      const { data, error } = await query.select(CONVERSATION_COLUMNS).maybeSingle();
       if (error) throw new RepositoryError("renameConversation");
       return data ? toConversation(data) : null;
     },

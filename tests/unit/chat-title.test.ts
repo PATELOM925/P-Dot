@@ -94,6 +94,33 @@ describe("chat titles made by the model", () => {
     expect(types(second.events).at(-1)).toBe("done");
   });
 
+  it("keeps a rename the user made during the reply, and sends no title event", async () => {
+    const repo = new MemoryRepository();
+    let renamedByUser = false;
+    const model: ModelProvider = {
+      name: "nebius",
+      stream(request) {
+        const isTitle = request.maxOutputTokens === TITLE_MAX_OUTPUT_TOKENS;
+        return (async function* (): AsyncGenerator<CompletionChunk> {
+          if (!isTitle && !renamedByUser) {
+            // The user renames the conversation in another tab while the reply streams.
+            renamedByUser = true;
+            await repo.renameConversation(ALICE, repo.conversations[0]!.id, "My Goa plan");
+          }
+          yield { type: "text", text: isTitle ? "Weekend Trip Plan" : "Here is a plan." };
+          yield { type: "finish", finishReason: "stop", usage: { promptTokens: 20, completionTokens: 4 } };
+        })();
+      },
+    };
+    const { deps, waited } = fakeDeps({ repo, provider: model });
+    deps.titles = true;
+
+    const { events } = await run(deps, { action: "send", message: "Help me plan a weekend trip to Goa", webSearch: false }, waited);
+
+    expect(types(events)).not.toContain("title");
+    expect(repo.conversations[0]!.title).toBe("My Goa plan");
+  });
+
   it("cleans the model's title", () => {
     expect(cleanTitle("Title: **Tokyo Trip**")).toBe("Tokyo Trip");
     expect(cleanTitle("“Budget Review.”\nMore text")).toBe("Budget Review");
