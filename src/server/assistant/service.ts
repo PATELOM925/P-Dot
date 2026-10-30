@@ -306,7 +306,7 @@ export async function prepareChatTurn(
     const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
     if (request.action === "send" && !answering) pendingHistory.push({ role: "user", content: request.message });
     // Google (decision 0014, section 3): the connection read comes after the claim and before the hold.
-    const google = await googleForTurn(deps, userId, request.useGoogle === true);
+    const google = await googleForTurn(deps, userId, request.useGoogle === true, pendingHistory.at(-1)?.content ?? "");
     const googleFlags = google?.flags ?? null;
     // The schema refuses two sources in one request; this keeps the server safe also without it.
     const searchWanted = request.webSearch && deps.search !== null && googleFlags === null && requestedApps.length === 0;

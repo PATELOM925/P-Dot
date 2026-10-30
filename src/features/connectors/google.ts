@@ -9,7 +9,7 @@ export type GoogleCardState =
   | { kind: "load_failed" }
   | { kind: "not_connected" }
   | { kind: "needs_reconnect"; email: string }
-  | { kind: "connected"; email: string; access: string[] };
+  | { kind: "connected"; email: string; access: string[]; missing: string[] };
 
 export function googleCardState(
   configured: boolean,
@@ -22,14 +22,21 @@ export function googleCardState(
   if (!connection) return { kind: "not_connected" };
   if (connection.status === "needs_reconnect") return { kind: "needs_reconnect", email: connection.email };
   const scopes = new Set<string>(connection.scopes);
-  const access = [
-    scopes.has(GMAIL_READ_SCOPE) ? "Read and search your Gmail, only for a message where you turn on Google." : null,
-    scopes.has(GMAIL_SEND_SCOPE) ? "Send an email, only after you approve it." : null,
-    scopes.has(CALENDAR_SCOPE) || scopes.has(CALENDAR_ALL_SCOPE)
-      ? "Read your calendar, and add an event only after you approve it."
-      : null,
-  ].filter((line): line is string => line !== null);
-  return { kind: "connected", email: connection.email, access };
+  const parts = [
+    { allowed: scopes.has(GMAIL_READ_SCOPE), can: "Read and search your Gmail.", off: "Read Gmail: not allowed" },
+    { allowed: scopes.has(GMAIL_SEND_SCOPE), can: "Send an email, only after you approve it.", off: "Send email: not allowed" },
+    {
+      allowed: scopes.has(CALENDAR_SCOPE) || scopes.has(CALENDAR_ALL_SCOPE),
+      can: "Read your calendar, and add an event only after you approve it.",
+      off: "Calendar: not allowed",
+    },
+  ];
+  return {
+    kind: "connected",
+    email: connection.email,
+    access: parts.filter((part) => part.allowed).map((part) => part.can),
+    missing: parts.filter((part) => !part.allowed).map((part) => part.off),
+  };
 }
 
 /** The message after a Connect or Disconnect redirect. Error outcomes use role="alert". */

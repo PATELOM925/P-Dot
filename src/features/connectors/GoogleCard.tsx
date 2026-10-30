@@ -71,6 +71,17 @@ export function GoogleCard({ state, message }: { state: GoogleCardState; message
               <li key={line}>{line}</li>
             ))}
           </ul>
+          {state.missing.length > 0 && (
+            <>
+              <ul aria-label="What Google did not allow" className="muted">
+                {state.missing.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+              <p id="google-reconnect-help">On Google&apos;s screen, tick every box.</p>
+              <ConnectForm label="Connect again to allow" describedBy="google-reconnect-help" />
+            </>
+          )}
           <form method="post" action="/api/connectors/google/disconnect">
             <button type="submit" className="button button-small" aria-describedby="google-disconnect-help">
               Disconnect Google

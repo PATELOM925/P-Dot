@@ -1,4 +1,5 @@
 import "server-only";
+import { googleWords } from "@/lib/google-words";
 import { GMAIL_SEND_SCOPE } from "@/server/google/oauth";
 import type { GoogleServices } from "./tools/google";
 import { hasCalendarScopeFor, hasReadScope } from "./tools/google";
@@ -13,6 +14,13 @@ export interface TurnGoogle {
   note?: string;
 }
 
+/** The exact words the reply must give when a scope the message needs is missing (live test, 2026-10-30). */
+export const CALENDAR_OFF_REPLY = "Calendar access is off. Open Connectors, connect Google again and tick Calendar.";
+export const SEND_OFF_REPLY = "Send email access is off. Open Connectors, connect Google again and tick Send email.";
+
+const missingNote = (reply: string, what: string) =>
+  `The user's Google connection does not allow ${what}. Do not search Gmail instead. Tell the user: "${reply}"`;
+
 const note = (reason: string) =>
   `The user turned on Google for this message, but Google is not available now (${reason}). Tell the user, and answer without Google.`;
 
@@ -25,6 +33,7 @@ export async function googleForTurn(
   deps: { google?: GoogleServices | null; googleBlocked?: "not_set_up" | "demo_session" | null },
   userId: string,
   asked: boolean,
+  message = "",
 ): Promise<TurnGoogle | null> {
   if (!asked) return null;
   if (!deps.google) {
@@ -44,7 +53,22 @@ export async function googleForTurn(
     calendar: hasCalendarScopeFor(connection.scopes),
   };
   if (!flags.read && !flags.send && !flags.calendar) return { flags: null, ownAddress: connection.email, note: note("connect again") };
-  return { flags, ownAddress: connection.email, ...(onNote(flags) ? { note: onNote(flags)! } : {}) };
+  const missing = missingScopeNote(flags, message);
+  // A calendar question without the calendar scope must not fall back to a Gmail search.
+  if (missing.calendarOnly) flags.read = false;
+  const usable = flags.read || flags.send || flags.calendar;
+  const lines = [usable ? onNote(flags) : null, missing.note].filter((line): line is string => Boolean(line));
+  return { flags: usable ? flags : null, ownAddress: connection.email, ...(lines.length > 0 ? { note: lines.join(" ") } : {}) };
+}
+
+/** A line for a message that needs a scope the connection does not have. No model call. */
+function missingScopeNote(flags: GoogleToolFlags, message: string): { note: string | null; calendarOnly: boolean } {
+  const words = googleWords(message);
+  if (words.calendar && !flags.calendar) {
+    return { note: missingNote(CALENDAR_OFF_REPLY, "the calendar"), calendarOnly: !words.mail };
+  }
+  if (words.send && !flags.send) return { note: missingNote(SEND_OFF_REPLY, "sending email"), calendarOnly: false };
+  return { note: null, calendarOnly: false };
 }
 
 /**
