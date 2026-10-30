@@ -111,7 +111,7 @@ export function BriefCard({ mode, memoryTopics }: { mode: Mode; memoryTopics: st
       </div>
 
       <form
-        className="task-form"
+        className="task-form brief-form"
         onSubmit={(event) => {
           event.preventDefault();
           void makeBrief();
