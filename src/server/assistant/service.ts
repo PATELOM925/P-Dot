@@ -378,6 +378,7 @@ export async function prepareChatTurn(
       toolGuidance: toolsBound.map((tool) => tool.guidance),
       serverNote: google?.note,
       format,
+      tier: route.tier,
     });
     const retrievalBytes =
       retrieval === "basic"
@@ -714,6 +715,7 @@ async function* runChatTurn(
     memories,
     serverNote: turn.google?.note,
     format: turn.retrieval === "deep" ? "research" : turn.retrieval === "brief" ? "brief" : undefined,
+    tier: turn.route.tier,
   });
   const plan = deps.routing[turn.route.tier];
   const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null) : null;
