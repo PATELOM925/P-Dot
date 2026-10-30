@@ -144,6 +144,17 @@ The resend fix ([decision 0012](decisions/0012-resend-idempotency.md)) ships in 
 
 A rollback to a version from before step 2 is safe. That version does not claim replies, so it can again save two replies for one message.
 
+Google sign-in and the Google connection ([decision 0014](decisions/0014-google-sign-in-and-connection.md)) ship in two steps. There is no contract step.
+
+1. Database PR G1 (branch `om/google-expand-db`): migration `20261030000000_google_connection.sql`. Check 1: in the Supabase dashboard, the migration is in the history, and these exist:
+   - the table `connected_accounts` (with the column `account_subject`), with RLS on and the four policies `connected_accounts_select_own`, `connected_accounts_insert_own`, `connected_accounts_update_own` and `connected_accounts_delete_own`, and the trigger `connected_accounts_touch_updated_at`;
+   - the columns `execution_claim_id`, `execution_started_at`, `execution_account_subject`, `execution_target`, `execution_attempt` and `execution_outcome_unknown` on `action_proposals`, and its constraints `action_proposals_kind_check` (with `send_email` and `create_calendar_event`), `action_proposals_status_check` (with `executing`) and `action_proposals_execution_claim`;
+   - the new functions `save_connected_account`, `finish_external_action`, `reclaim_external_action`, `settle_unknown_external_action`, `external_action_account_unchanged`, `action_payload_email_list` and `action_payload_time`;
+   - in Database → Roles or the SQL editor, `authenticated` has no SELECT on `action_proposals.execution_claim_id`.
+2. Code PR G2 (branch `om/google-connect`): sign-in with Google, Connect and Disconnect, the Gmail and Calendar modules and the Connectors card. Merge it only after check 1. Before the migration, Connect fails at `save_connected_account` and stores nothing. Do not use its Preview before check 1. Between the two steps, a user who approves a `send_email` or `create_calendar_event` row that they made by hand gets a 500 from the current Worker, and the row stays `executing` until G2 ships; nothing calls Google.
+
+A rollback to a version from before step 2 is safe. That version does not read the new table. It leaves a proposal of a new kind out of its lists, and an approval of one answers 500.
+
 ## One-time setup (owner only)
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
@@ -168,7 +179,45 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
 
    Changes to base secrets apply only to Previews created after the change.
 5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Done on 2026-10-19. The free plan does not allow email template changes without custom SMTP, so the templates from the README "Setup" section are not applied yet.
-6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP. On 2026-10-19 "Confirm email" was turned off for the hackathon, so sign-up works without an email. Password reset emails still reach only team members.
+6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP. On 2026-10-19 "Confirm email" was turned off for the hackathon, so sign-up works without an email. Password reset emails still reach only team members. Before Google sign-in, turn it on again and do the gate in item 7.8.
+7. **Google sign-in and Google connection** ([decision 0014](decisions/0014-google-sign-in-and-connection.md)). Not done yet. One Google OAuth client serves both: Supabase uses it for sign-in, and P-Dot uses it for Connect.
+   1. **Project.** In the Google Cloud console, create a project (for example `p-dot`) or pick one.
+   2. **APIs.** APIs & Services → Library: enable **Gmail API** and **Google Calendar API**.
+   3. **Consent screen** (Google Auth Platform → Branding and Audience):
+      - User type **External**. Publishing status **Testing**.
+      - App name `P-Dot`, a support email, and the developer contact email.
+      - App home page `https://pdot.iampatelom.com`. Authorized domains: `iampatelom.com` and `supabase.co`.
+   4. **Data access (scopes).** Add exactly these: `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `https://www.googleapis.com/auth/gmail.readonly`, `https://www.googleapis.com/auth/gmail.send` and `https://www.googleapis.com/auth/calendar.events.owned`. The console shows the class of each scope (non-sensitive, sensitive or restricted). Write the calendar scope's class into decision 0014.
+   5. **Test users** (Audience → Test users): add the Google address of each person who will use Connect, the owner first. At most 100. While the app is in Testing, each test user's Google access ends 7 days after consent; P-Dot then shows "Connect again". Google shows an "unverified app" screen; test users select Continue.
+   6. **OAuth client** (Clients → Create client → Web application, name `P-Dot web`). Authorized redirect URIs, all four:
+      - `https://<project-ref>.supabase.co/auth/v1/callback` (sign-in, production database). Copy the exact value from Supabase → Authentication → Sign In / Providers → Google → "Callback URL".
+      - `http://127.0.0.1:54321/auth/v1/callback` (sign-in with the local Supabase stack, `npm run db:start`).
+      - `https://pdot.iampatelom.com/api/connectors/google/callback` (Connect, production).
+      - `http://localhost:3000/api/connectors/google/callback` (Connect, `npm run dev`).
+
+      Authorized JavaScript origins: `https://pdot.iampatelom.com` and `http://localhost:3000`. Save the client ID and the client secret.
+   7. **Supabase Google provider** (Authentication → Sign In / Providers → Google): turn it on, paste the client ID and the client secret, keep "Skip nonce checks" off, keep "Allow users without an email" off. The redirect URLs from item 5 of this list (`https://pdot.iampatelom.com/**`, `http://localhost:3000/**`) already cover `/auth/callback`.
+   8. **Owner gate. Do it before sub-step 7 (the Supabase Google provider), also when only test users will sign in.** While "Confirm email" was off, any person could make a password account with someone else's address, and Supabase marked it confirmed. A later Google sign-in with that address can join that account, and the first person keeps its password (PLAUSIBLE; Supabase documents that it links only to a confirmed email, decision 0014, "Risks").
+      - Authentication → Sign In / Providers → Email: turn "Confirm email" **on**, and keep it on. Do not turn it off again. Without custom SMTP, new sign-ups then reach only Supabase team members (item 6), so the judges use a demo account that the owner makes (Authentication → Users → Add user, "Auto Confirm User", a strong password) or Google sign-in.
+      - [ ] List the accounts made while it was off. In the SQL editor (owner only, read-only): `select id, email, created_at, last_sign_in_at from auth.users where created_at >= '2026-10-19' order by created_at;`
+      - [ ] For each account, choose one:
+        - **Delete it** (Authentication → Users → Delete user), or ban it, if you are not sure who made it. This is the default.
+        - **Keep it** only when all of these are true: you confirmed with the person that they control that mailbox; that person finished a password change (a sent reset email is not enough, because the old password works until the change is done); and you revoked its sessions after the change (Authentication → Users → the user → Sign out of all sessions, or delete and make the account again).
+      - [ ] Your own accounts and the demo account count as kept only after the same check.
+      - [ ] Write in this file the date, the number of accounts deleted or banned, and the number kept. Only then do sub-step 7.
+   9. **Worker secrets** (production). Make the key with `openssl rand -base64 32` and keep a copy in a password manager. If the key is lost, every user must connect Google again.
+
+      ```bash
+      npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID
+      npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
+      npx wrangler secret put GOOGLE_TOKEN_ENCRYPTION_KEY
+      ```
+
+      Without all three, the Connectors page shows Google as "Not set up" and nothing else changes. Sign-in with Google needs only step 7.
+
+      For Google sign-in on the local Supabase stack: in `supabase/config.toml`, set `enabled = true` under `[auth.external.google]` and export `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID` and `SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET` before `npm run db:start`. For `npm run dev`, put the same three names in `.env.local`; only `GOOGLE_OAUTH_CLIENT_ID` is on the bundle allow list, so remove the other two before a manual deploy.
+   10. **Check after G2 deploys:** `/api/health` shows `"google":true`. Sign in with Google on `/login`. On Connectors, connect Google, then disconnect it, then check that P-Dot is gone from https://myaccount.google.com/permissions.
+   11. **Production use beyond 100 test users** needs Google verification. `gmail.readonly` is restricted: it also needs a security assessment by a third-party assessor, again at least every 12 months. Until then, keep the app in Testing.
 
 7. **Trial without an account** ([decision 0015](decisions/0015-judge-demo-mode.md)). Not done yet. Until it is done, "Try P-Dot now, no account" shows "Trying P-Dot without an account is off right now." and nothing else changes.
    - Turn it on: Supabase dashboard → Authentication → Sign In / Providers → "Allow anonymous sign-ins" → On → Save.
