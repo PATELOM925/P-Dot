@@ -472,7 +472,8 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
           }
           recordFirstToken(attempt);
           if (chunk.type === "text" && chunk.text.length > 0) return { attempt, first: chunk };
-          if (chunk.type === "tool_calls") return { attempt, first: chunk };
+          // With tools off, tool calls are not a reply: the attempt ends empty and the next model runs.
+          if (chunk.type === "tool_calls" && options.tools && options.tools.length > 0) return { attempt, first: chunk };
           attempt.pending = pull(attempt);
           continue;
         }

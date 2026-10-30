@@ -55,8 +55,19 @@ describe("readChatStream", () => {
     expect(events.map((e) => e.type)).toEqual(["delta", "delta", "done"]);
   });
 
-  it("rejects unknown event shapes", async () => {
-    await expect(collect(readChatStream(streamFrom(['{"type":"exec"}\n'])))).rejects.toBeInstanceOf(StreamFormatError);
+  it("rejects a line that is not an event", async () => {
+    await expect(collect(readChatStream(streamFrom(['{"kind":"delta"}\n'])))).rejects.toBeInstanceOf(StreamFormatError);
+    await expect(collect(readChatStream(streamFrom(["[1]\n"])))).rejects.toBeInstanceOf(StreamFormatError);
+  });
+
+  it("skips an event type this page does not know, and reads the status event", async () => {
+    const events = await collect(
+      readChatStream(streamFrom(['{"type":"exec"}\n{"type":"status","tool":"web_search","query":"q"}\n{"type":"delta","text":"a"}\n'])),
+    );
+    expect(events).toEqual([
+      { type: "status", tool: "web_search", query: "q" },
+      { type: "delta", text: "a" },
+    ]);
   });
 });
 

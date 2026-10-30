@@ -22,7 +22,7 @@ import { requestFingerprint, type ClientRequest } from "@/server/http/request-ke
 import type { Logger } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
 import { isValidUsage } from "@/server/providers/nebius/pricing";
-import type { ModelProvider, TokenUsage } from "@/server/providers/model";
+import type { ChatMessage, ModelProvider, TokenUsage, ToolCall } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
 import type { CircuitBreaker } from "./breaker";
 import { buildContextWindow, titleFromMessage, type HistoryMessage } from "./context";
@@ -36,6 +36,7 @@ import {
   type RouteReport,
 } from "./executor";
 import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
+import { normalizeReplyText } from "./reply-text";
 import { routeRequest, type RouteDecision } from "./router";
 import {
   budgetRefusal,
@@ -46,7 +47,17 @@ import {
   SEARCH_RESULTS_MAX_BYTES,
   TAVILY_BASIC_SEARCH_CREDITS,
 } from "./spend";
-import type { RoutingConfig } from "./tiers";
+import { RETRY_POLICY, type RoutingConfig } from "./tiers";
+import {
+  checkToolCall,
+  MAX_TOOL_CALLS_PER_HOP,
+  MAX_TOOL_HOPS,
+  selectTools,
+  TOOLS,
+  toToolDefinition,
+  type ToolFlags,
+  type ToolSpec,
+} from "./tools";
 
 export interface AssistantDeps {
   repo: ConversationRepository;
@@ -105,6 +116,8 @@ export interface PreparedTurn {
   searchBudgetExhausted: boolean;
   /** The tier for this reply and why the router chose it. */
   route: RouteDecision;
+  /** Which tools this turn offers. Fixed before the hold, so the hold prices them. */
+  toolFlags: ToolFlags;
   /** The Nebius hold pays for the first attempt, on any model of the tier. */
   holds: TurnHolds;
 }
@@ -248,12 +261,18 @@ export async function prepareChatTurn(
     const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
     if (request.action === "send" && !answering) pendingHistory.push({ role: "user", content: request.message });
     const searchWanted = request.webSearch && deps.search !== null;
-    const route = routeRequest({
-      message: pendingHistory.at(-1)?.content ?? "",
-      historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
-      webSearch: request.webSearch,
-      effort: request.effort ?? "auto",
-    });
+    // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
+    // which only makes the prompt smaller than the one this hold prices.
+    const toolsBound = selectTools(TOOLS, { webSearch: searchWanted });
+    const route = withToolTier(
+      routeRequest({
+        message: pendingHistory.at(-1)?.content ?? "",
+        historyChars: pendingHistory.slice(0, -1).reduce((sum, message) => sum + message.content.length, 0),
+        webSearch: request.webSearch,
+        effort: request.effort ?? "auto",
+      }),
+      toolsBound.length > 0,
+    );
     const plan = deps.routing[route.tier];
     const promptBound = buildPromptMessages({
       history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
@@ -261,14 +280,22 @@ export async function prepareChatTurn(
       results: [],
       now: deps.now(),
       mode,
+      toolGuidance: toolsBound.map((tool) => tool.guidance),
     });
+    const toolDefinitionsBound = toolsBound.map(toToolDefinition);
     // The first attempt can run on any model of the tier (the breaker can skip
     // the first one), so hold for the most expensive one.
     let heldMicroUsd: number;
     try {
       heldMicroUsd = Math.max(
         ...plan.models.map((model) =>
-          nebiusHoldMicroUsd(model, promptBound, plan.maxOutputTokens, searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0),
+          nebiusHoldMicroUsd(
+            model,
+            promptBound,
+            plan.maxOutputTokens,
+            searchWanted ? SEARCH_RESULTS_MAX_BYTES : 0,
+            toolDefinitionsBound,
+          ),
         ),
       );
     } catch (error) {
@@ -332,6 +359,7 @@ export async function prepareChatTurn(
         webSearch: request.webSearch,
         searchBudgetExhausted,
         route,
+        toolFlags: { webSearch: searchWanted && !searchBudgetExhausted },
         holds,
       },
     };
@@ -341,6 +369,15 @@ export async function prepareChatTurn(
     await releaseHolds(deps, requestId, holds);
     throw error;
   }
+}
+
+/**
+ * A turn that offers tools runs on the standard tier at least (decision 0013):
+ * tool hops need a model that calls tools well, and the standard tier has no
+ * hedge. "Think harder" keeps the heavy tier. The reason stays the router's.
+ */
+function withToolTier(route: RouteDecision, offersTools: boolean): RouteDecision {
+  return offersTools && route.tier === "fast" ? { ...route, tier: "standard" } : route;
 }
 
 /**
@@ -480,112 +517,204 @@ async function* runChatTurn(
     }
   }
 
-  // 2. Inference over a bounded context window, on the routed tier.
+  // 2. Inference over a bounded context window, on the routed tier. When tools
+  // are offered, up to MAX_TOOL_HOPS hops can call them, then one final pass
+  // runs with tools off. Every attempt of every hop holds and settles spend.
   const historyWindow = buildContextWindow(turn.history, HISTORY_CHAR_BUDGET);
-  const messages = buildPromptMessages({
+  const tools = selectTools(TOOLS, turn.toolFlags);
+  const toolDefinitions = tools.map(toToolDefinition);
+  const messages: ChatMessage[] = buildPromptMessages({
     history: historyWindow,
     webSearch,
     results,
     now: deps.now(),
     mode: turn.conversation.mode,
+    toolGuidance: tools.map((tool) => tool.guidance),
   });
   const plan = deps.routing[turn.route.tier];
-  const report = newRouteReport(plan.tier);
-  const budget: AttemptBudget = {
-    async reserve(model) {
-      // The hold made before streaming pays for the first attempt.
-      if (holds.nebius) {
-        const hold = holds.nebius;
-        holds.nebius = null;
-        return { allowed: true, hold };
-      }
-      const heldMicroUsd = nebiusHoldMicroUsd(model, messages, plan.maxOutputTokens);
-      const reservation = await deps.spend.reserve("nebius", heldMicroUsd);
-      if (!reservation.allowed) {
-        deps.log("warn", "spend_limit_reached", {
-          ...logBase,
-          provider: "nebius",
-          limit: reservation.limit,
-          stage: "attempt",
-        });
-        return { allowed: false, limit: reservation.limit };
-      }
-      return { allowed: true, hold: { reservationId: reservation.id, heldMicroUsd } };
-    },
-    settle(hold, model, outcome) {
-      // Without valid usage the full hold stays counted; 0 only when no call was sent.
-      settle(hold, outcome.sent ? nebiusSettleMicroUsd(model, hold.heldMicroUsd, outcome.usage) : 0);
-    },
-  };
+  // One deadline for all hops, so a turn stays inside the reply claim lease (decision 0012).
+  const deadlineAt = Date.now() + plan.deadlineMs;
+  const sources: WebSearchResult[] = [...results];
+  const callsPerTool = new Map<string, number>();
 
   let content = "";
   let truncated = false;
   let finishReason: string | null = null;
-  let usage: TokenUsage | null = null;
-  try {
-    for await (const chunk of executeRouted({
-      plan,
-      messages,
-      provider: deps.provider,
-      budget,
-      breaker: deps.breaker,
-      signal,
-      report,
-      random: deps.random,
-    })) {
-      if (chunk.type === "finish") {
-        finishReason = chunk.finishReason;
-        usage = chunk.usage;
-        continue;
-      }
-      if (chunk.type === "tool_calls") continue;
-      const room = MAX_ASSISTANT_CHARS - content.length;
-      const text = chunk.text.slice(0, room);
-      if (text) {
-        content += text;
-        yield { type: "delta", text };
-      }
-      if (content.length >= MAX_ASSISTANT_CHARS) {
-        truncated = true;
-        break;
-      }
+  const usages: (TokenUsage | null)[] = [];
+  let report = newRouteReport(plan.tier);
+  let fallback = false;
+
+  for (let hop = 0; hop <= MAX_TOOL_HOPS; hop += 1) {
+    // Tools are off on the last pass, so the turn always ends with a reply.
+    const offered = hop < MAX_TOOL_HOPS ? toolDefinitions : [];
+    const hopMessages = [...messages];
+    const remainingMs = deadlineAt - Date.now();
+    report = newRouteReport(plan.tier);
+    if (remainingMs < RETRY_POLICY.minAttemptMs) {
+      deps.log("warn", "tool_loop_deadline", { ...logBase, hop });
+      yield { type: "error", ...toPublicCompletionError(new ProviderError(deps.provider.name, "timeout")) };
+      return;
     }
-  } catch (error) {
-    logRoute(deps, logBase, turn.route, report);
+    const budget: AttemptBudget = {
+      async reserve(model) {
+        // The hold made before streaming pays for the first attempt of the first hop.
+        if (holds.nebius) {
+          const hold = holds.nebius;
+          holds.nebius = null;
+          return { allowed: true, hold };
+        }
+        const heldMicroUsd = nebiusHoldMicroUsd(model, hopMessages, plan.maxOutputTokens, 0, offered);
+        const reservation = await deps.spend.reserve("nebius", heldMicroUsd);
+        if (!reservation.allowed) {
+          deps.log("warn", "spend_limit_reached", {
+            ...logBase,
+            provider: "nebius",
+            limit: reservation.limit,
+            stage: "attempt",
+            hop,
+          });
+          return { allowed: false, limit: reservation.limit };
+        }
+        return { allowed: true, hold: { reservationId: reservation.id, heldMicroUsd } };
+      },
+      settle(hold, model, outcome) {
+        // Without valid usage the full hold stays counted; 0 only when no call was sent.
+        settle(hold, outcome.sent ? nebiusSettleMicroUsd(model, hold.heldMicroUsd, outcome.usage) : 0);
+      },
+    };
+
+    let calls: ToolCall[] = [];
+    let hopText = "";
+    try {
+      for await (const chunk of executeRouted({
+        plan: { ...plan, deadlineMs: remainingMs },
+        messages: hopMessages,
+        tools: offered,
+        provider: deps.provider,
+        budget,
+        breaker: deps.breaker,
+        signal,
+        report,
+        random: deps.random,
+      })) {
+        if (chunk.type === "finish") {
+          finishReason = chunk.finishReason;
+          usages.push(chunk.usage);
+          continue;
+        }
+        if (chunk.type === "tool_calls") {
+          calls = chunk.calls;
+          continue;
+        }
+        let text = normalizeReplyText(chunk.text);
+        // Text from two hops is kept apart, so it does not run together.
+        if (!hopText && content && text) text = `\n\n${text.trimStart()}`;
+        text = text.slice(0, MAX_ASSISTANT_CHARS - content.length);
+        if (text) {
+          hopText += text;
+          content += text;
+          yield { type: "delta", text };
+        }
+        if (content.length >= MAX_ASSISTANT_CHARS) {
+          truncated = true;
+          break;
+        }
+      }
+    } catch (error) {
+      logRoute(deps, logBase, turn.route, report, hop);
+      if (signal.aborted) {
+        deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
+        return;
+      }
+      if (error instanceof BudgetExhaustedError) {
+        yield { type: "error", code: "budget_exhausted", message: budgetRefusal(error.limit, deps.now()).message, retryable: false };
+        return;
+      }
+      if (error instanceof NebiusHoldTooLargeError) {
+        deps.log("warn", "spend_hold_too_large", { ...logBase, tier: plan.tier, hop });
+        yield {
+          type: "error",
+          code: "payload_too_large",
+          message: "This request is too large to answer. Start a new conversation or turn off web search.",
+          retryable: false,
+        };
+        return;
+      }
+      if (error instanceof EmptyReplyError) {
+        deps.log("error", "completion_empty", { ...logBase, finishReason, hop });
+        yield {
+          type: "error",
+          code: "provider_unavailable",
+          message: "The assistant returned an empty reply. Please retry.",
+          retryable: true,
+        };
+        return;
+      }
+      const publicError = toPublicCompletionError(error);
+      deps.log("error", "completion_failed", {
+        ...logBase,
+        kind: error instanceof ProviderError ? error.kind : "unknown",
+        status: error instanceof ProviderError ? error.status : undefined,
+        durationMs: Date.now() - startedAt,
+        hop,
+      });
+      yield { type: "error", ...publicError };
+      return;
+    }
+    logRoute(deps, logBase, turn.route, report, hop);
+    fallback ||= report.fallback;
+
     if (signal.aborted) {
       deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
       return;
     }
-    if (error instanceof BudgetExhaustedError) {
-      yield { type: "error", code: "budget_exhausted", message: budgetRefusal(error.limit, deps.now()).message, retryable: false };
-      return;
-    }
-    if (error instanceof EmptyReplyError) {
-      deps.log("error", "completion_empty", { ...logBase, finishReason });
-      yield {
-        type: "error",
-        code: "provider_unavailable",
-        message: "The assistant returned an empty reply. Please retry.",
-        retryable: true,
-      };
-      return;
-    }
-    const publicError = toPublicCompletionError(error);
-    deps.log("error", "completion_failed", {
-      ...logBase,
-      kind: error instanceof ProviderError ? error.kind : "unknown",
-      status: error instanceof ProviderError ? error.status : undefined,
-      durationMs: Date.now() - startedAt,
-    });
-    yield { type: "error", ...publicError };
-    return;
-  }
-  logRoute(deps, logBase, turn.route, report);
+    if (truncated || calls.length === 0 || offered.length === 0) break;
 
-  if (signal.aborted) {
-    deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
-    return;
+    // Run the tool calls, then give the results to the next hop.
+    messages.push({ role: "assistant", content: hopText, toolCalls: calls });
+    for (const [index, call] of calls.entries()) {
+      let result: string;
+      const checked =
+        index < MAX_TOOL_CALLS_PER_HOP
+          ? checkToolCall(tools, call, callsPerTool)
+          : { ok: false as const, content: `At most ${MAX_TOOL_CALLS_PER_HOP} tool calls run in one step. Nothing was done.` };
+      if (!checked.ok) {
+        deps.log("warn", "tool_call_refused", { ...logBase, tool: knownToolName(tools, call.name), hop });
+        result = checked.content;
+      } else {
+        const spec: ToolSpec = checked.spec;
+        callsPerTool.set(spec.name, (callsPerTool.get(spec.name) ?? 0) + 1);
+        const query = spec.statusQuery(checked.args);
+        yield { type: "status", tool: spec.name, ...(query ? { query } : {}) };
+        try {
+          const outcome = await spec.run(checked.args, {
+            services: deps,
+            requestId: turn.requestId,
+            userId: turn.userId,
+            mode: turn.conversation.mode,
+            conversationId: turn.conversation.id,
+            userMessageId: turn.userMessage.id,
+            signal,
+            sources,
+          });
+          result = outcome.content;
+          if (outcome.sources && outcome.sources.length > 0) {
+            sources.push(...outcome.sources);
+            yield { type: "search", status: "used", sources: toSourceRefs(sources) };
+          }
+        } catch {
+          if (signal.aborted) {
+            deps.log("info", "chat_client_aborted", { ...logBase, stage: "tool" });
+            return;
+          }
+          deps.log("warn", "tool_failed", { ...logBase, tool: spec.name, hop });
+          result = "The tool failed. Nothing was done. Answer without it, and say so.";
+        }
+      }
+      messages.push({ role: "tool", toolCallId: call.id, content: result });
+    }
   }
+
   if (content.trim().length === 0 || !report.model) {
     deps.log("error", "completion_empty", { ...logBase, finishReason });
     yield {
@@ -596,6 +725,8 @@ async function* runChatTurn(
     };
     return;
   }
+  if (sources.length > 0) webSearch = "used";
+  const usage = sumUsage(usages);
 
   // 3. Persist the completed reply with its search outcome, sources and route.
   // The ID is picked here, so a lost response can be checked by reading it.
@@ -608,8 +739,8 @@ async function* runChatTurn(
       role: "assistant",
       content,
       webSearch,
-      sources: webSearch === "used" ? toSourceRefs(results) : [],
-      route: { model: report.model, tier: plan.tier, reason: turn.route.reason, fallback: report.fallback },
+      sources: webSearch === "used" ? toSourceRefs(sources) : [],
+      route: { model: report.model, tier: plan.tier, reason: turn.route.reason, fallback },
       replyTo: turn.userMessage.id,
     });
   } catch {
@@ -629,7 +760,7 @@ async function* runChatTurn(
   holds.claim = null;
 
   if (deps.contextRecords) {
-    const validUsage = usage && isValidUsage(usage) ? usage : null;
+    const validUsage = usage;
     const record = deps.contextRecords
       .insertContextRecord(turn.userId, {
         messageId: saved.id,
@@ -638,7 +769,7 @@ async function* runChatTurn(
         historyChars: historyWindow.reduce((sum, m) => sum + m.content.length, 0),
         memoryIds: [],
         documentChunkIds: [],
-        webSourceCount: webSearch === "used" ? results.length : 0,
+        webSourceCount: webSearch === "used" ? sources.length : 0,
         promptVersion: PROMPT_VERSION,
         inputTokens: validUsage?.promptTokens ?? null,
         outputTokens: validUsage?.completionTokens ?? null,
@@ -651,7 +782,7 @@ async function* runChatTurn(
     ...logBase,
     durationMs: Date.now() - startedAt,
     webSearch,
-    sourceCount: webSearch === "used" ? results.length : 0,
+    sourceCount: webSearch === "used" ? sources.length : 0,
     finishReason,
     model: report.model,
     tier: plan.tier,
@@ -661,15 +792,37 @@ async function* runChatTurn(
   yield { type: "done", message: saved, truncated: truncated || finishReason === "length" };
 }
 
-/** One metadata-only log line for each routed reply. No prompt or reply text. */
+/**
+ * The sum of the usage of every hop, or null when one hop has no valid usage:
+ * a part count would look like the whole cost of the turn.
+ */
+function sumUsage(usages: (TokenUsage | null)[]): TokenUsage | null {
+  if (usages.length === 0 || usages.some((usage) => !usage || !isValidUsage(usage))) return null;
+  return usages.reduce<TokenUsage>(
+    (sum, usage) => ({
+      promptTokens: sum.promptTokens + usage!.promptTokens,
+      completionTokens: sum.completionTokens + usage!.completionTokens,
+    }),
+    { promptTokens: 0, completionTokens: 0 },
+  );
+}
+
+/** A tool name for logs: an offered tool's name, or "unknown". Never the model's text. */
+function knownToolName(tools: readonly ToolSpec[], name: string): string {
+  return tools.some((tool) => tool.name === name) ? name : "unknown";
+}
+
+/** One metadata-only log line for each routed model pass. No prompt or reply text. */
 function logRoute(
   deps: AssistantDeps,
   logBase: { requestId: string; route: string },
   route: RouteDecision,
   report: RouteReport,
+  hop: number,
 ): void {
   deps.log(report.outcome === "ok" || report.outcome === "stopped" ? "info" : "warn", "model_route", {
     ...logBase,
+    hop,
     tier: report.tier,
     reason: route.reason,
     modelsTried: report.modelsTried.join(">"),
