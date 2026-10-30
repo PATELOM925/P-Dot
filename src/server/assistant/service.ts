@@ -40,7 +40,8 @@ import { PROMPT_VERSION, buildPromptMessages } from "./prompt";
 import { createReplyNormalizer } from "@/lib/reply-text";
 import { cleanTitle, titleMessages, titlePlan } from "./title";
 import { routeRequest, type RouteDecision } from "./router";
-import { detectToolIntent } from "./tool-intent";
+import { detectToolIntent, type ToolIntent } from "./tool-intent";
+import { forcedToolChoice, removeFalseClaims } from "./claim-guard";
 import {
   budgetRefusal,
   MEMORY_BLOCK_MAX_BYTES,
@@ -153,6 +154,8 @@ export interface PreparedTurn {
   route: RouteDecision;
   /** Which tools this turn offers. Fixed before the hold, so the hold prices them. */
   toolFlags: ToolFlags;
+  /** What the message asks for, from the rules in tool-intent.ts. Null for a plain message. */
+  toolIntent: ToolIntent | null;
   /** Google for this turn: the connection's flags and address, or why it is off. Null when not asked for. */
   google: TurnGoogle | null;
   /** The Nebius hold pays for the first attempt, on any model of the tier. */
@@ -439,6 +442,7 @@ export async function prepareChatTurn(
           google: googleFlags,
           connectors: connectorTools,
         },
+        toolIntent,
         google,
         holds,
       },
@@ -681,6 +685,9 @@ async function* runChatTurn(
   // commit rule of the executor (no model switch after the first visible
   // token) holds for the whole turn, not only for one hop.
   let textModel: string | null = null;
+  // A message that asks to remember, or to add a task or a reminder, must get a tool call in the first hop.
+  let forced = forcedToolChoice(turn.toolIntent, tools);
+  let proposalsRun = 0;
 
   for (let hop = 0; hop <= MAX_TOOL_HOPS; hop += 1) {
     // Tools are off on the last pass, so the turn always ends with a reply.
@@ -739,6 +746,7 @@ async function* runChatTurn(
         plan: { ...plan, deadlineMs: remainingMs, ...(textModel ? { models: [textModel] } : {}) },
         messages: hopMessages,
         tools: offered,
+        ...(hop === 0 && forced ? { toolChoice: forced } : {}),
         provider: deps.provider,
         budget,
         breaker: deps.breaker,
@@ -768,6 +776,13 @@ async function* runChatTurn(
       if (signal.aborted) {
         deps.log("info", "chat_client_aborted", { ...logBase, stage: "completion" });
         return;
+      }
+      // A model that refuses a forced tool choice gets the same hop again with "auto".
+      if (hop === 0 && forced && !content && error instanceof ProviderError && error.kind === "invalid_request") {
+        deps.log("warn", "tool_choice_refused", { ...logBase, hop });
+        forced = null;
+        hop -= 1;
+        continue;
       }
       if (error instanceof BudgetExhaustedError) {
         yield { type: "error", code: "budget_exhausted", message: budgetRefusal(error.limit, deps.now()).message, retryable: false };
@@ -849,6 +864,7 @@ async function* runChatTurn(
             connectors,
           });
           result = outcome.content;
+          if (spec.kind === "propose") proposalsRun += 1;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);
           for (const id of outcome.documentChunkIds ?? []) documentChunkIds.add(id);
           if (outcome.sources && outcome.sources.length > 0) {
@@ -865,6 +881,15 @@ async function* runChatTurn(
         }
       }
       messages.push({ role: "tool", toolCallId: call.id, content: result });
+    }
+  }
+
+  if (proposalsRun === 0) {
+    const actionAsked = turn.toolIntent === "task_request" || turn.toolIntent === "memory_request";
+    const guarded = removeFalseClaims(content, actionAsked);
+    if (guarded.removed) {
+      deps.log("warn", "false_claim_removed", { ...logBase, intent: turn.toolIntent ?? "none" });
+      content = guarded.text.slice(0, MAX_ASSISTANT_CHARS);
     }
   }
 

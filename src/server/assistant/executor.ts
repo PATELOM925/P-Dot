@@ -2,7 +2,7 @@ import "server-only";
 import type { ModelTier } from "@/lib/routing";
 import type { SpendLimit } from "@/server/db/spend";
 import { ProviderError } from "@/server/providers/errors";
-import type { ChatMessage, CompletionChunk, ModelProvider, TokenUsage, ToolDefinition } from "@/server/providers/model";
+import type { ChatMessage, CompletionChunk, ModelProvider, TokenUsage, ToolChoice, ToolDefinition } from "@/server/providers/model";
 import type { CircuitBreaker } from "./breaker";
 import { RETRY_POLICY, type TierPlan } from "./tiers";
 
@@ -98,6 +98,8 @@ export interface ExecuteOptions {
   messages: ChatMessage[];
   /** Functions the model may call. None: tools are off for this call. */
   tools?: ToolDefinition[];
+  /** Sent only with tools. Missing: "auto". */
+  toolChoice?: ToolChoice;
   provider: ModelProvider;
   budget: AttemptBudget;
   breaker: CircuitBreaker;
@@ -284,7 +286,9 @@ export async function* executeRouted(options: ExecuteOptions): AsyncGenerator<Ex
               maxOutputTokens: plan.maxOutputTokens,
               thinkingBudgetTokens: plan.thinkingBudgetTokens,
               timeoutMs: remaining,
-              ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
+              ...(options.tools && options.tools.length > 0
+                ? { tools: options.tools, ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}) }
+                : {}),
             },
             attempt.controller.signal,
           )
