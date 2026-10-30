@@ -10,6 +10,7 @@ import { McpCard } from "@/features/connectors/McpCard";
 import { mcpCardState, mcpOutcomeMessage } from "@/features/connectors/mcp";
 import { OpenOnPhoneCard } from "@/features/connectors/OpenOnPhoneCard";
 import { builtInStatus } from "@/features/connectors/status";
+import { FeedbackCard } from "@/features/feedback/FeedbackCard";
 import { TelegramCard, type TelegramCardState } from "@/features/connectors/TelegramCard";
 import { telegramOutcomeMessage } from "@/lib/telegram";
 import { DOCUMENT_LIST_LIMIT, MEMORY_LIST_LIMIT, REMINDER_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
@@ -210,6 +211,8 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           <Link href="/devices">Open devices</Link>
         </article>
       </CardRail>
+
+      <FeedbackCard />
     </main>
   );
 }
