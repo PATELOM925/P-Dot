@@ -143,9 +143,21 @@ describe("buildPromptMessages", () => {
 
   it("adds the continuation note only when the latest user message asks to continue", () => {
     const run = (content: string) =>
-      buildPromptMessages({ history: [{ role: "user", content }], webSearch: "off", results: [], now, mode: "personal" })[0]!.content;
+      buildPromptMessages({
+        history: [
+          { role: "user", content: "Tell me a story" },
+          { role: "assistant", content: "Once upon a time" },
+          { role: "user", content },
+        ],
+        webSearch: "off",
+        results: [],
+        now,
+        mode: "personal",
+      })[0]!.content;
     expect(run("continue")).toContain("continue your previous reply");
     expect(run("Please keep going")).toContain("continue your previous reply");
+    const first = buildPromptMessages({ history: [{ role: "user", content: "Go on a diet plan" }], webSearch: "off", results: [], now, mode: "personal" });
+    expect(first[0]!.content).not.toContain("continue your previous reply");
     expect(run("What is a continuation?")).not.toContain("continue your previous reply");
     expect(isContinuationRequest("contemplate this")).toBe(false);
   });

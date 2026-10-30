@@ -589,6 +589,7 @@ async function* runChatTurn(
 
     let calls: ToolCall[] = [];
     let hopText = "";
+    let hopFinished = false;
     try {
       for await (const chunk of executeRouted({
         plan: { ...plan, deadlineMs: remainingMs, ...(textModel ? { models: [textModel] } : {}) },
@@ -604,6 +605,7 @@ async function* runChatTurn(
         if (chunk.type === "finish") {
           finishReason = chunk.finishReason;
           usages.push(chunk.usage);
+          hopFinished = true;
           continue;
         }
         if (chunk.type === "tool_calls") {
@@ -667,6 +669,8 @@ async function* runChatTurn(
     }
     logRoute(deps, logBase, turn.route, report, hop);
     fallback ||= report.fallback;
+    // A hop cut at the length limit has no usage, so the turn's sum must not look whole.
+    if (!hopFinished) usages.push(null);
     if (hopText && !textModel) textModel = report.model;
 
     if (signal.aborted) {

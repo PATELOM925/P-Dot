@@ -104,7 +104,9 @@ export function buildPromptMessages(input: PromptInput): ChatMessage[] {
   const guidance = input.toolGuidance ?? [];
   const rules = guidance.length > 0 ? [TOOLS_RULE, ...guidance.map((line) => `- ${line}`)].join("\n") : NO_TOOLS_RULE;
   const latest = input.history.at(-1);
-  const continuation = latest?.role === "user" && isContinuationRequest(latest.content) ? CONTINUATION_NOTE : null;
+  const hasEarlierReply = input.history.some((message) => message.role === "assistant");
+  const continuation =
+    hasEarlierReply && latest?.role === "user" && isContinuationRequest(latest.content) ? CONTINUATION_NOTE : null;
   const system = [`${BASE_SYSTEM_PROMPT}\n${rules}`, MODE_SCOPE[input.mode], `Today's date (UTC) is ${date}.`, note, continuation]
     .filter(Boolean)
     .join("\n\n");

@@ -6,7 +6,8 @@ import type { CompletionChunk, ModelCallRequest, ModelProvider, ToolCall } from 
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
 import { buildRoutingConfig } from "@/server/assistant/tiers";
 import { FakeProvider } from "../support/fake-provider";
-import { FakeSpend, MemoryRepository, fakeDeps } from "../support/fakes";
+import { FakeContextRecords, FakeSpend, MemoryRepository, fakeDeps } from "../support/fakes";
+import { MAX_ASSISTANT_CHARS } from "@/lib/limits";
 import { collect } from "../support/streams";
 
 const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -273,5 +274,17 @@ describe("tool loop", () => {
     expect(searches).toEqual(["q"]);
     expect(tavily).toHaveLength(2);
     expect(tavily[1]!.settled).toBe(0);
+  });
+
+  it("records no token sum when a later hop is cut at the length limit", async () => {
+    const contextRecords = new FakeContextRecords();
+    const { provider } = scripted([{ calls: [search("x")] }, { text: "y".repeat(MAX_ASSISTANT_CHARS + 10) }]);
+    const { deps, waited } = fakeDeps({ provider, contextRecords, search: async () => [page(1)] });
+
+    const { events } = await runTurn(deps, { action: "send", message: "q", webSearch: true });
+    await Promise.all(waited);
+
+    expect(ofType(events, "done")[0]!.truncated).toBe(true);
+    expect(contextRecords.records[0]).toMatchObject({ inputTokens: null, outputTokens: null });
   });
 });
