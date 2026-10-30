@@ -10,6 +10,8 @@ import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createMemoryRepository } from "@/server/db/memories";
 import { createTaskRepository } from "@/server/db/tasks";
 import { getMode } from "@/server/mode";
+import { InfoNote } from "@/components/ui/PageHeader";
+import { WorkflowsSection } from "./WorkflowsSection";
 
 export const metadata: Metadata = { title: "Today · P-Dot" };
 
@@ -33,15 +35,18 @@ export default async function TodayPage() {
   return (
     <main className="page page-wide stack">
       <div className="page-title">
-        <h1>{mode === "work" ? "Your workday" : "Your day"}</h1>
+        <div className="page-head">
+          <h1>{mode === "work" ? "Your workday" : "Your day"}</h1>
+          <InfoNote label="About this page">
+            <p>
+              <strong>{MODE_LABELS[mode]} mode:</strong> {SCOPE[mode]}
+            </p>
+          </InfoNote>
+        </div>
         <Link className="button button-primary" href="/chat">
           Ask P-Dot
         </Link>
       </div>
-
-      <p className={`scope-note scope-note-${mode}`}>
-        <strong>{MODE_LABELS[mode]} mode:</strong> {SCOPE[mode]}
-      </p>
 
       <div className="two-column">
         <div className="stack">
@@ -52,19 +57,10 @@ export default async function TodayPage() {
 
         <aside className="stack">
           <ApprovalList key={mode} mode={mode} initial={proposals} />
-          <section className="panel" aria-labelledby="start-heading">
-            <h2 id="start-heading">Start something</h2>
-            <p className="muted">
-              {mode === "work"
-                ? "Draft an update, plan your week, or work through a problem."
-                : "Plan dinner, shortlist a gift, or sort out the weekend."}
-            </p>
-            <Link className="button" href="/chat">
-              Open chat
-            </Link>
-          </section>
         </aside>
       </div>
+
+      <WorkflowsSection auth={auth} mode={mode} />
     </main>
   );
 }

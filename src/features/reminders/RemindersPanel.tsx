@@ -25,7 +25,7 @@ export function RemindersPanel({ mode, initialReminders }: { mode: Mode; initial
   const [error, setError] = useState<string | null>(null);
 
   function fail(err: unknown, fallback: string) {
-    if (err instanceof ApiError && err.status === 401) router.replace("/login?next=/workflows");
+    if (err instanceof ApiError && err.status === 401) router.replace("/login?next=/today");
     else setError(errorMessage(err, fallback));
   }
 
@@ -155,10 +155,7 @@ export function RemindersPanel({ mode, initialReminders }: { mode: Mode; initial
         <h2 id="reminders-heading">Reminders</h2>
         <span className="status-pill status-executed">Live</span>
       </div>
-      <p className="muted small">
-        Reminders are saved, but P-Dot cannot notify you when one is due yet; delivery needs a scheduler and push, which
-        are still being built. Check this list instead.
-      </p>
+      <p className="muted small">P-Dot does not send an alert when a reminder is due yet. Check this list.</p>
 
       {scheduled.length === 0 && <p className="muted">No upcoming reminders.</p>}
       <ul className="reminder-list">{scheduled.map(item)}</ul>

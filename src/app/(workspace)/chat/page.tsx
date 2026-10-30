@@ -46,6 +46,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   return (
     <ChatWorkspace
       key={mode}
+      userId={auth.userId}
       mode={mode}
       trial={auth.isAnonymous === true}
       google={google}
