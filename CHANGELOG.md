@@ -9,6 +9,13 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Database step for Google sign-in and the Google connection** ([decision 0014](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #23](https://github.com/PATELOM925/P-Dot/pull/23))
+  - Problem: P-Dot cannot store a connection to a user's Google account, and an action that acts outside P-Dot (send an email, create an event) has no safe path. The database cannot call Google, so the decision function cannot run such an action in its own transaction, and a retry must never send twice.
+  - Resolution:
+    - Migration `20261030000000_google_connection.sql` only adds or widens. It adds `connected_accounts` (one encrypted refresh token for each user, under RLS) with `save_connected_account`.
+    - It adds the kinds `send_email` and `create_calendar_event` and the status `executing`. An approval claims the proposal; `finish_external_action` stores the outcome only for the current claim. `reclaim_external_action` and `settle_unknown_external_action` take a row out of `executing`; an email is never sent again by P-Dot.
+    - The log triggers still write the action log, with IDs and no address, subject or body.
+    - `tests/integration/sql-gate-google.test.ts` checks all of this in both grant modes, and main's repositories on the new schema. `docs/DEPLOYMENT.md` has the deploy steps and the owner's Google setup.
 - **A resend or a retry no longer repeats saved or running work** ([decision 0012](docs/decisions/0012-resend-idempotency.md)). ([PR #20](https://github.com/PATELOM925/P-Dot/pull/20))
   - Problem: after a 500, the screen gives the draft back and the user sends it again. The resend saved an empty or second conversation, a second user message, a second memory or a second ready document, and a reply whose response was lost never got its "what was sent" record (eight `it.fails` tests). Two requests could also each write a reply to one message, and a stream cancelled before its first read kept its Nebius hold open.
   - Resolution:
