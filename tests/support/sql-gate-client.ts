@@ -11,6 +11,8 @@ function identifier(name: string): string {
 interface Filter {
   column: string;
   value: unknown;
+  /** `in` compares with an array (`= any($n)`), as PostgREST's `in` filter does. */
+  op?: "eq" | "in";
 }
 
 type Reply = { data: unknown; error: { code: string; message: string } | null };
@@ -23,7 +25,7 @@ const failure = (error: unknown): Reply => ({
 /**
  * A Supabase client that runs repository calls in the SQL gate as the
  * signed-in user, so RLS, grants and triggers apply. It supports
- * `from().select().eq().order().limit()`, `from().update().eq().select().maybeSingle()`,
+ * `from().select().eq().in().order().limit()`, `from().update().eq().select().maybeSingle()`,
  * `from().delete().eq().select()`,
  * `from().insert().select().single()` and `rpc()`. Rows come back through `json_agg` or `to_json`, which is how
  * PostgREST builds its response, so timestamps are strings and NULLs stay
@@ -42,7 +44,13 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
 
     const where = (offset: number) =>
       filters.length
-        ? `where ${filters.map((filter, index) => `${identifier(filter.column)} = $${index + 1 + offset}`).join(" and ")}`
+        ? `where ${filters
+            .map((filter, index) =>
+              filter.op === "in"
+                ? `${identifier(filter.column)} = any($${index + 1 + offset})`
+                : `${identifier(filter.column)} = $${index + 1 + offset}`,
+            )
+            .join(" and ")}`
         : "";
 
     const runSelect = async (): Promise<Reply> => {
@@ -141,6 +149,10 @@ export function sqlGateClient(gate: SqlGate, userId: string): SupabaseClient {
       },
       eq(column: string, value: unknown) {
         filters.push({ column, value });
+        return builder;
+      },
+      in(column: string, values: unknown[]) {
+        filters.push({ column, value: values, op: "in" });
         return builder;
       },
       order(column: string, options?: { ascending?: boolean }) {

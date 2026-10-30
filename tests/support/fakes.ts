@@ -119,13 +119,17 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
-  /** Set to make the connector history check fail. */
-  failConnectorCheck = false;
+  /** Set to make the private-source history check fail. */
+  failPrivateSourceCheck = false;
 
-  async hasConnectorReply(userId: string, conversationId: string) {
-    if (this.failConnectorCheck) throw new Error("hasConnectorReply failed");
+  async hasPrivateSourceReply(userId: string, conversationId: string) {
+    if (this.failPrivateSourceCheck) throw new Error("hasPrivateSourceReply failed");
     return this.messages.some(
-      (m) => m.userId === userId && m.conversationId === conversationId && m.role === "assistant" && m.route?.reason === "connector_read",
+      (m) =>
+        m.userId === userId &&
+        m.conversationId === conversationId &&
+        m.role === "assistant" &&
+        (m.route?.reason === "google_request" || m.route?.reason === "connector_read"),
     );
   }
 

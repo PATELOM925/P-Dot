@@ -17,6 +17,11 @@ export type AssistantToolName =
   | "propose_task"
   | "propose_reminder"
   | "save_memory"
+  | "gmail_search"
+  | "gmail_read"
+  | "calendar_list_events"
+  | "propose_email"
+  | "propose_calendar_event"
   | "notion_search"
   | "notion_fetch"
   | "linear_search_issues"
@@ -104,10 +109,12 @@ export type ChatRequest =
       message: string;
       webSearch: boolean;
       effort?: Effort;
-      /** Apps to read for this message only (decision 0016). Never together with web search. */
+      /** Apps to read for this message only (decision 0016). Never together with web search or Google. */
       connectors?: McpServerId[];
+      /** Gmail and Calendar for this message only (decision 0014). Never together with web search or apps. */
+      useGoogle?: true;
     }
-  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort; connectors?: McpServerId[] };
+  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort; connectors?: McpServerId[]; useGoogle?: true };
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once

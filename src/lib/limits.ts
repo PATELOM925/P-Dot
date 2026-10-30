@@ -79,6 +79,12 @@ export const MAX_EVENT_DAYS = 31;
  * recovered. Much more than a token refresh (10 s) plus the Google call (15 s).
  */
 export const EXTERNAL_ACTION_LEASE_SECONDS = 120;
+
+/** Google chat tools (decision 0014, section 3). All Google text that reaches the model in one turn. */
+export const GOOGLE_TOOL_TEXT_MAX_CHARS = 12_000;
+export const GMAIL_TOOL_SEARCH_MAX = 5;
+export const GMAIL_TOOL_READ_MAX_CHARS = 4_000;
+export const GOOGLE_TOOL_QUERY_MAX_CHARS = 200;
 export const REMINDER_LIST_LIMIT = 200;
 export const MAX_ACTION_SUMMARY_CHARS = 300;
 export const ACTION_LIST_LIMIT = 100;

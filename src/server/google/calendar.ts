@@ -44,6 +44,7 @@ const createdSchema = z.object({ id: z.string().regex(EVENT_ID) });
 export async function calendarListEvents(
   access: GoogleAccess,
   range: { from: Date; to: Date; maxResults?: number },
+  signal?: AbortSignal,
 ): Promise<CalendarEvent[]> {
   requireScope(access, CALENDAR_SCOPE, CALENDAR_ALL_SCOPE);
   const span = range.to.getTime() - range.from.getTime();
@@ -56,7 +57,7 @@ export async function calendarListEvents(
     orderBy: "startTime",
     maxResults: String(max),
   });
-  const list = await authorizedRequest(access, `${EVENTS}?${query}`, { method: "GET" }, READ_TIMEOUT_MS, listSchema);
+  const list = await authorizedRequest(access, `${EVENTS}?${query}`, { method: "GET" }, READ_TIMEOUT_MS, listSchema, signal);
   return (list.items ?? [])
     .filter((event) => event.status !== "cancelled")
     .slice(0, max)

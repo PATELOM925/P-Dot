@@ -11,6 +11,9 @@ import { createContextRecordRepository } from "@/server/db/context-records";
 import { createMemoryRepository } from "@/server/db/memories";
 import { createRetrievalRepository } from "@/server/db/retrieval";
 import { createConversationRepository } from "@/server/db/conversations";
+import { createConnectedAccountRepository } from "@/server/db/connected-accounts";
+import { getGoogleConfig } from "@/server/config";
+import { googleFetch } from "@/server/google/connect-flow";
 import { createQuotaGate } from "@/server/db/quota";
 import { createSpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
@@ -32,9 +35,20 @@ const breaker = createCircuitBreaker(BREAKER_DEFAULTS);
 export function createAssistantDeps(auth: AuthContext, config: AssistantConfig): AssistantDeps {
   const tavily = config.tavily;
   // One guard with this user's caps (trial caps for a trial) for every paid call of the turn:
-  // the reply, tool hops, the title and the retrieval embeddings.
+  // the reply, tool hops (also the Google ones), the title and the retrieval embeddings.
   const limits = limitsFor(auth, config);
   const spend = createSpendGuard(auth.supabase, limits.spend);
+  // Google tools need a real account and the Google settings (decision 0014). The flag comes from the verified JWT.
+  const googleConfig = getGoogleConfig();
+  const google =
+    googleConfig.status === "ready" && hasAccount(auth)
+      ? {
+          config: googleConfig.config,
+          accounts: createConnectedAccountRepository(auth.supabase),
+          proposals: createActionProposalRepository(auth.supabase),
+          fetch: googleFetch,
+        }
+      : null;
   return {
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, limits.quota.requestsPerWindow, limits.quota.windowSeconds),
@@ -48,6 +62,8 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
     titles: true,
+    google,
+    googleBlocked: google ? null : hasAccount(auth) ? "not_set_up" : "demo_session",
     anonymous: !hasAccount(auth),
     connectors: connectorServicesFor(auth),
     ownData: {

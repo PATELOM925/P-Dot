@@ -13,6 +13,7 @@ function connectorTool(server: McpServer, tool: CatalogTool, first: boolean): To
     description: tool.description,
     args: tool.args,
     kind: "read",
+    source: "connector",
     guidance: first ? `${tool.guidance} ${CONNECTOR_GUIDANCE}` : tool.guidance,
     maxCallsPerTurn: tool.maxCallsPerTurn,
     offered: (flags) => flags.connectors?.get(server.id)?.has(tool.name) === true,

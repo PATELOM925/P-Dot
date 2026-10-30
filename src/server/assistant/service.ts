@@ -58,12 +58,15 @@ import {
   MAX_TOOL_CALLS_PER_HOP,
   MAX_TOOL_HOPS,
   selectTools,
+  newGoogleTurn,
   TOOLS,
   toToolDefinition,
+  type GoogleServices,
   type OwnDataServices,
   type ToolFlags,
   type ToolSpec,
 } from "./tools";
+import { googleForTurn, type TurnGoogle } from "./google-turn";
 import type { MemoryMatch } from "@/server/db/retrieval";
 import type { ConnectorServices, ConnectorTurn } from "@/server/mcp/connector-turn";
 
@@ -99,6 +102,10 @@ export interface AssistantDeps {
   ownData?: OwnDataServices | null;
   /** Make a title with the model for a new conversation, after the reply. Off when missing. */
   titles?: boolean;
+  /** The Google tools' services. Null or missing when Google is not set up or the session is anonymous. */
+  google?: GoogleServices | null;
+  /** Why Google is off for this request, for the note to the model when the user asked for it. */
+  googleBlocked?: "not_set_up" | "demo_session" | null;
   /** The verified `is_anonymous` claim of the session. A demo session never reads a connected app. */
   anonymous?: boolean;
   /** Reads of the user's connected apps (decision 0016). Null when connectors are not set up. */
@@ -144,6 +151,8 @@ export interface PreparedTurn {
   route: RouteDecision;
   /** Which tools this turn offers. Fixed before the hold, so the hold prices them. */
   toolFlags: ToolFlags;
+  /** Google for this turn: the connection's flags and address, or why it is off. Null when not asked for. */
+  google: TurnGoogle | null;
   /** The Nebius hold pays for the first attempt, on any model of the tier. */
   holds: TurnHolds;
 }
@@ -291,7 +300,13 @@ export async function prepareChatTurn(
     const mode = existing?.mode ?? (request.action === "send" ? (request.mode ?? "personal") : "personal");
     const pendingHistory: HistoryMessage[] = recent.map(({ role, content }) => ({ role, content }));
     if (request.action === "send" && !answering) pendingHistory.push({ role: "user", content: request.message });
-    const searchWanted = request.webSearch && deps.search !== null;
+    // Google (decision 0014, section 3): the connection read comes after the claim and before the hold.
+    const google = await googleForTurn(deps, userId, request.useGoogle === true);
+    const googleFlags = google?.flags ?? null;
+    // The schema refuses two sources in one request; this keeps the server safe also without it.
+    const searchWanted = request.webSearch && deps.search !== null && googleFlags === null && requestedApps.length === 0;
+    // The model may write a web search only in a conversation that never read Google or an app.
+    const webSearchTool = googleFlags === null && requestedApps.length === 0 && !(await hadPrivateSourceReply(deps, userId, existing));
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
     // which only makes the prompt smaller than the one this hold prices.
     // Memories go into every turn when the data services exist. The own-data tools only
@@ -301,11 +316,11 @@ export async function prepareChatTurn(
     const toolIntent = ownData ? detectToolIntent(latest) : null;
     const connectorTools =
       requestedApps.length > 0 && deps.connectors ? await deps.connectors.available(requestedApps) : new Map();
-    // After a turn with an app on, the model never writes a web search in this conversation again (decision 0016).
-    const searchToolAllowed = searchWanted && requestedApps.length === 0 && !(await hadConnectorReply(deps, userId, existing));
     const toolsBound = selectTools(TOOLS, {
-      webSearch: searchToolAllowed,
+      webSearch: searchWanted,
       ownData: toolIntent !== null,
+      webSearchTool,
+      google: googleFlags,
       connectors: connectorTools,
     });
     const routed = withToolTier(
@@ -318,16 +333,22 @@ export async function prepareChatTurn(
       }),
       toolsBound.length > 0,
     );
-    // The reply of a turn with an app on is marked in its own row, before any read (decision 0016).
-    const route: RouteDecision = requestedApps.length > 0 ? { ...routed, reason: "connector_read" } : routed;
+    // The reply of a turn that reads a private source is marked in its own row, before any read, so the
+    // conversation never gets a model-written search again (decision 0014, decision 10; decision 0016).
+    const route: RouteDecision = googleFlags
+      ? { ...routed, reason: "google_request" }
+      : requestedApps.length > 0
+        ? { ...routed, reason: "connector_read" }
+        : routed;
     const plan = deps.routing[route.tier];
     const promptBound = buildPromptMessages({
       history: buildContextWindow(pendingHistory, HISTORY_CHAR_BUDGET),
-      webSearch: request.webSearch ? "failed" : "off",
+      webSearch: request.webSearch && googleFlags === null ? "failed" : "off",
       results: [],
       now: deps.now(),
       mode,
       toolGuidance: toolsBound.map((tool) => tool.guidance),
+      serverNote: google?.note,
     });
     const toolDefinitionsBound = toolsBound.map(toToolDefinition);
     // The first attempt can run on any model of the tier (the breaker can skip
@@ -404,14 +425,17 @@ export async function prepareChatTurn(
         userMessage,
         repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
-        webSearch: request.webSearch,
+        webSearch: request.webSearch && googleFlags === null,
         searchBudgetExhausted,
         route,
         toolFlags: {
-          webSearch: searchToolAllowed && !searchBudgetExhausted,
+          webSearch: searchWanted && !searchBudgetExhausted,
           ownData: toolIntent !== null,
+          webSearchTool,
+          google: googleFlags,
           connectors: connectorTools,
         },
+        google,
         holds,
       },
     };
@@ -428,13 +452,18 @@ export async function prepareChatTurn(
  * tool hops need a model that calls tools well, and the standard tier has no
  * hedge. "Think harder" keeps the heavy tier. The reason stays the router's.
  */
-/** True when the conversation has a reply from a turn with an app on. A failed check counts as true. */
-async function hadConnectorReply(deps: AssistantDeps, userId: string, conversation: ConversationSummary | null): Promise<boolean> {
+/**
+ * True when the conversation has any reply that read a private source: Google
+ * (`google_request`) or a connected app (`connector_read`). No history window.
+ * A failed check counts as true, so a model-written search stays off
+ * (decision 0014, decision 10; decision 0016). The one helper for both features.
+ */
+async function hadPrivateSourceReply(deps: AssistantDeps, userId: string, conversation: ConversationSummary | null): Promise<boolean> {
   if (!conversation) return false;
   try {
-    return await deps.repo.hasConnectorReply(userId, conversation.id);
+    return await deps.repo.hasPrivateSourceReply(userId, conversation.id);
   } catch {
-    deps.log("warn", "connector_history_check_failed", { route: "chat" });
+    deps.log("warn", "private_source_check_failed", { route: "chat" });
     return true;
   }
 }
@@ -621,8 +650,10 @@ async function* runChatTurn(
     mode: turn.conversation.mode,
     toolGuidance: tools.map((tool) => tool.guidance),
     memories,
+    serverNote: turn.google?.note,
   });
   const plan = deps.routing[turn.route.tier];
+  const googleTurn = turn.toolFlags.google ? newGoogleTurn(turn.userMessage.content, turn.google?.ownAddress ?? null) : null;
   // One deadline for all hops and tool runs, so a turn stays inside the reply claim lease (decision 0012).
   const deadlineAt = Date.now() + plan.deadlineMs;
   const toolSignal = AbortSignal.any([signal, AbortSignal.timeout(plan.deadlineMs)]);
@@ -804,6 +835,7 @@ async function* runChatTurn(
             earlierAttemptWrote,
             signal: toolSignal,
             sources,
+            google: googleTurn,
             connectors,
           });
           result = outcome.content;

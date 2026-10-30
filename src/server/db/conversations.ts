@@ -110,9 +110,16 @@ export interface ConversationRepository {
   /** The right to write the reply to a user message, for the session user (claim_reply). */
   claimReply(messageId: string, leaseSeconds: number): Promise<ReplyClaim>;
   releaseReplyClaim(messageId: string, claimId: string): Promise<void>;
-  /** True when a reply in the conversation came from a turn with a connector turned on (decision 0016). */
-  hasConnectorReply(userId: string, conversationId: string): Promise<boolean>;
+  /**
+   * True when the conversation has any reply that read a private source:
+   * Google (`google_request`) or a connected app (`connector_read`). No history
+   * window (decision 0014, decision 10; decision 0016).
+   */
+  hasPrivateSourceReply(userId: string, conversationId: string): Promise<boolean>;
 }
+
+/** Route reasons of a reply that read a private source. After one, no model-written web search in that conversation. */
+export const PRIVATE_SOURCE_REASONS = ["google_request", "connector_read"] as const;
 
 const conversationRow = z.object({
   id: z.string(),
@@ -362,16 +369,16 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
       return data ? toMessage(data) : null;
     },
 
-    async hasConnectorReply(userId, conversationId) {
+    async hasPrivateSourceReply(userId, conversationId) {
       const { data, error } = await supabase
         .from("messages")
         .select("id")
         .eq("user_id", userId)
         .eq("conversation_id", conversationId)
         .eq("role", "assistant")
-        .eq("route_reason", "connector_read")
+        .in("route_reason", [...PRIVATE_SOURCE_REASONS])
         .limit(1);
-      if (error) throw repositoryError("hasConnectorReply", error);
+      if (error) throw repositoryError("hasPrivateSourceReply", error);
       return Array.isArray(data) && data.length > 0;
     },
 

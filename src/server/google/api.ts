@@ -23,11 +23,12 @@ export async function authorizedRequest<T>(
   init: RequestInit,
   timeoutMs: number,
   schema: z.ZodType<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const token = await access.accessToken();
+  const token = await access.accessToken(signal);
   const headers = new Headers(init.headers);
   headers.set("authorization", `Bearer ${token}`);
-  return googleRequest(access.fetch, url, { ...init, headers }, timeoutMs, schema);
+  return googleRequest(access.fetch, url, { ...init, headers }, timeoutMs, schema, signal);
 }
 
 /** Cuts text to `max` characters. `cut` is true when it was longer. */

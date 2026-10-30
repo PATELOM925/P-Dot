@@ -34,9 +34,13 @@ const connectorsSchema = z
   .max(MCP_SERVER_IDS.length)
   .refine((ids) => new Set(ids).size === ids.length, "Each app can be listed once.")
   .optional();
-const noSearchWithConnectors = (value: { webSearch: boolean; connectors?: unknown[] }) =>
-  !(value.webSearch && (value.connectors?.length ?? 0) > 0);
-const searchWithConnectors = { message: "Web search cannot be on with a connected app.", path: ["webSearch"] };
+/**
+ * At most one source for each message: web search, Google or connected apps
+ * (decisions 0014 and 0016). Several apps together are one source.
+ */
+const oneSource = (value: { webSearch: boolean; connectors?: unknown[]; useGoogle?: true }) =>
+  [value.webSearch, (value.connectors?.length ?? 0) > 0, value.useGoogle === true].filter(Boolean).length <= 1;
+const mixedSources = { message: "Use only one of web search, Google or connected apps for a message.", path: ["webSearch"] };
 
 // `.strict()` rejects unknown keys, so a client cannot smuggle in fields such
 // as a user ID. Identity always comes from the verified session.
@@ -52,10 +56,12 @@ const sendSchema = z
       .max(MAX_MESSAGE_CHARS, `Message must be at most ${MAX_MESSAGE_CHARS} characters.`),
     webSearch: z.boolean(),
     effort: effortSchema,
+    // Only sent when the "Use Google" toggle is on (decision 0014), so an older server still accepts a send without it.
+    useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
   })
   .strict()
-  .refine(noSearchWithConnectors, searchWithConnectors);
+  .refine(oneSource, mixedSources);
 
 const retrySchema = z
   .object({
@@ -63,10 +69,11 @@ const retrySchema = z
     conversationId,
     webSearch: z.boolean(),
     effort: effortSchema,
+    useGoogle: z.literal(true).optional(),
     connectors: connectorsSchema,
   })
   .strict()
-  .refine(noSearchWithConnectors, searchWithConnectors);
+  .refine(oneSource, mixedSources);
 
 export const chatRequestSchema: z.ZodType<ChatRequest> = z.discriminatedUnion("action", [
   sendSchema,

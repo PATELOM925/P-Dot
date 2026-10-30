@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createConnectedAccountRepository } from "@/server/db/connected-accounts";
+import { createConversationRepository } from "@/server/db/conversations";
 import { sqlGateClient } from "../support/sql-gate-client";
 import { startSqlGate, type SqlGate } from "../support/sql-gate";
 
@@ -110,5 +111,39 @@ describe("connected accounts repository", () => {
     expect(await aliceRepo.deleteGoogle(alice, CIPHERTEXT)).toBe(true);
     expect(await aliceRepo.deleteGoogle(alice, CIPHERTEXT)).toBe(false);
     expect(await aliceRepo.getGoogleConnection(alice)).toBeNull();
+  });
+});
+
+describe("private source replies", () => {
+  const conversation = async (owner: string) =>
+    (await gate.admin<{ id: string }>("insert into conversations (user_id, title) values ($1, 'x') returning id", [owner])).rows[0]!.id;
+  const reply = (owner: string, conversationId: string, routeReason: string | null) =>
+    gate.admin("insert into messages (conversation_id, user_id, role, content, route_reason) values ($1, $2, 'assistant', 'x', $3)", [
+      conversationId,
+      owner,
+      routeReason,
+    ]);
+
+  it("finds a google_request or connector_read reply only in the caller's own conversation", async () => {
+    const owner = await gate.createUser();
+    const other = await gate.createUser();
+    const repo = createConversationRepository(sqlGateClient(gate, owner));
+    const clean = await conversation(owner);
+    await gate.admin("insert into messages (conversation_id, user_id, role, content) values ($1, $2, 'user', 'x')", [clean, owner]);
+    await reply(owner, clean, null);
+    await reply(owner, clean, "web_search");
+    expect(await repo.hasPrivateSourceReply(owner, clean)).toBe(false);
+
+    const google = await conversation(owner);
+    await reply(owner, google, "google_request");
+    expect(await repo.hasPrivateSourceReply(owner, google)).toBe(true);
+
+    const app = await conversation(owner);
+    await reply(owner, app, "connector_read");
+    expect(await repo.hasPrivateSourceReply(owner, app)).toBe(true);
+
+    const theirs = await conversation(other);
+    await reply(other, theirs, "google_request");
+    expect(await repo.hasPrivateSourceReply(owner, theirs)).toBe(false);
   });
 });

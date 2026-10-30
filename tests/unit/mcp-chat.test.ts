@@ -243,11 +243,11 @@ describe("connector reads in chat", () => {
     const s = await setup([{ text: "Hi." }], { repo });
     const first = await runTurn(s.deps, { action: "send", message: "hello", webSearch: false });
     const conversationId = first.prepared.ok ? first.prepared.turn.conversation.id : "";
-    repo.failConnectorCheck = true;
+    repo.failPrivateSourceCheck = true;
     s.requests.length = 0;
     await runTurn(s.deps, { action: "send", conversationId, message: "search", webSearch: true });
     expect(s.requests[0]!.tools?.map((tool) => tool.name) ?? []).not.toContain("web_search");
-    repo.failConnectorCheck = false;
+    repo.failPrivateSourceCheck = false;
     s.requests.length = 0;
     await runTurn(s.deps, { action: "send", conversationId, message: "search", webSearch: true });
     expect(s.requests[0]!.tools?.map((tool) => tool.name)).toContain("web_search");

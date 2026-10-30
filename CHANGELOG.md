@@ -18,6 +18,15 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
     - Replies render as safe Markdown with no new dependency: React elements only, links through `toSafeHttpUrl`, images as alt text, raw HTML as text. Parsing is linear. Sources keep their numbers when a link is removed.
     - Each reply turn shows one state: Working, no update for 15 seconds, Waiting for you, Stopped, Did not finish or Done. One error block under the turn shows Retry only when it can help, and the partial text stays, marked as not saved.
     - Phones get bottom tabs (Today, Chat, Memory, More), a More sheet with the other pages, Devices and sign-out, and a conversation drawer with Close, Esc, a backdrop and focus return.
+- **Gmail and Calendar chat tools with a "Use Google" toggle** ([decision 0014, section 3](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #30](https://github.com/PATELOM925/P-Dot/pull/30))
+  - Problem: P-Dot could connect Google, but the assistant could not read the user's mail or calendar, or propose an email or an event. Email text can try to give the model instructions, and private text could leave through a web search query.
+  - Resolution:
+    - "Use Google" in the composer "+" menu turns on, for one message, five tools: Gmail search and read, the calendar list, and email and event proposals.
+    - All Google text goes to the model in untrusted blocks, at most 12,000 characters in one turn.
+    - Web search, Google and connected apps are exclusive for a message. The request schema, the tool check and the composer each refuse two of them together. Several apps together stay allowed.
+    - A Google turn makes no web search. After a reply that read Google or a connected app, the model cannot write a search query in that conversation. A failed check counts as such a reply.
+    - The server writes an email or event proposal only when the user's own message asks for it, not negated, not quoted and not a question, and every address was written by the user. Otherwise nothing is saved.
+    - A credential that ended marks the connection for a reconnect, with a write that finishes after the response, and stops Google for the turn.
 - **Read-only Notion, Linear and Todoist connectors in chat** ([decision 0016](docs/decisions/0016-mcp-connectors.md)). ([PR #31](https://github.com/PATELOM925/P-Dot/pull/31))
   - Problem: P-Dot cannot read the user's notes and tasks in Notion, Linear or Todoist. Their MCP servers can change their tool definitions, and text in a result can try to give the model instructions.
   - Resolution:
