@@ -278,16 +278,22 @@ export function fakeApps(...apps: FakeApp[]) {
 export class FakeMcpAccounts implements McpAccountRepository {
   rows = new Map<string, McpTokenRow & { userId: string }>();
   private key = (userId: string, provider: McpServerId) => `${userId}:${provider}`;
+  private withoutOwner = (row: McpTokenRow & { userId: string }): McpTokenRow => ({
+    provider: row.provider,
+    subject: row.subject,
+    scopes: row.scopes,
+    status: row.status,
+    tokenCiphertext: row.tokenCiphertext,
+    createdAt: row.createdAt,
+  });
 
   async listMcp(userId: string) {
-    return [...this.rows.values()].filter((row) => row.userId === userId).map(({ userId: _u, ...row }) => row);
+    return [...this.rows.values()].filter((row) => row.userId === userId).map((row) => this.withoutOwner(row));
   }
 
   async getMcp(userId: string, provider: McpServerId) {
     const row = this.rows.get(this.key(userId, provider));
-    if (!row) return null;
-    const { userId: _u, ...rest } = row;
-    return { ...rest };
+    return row ? this.withoutOwner(row) : null;
   }
 
   async saveMcp(provider: McpServerId, subject: string, scopes: string[], tokenCiphertext: string, userId = "user-1") {
