@@ -51,6 +51,7 @@ import {
   type TurnState,
 } from "./turn-state";
 import { appendDictation, useDictation } from "./useDictation";
+import { useStickToBottom } from "./useStickToBottom";
 
 interface StreamingReply {
   text: string;
@@ -148,7 +149,7 @@ export function ChatWorkspace({
   const abortRef = useRef<AbortController | null>(null);
   const loadSeq = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const redirectIfUnauthorized = useCallback(
     (error: unknown): boolean => {
@@ -214,9 +215,8 @@ export function ChatWorkspace({
     };
   }, [initialConversationId, loadMessages, mode, redirectIfUnauthorized]);
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
-  }, [messages, streaming]);
+  // Follow the reply only while the user is at the bottom; otherwise offer "Jump to latest".
+  const stick = useStickToBottom(listRef, [messages, streaming, stopped, error]);
 
   useEffect(() => {
     if (!sending) return;
@@ -348,6 +348,7 @@ export function ChatWorkspace({
 
     setSending(true);
     setOpenMenu(null);
+    stick.jump();
     setError(null);
     setStopped(null);
     setStalled(false);
@@ -759,7 +760,7 @@ export function ChatWorkspace({
           <h1 className="chat-title">{activeTitle ?? (activeId ? "Conversation" : "New conversation")}</h1>
         </div>
 
-        <div className="message-list">
+        <div className="message-list" ref={listRef}>
           {loadingMessages && <p className="muted">Loading conversation…</p>}
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
@@ -842,7 +843,11 @@ export function ChatWorkspace({
             )
           )}
           {suggestionsFor(placedProposals.rest)}
-          <div ref={endRef} />
+          {stick.showJump && (
+            <button type="button" className="jump-latest" onClick={stick.jump}>
+              Jump to latest
+            </button>
+          )}
         </div>
 
         {/* Once per device: choose Ask first or Auto. Outside the form, so Enter on an option cannot send. */}

@@ -2766,6 +2766,24 @@ label.button[aria-disabled="true"] {
 
 /* Rich answers: citation chips, the sources row and the cards (src/features/chat/rich). */
 
+.message-list > .jump-latest {
+  position: sticky;
+  bottom: 0.25rem;
+  width: auto;
+  margin-top: auto;
+  min-height: 2.25rem;
+  padding: 0 1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .cite {
   position: relative;
   display: inline-flex;
