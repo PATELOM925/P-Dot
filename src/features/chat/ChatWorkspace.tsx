@@ -11,7 +11,8 @@ import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
-import { clearCarriedDraft, peekCarriedDraft, useModeSwitch } from "@/features/mode/useModeSwitch";
+import { chatStart, dropCarriedDraft, endChatModeSwitch } from "@/features/mode/switch-state";
+import { useModeSwitch } from "@/features/mode/useModeSwitch";
 import { MCP_SERVER_NAMES, type McpServerId } from "@/lib/connectors";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type {
@@ -122,12 +123,16 @@ export function ChatWorkspace({
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
-  const [activeId, setActiveId] = useState<string | null>(initialConversationId);
+  // A switch of Personal or Work mounts a new chat. It starts with no conversation, even when the
+  // address still has the old mode's ?c=, and it takes the draft that the switch carried.
+  const [start] = useState(() => chatStart(mode, initialConversationId, initialDraft));
+  useEffect(() => endChatModeSwitch(), []);
+  // The old mode's conversation id in the address when this chat mounted. It is never opened here.
+  const skippedId = start.conversationId === initialConversationId ? null : initialConversationId;
+  const [activeId, setActiveId] = useState<string | null>(start.conversationId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
-  const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
-  // A switch of Personal or Work in the "+" menu mounts a new chat, which takes the draft it carried.
-  const [draft, setDraft] = useState(() => initialDraft || (peekCarriedDraft() ?? ""));
-  useEffect(() => clearCarriedDraft(), []);
+  const [loadingMessages, setLoadingMessages] = useState(start.conversationId !== null);
+  const [draft, setDraft] = useState(start.draft);
   const modeSwitch = useModeSwitch(mode);
   const [webSearch, setWebSearch] = useState(false);
   // Deep research for the next message only (decision 0018). Web search is on with it.
@@ -248,11 +253,11 @@ export function ChatWorkspace({
       .catch((err: unknown) => {
         if (!cancelled && !redirectIfUnauthorized(err)) setListState("error");
       });
-    if (initialConversationId) void loadMessages(initialConversationId);
+    if (initialConversationId && initialConversationId !== skippedId) void loadMessages(initialConversationId);
     return () => {
       cancelled = true;
     };
-  }, [initialConversationId, loadMessages, mode, redirectIfUnauthorized]);
+  }, [initialConversationId, skippedId, loadMessages, mode, redirectIfUnauthorized]);
 
   // Follow the reply only while the user is at the bottom; otherwise offer "Jump to latest".
   const stick = useStickToBottom(listRef, [messages, streaming, stopped, error]);
@@ -432,6 +437,8 @@ export function ChatWorkspace({
       // Stop dictating, so words heard after Send do not land in the next message.
       dictation.cancel();
       setDraft("");
+      // A mode switch that is still pending must not show this draft again in the new chat.
+      dropCarriedDraft();
       setUseGoogle(false);
       if (research) {
         setResearch(false);
@@ -605,7 +612,9 @@ export function ChatWorkspace({
       title: "Search the web",
       description: messages.some((m) => m.route?.reason === "google_request" || m.route?.reason === "connector_read")
         ? "In this chat, only with your own words, because P-Dot read your Google or app data here."
-        : "Current pages, with sources.",
+        : sources.useGoogle || sources.apps.length > 0
+          ? "With Google or apps on, it searches with only your words."
+          : "Current pages, with sources.",
       chip: "Web search",
       chipClass: "chip-web",
       icon: "web",
