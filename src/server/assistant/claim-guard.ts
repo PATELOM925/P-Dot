@@ -32,15 +32,23 @@ export function claimsAction(text: string, actionAsked: boolean): boolean {
 
 /**
  * Removes each sentence that claims an action and adds one honest line.
- * The text stays as it is when no sentence claims an action.
+ * The text stays as it is when no sentence claims an action. Fenced blocks
+ * (code and rich cards) stay whole, so their JSON is never cut.
  */
 export function removeFalseClaims(text: string, actionAsked: boolean): { text: string; removed: boolean } {
   let removed = false;
-  const kept = text.replace(/[^.!?\n]+[.!?]*/g, (sentence) => {
-    if (!claimsAction(sentence, actionAsked)) return sentence;
-    removed = true;
-    return "";
-  });
+  const kept = text
+    .split(/(```[\s\S]*?(?:```|$))/)
+    .map((part) =>
+      part.startsWith("```")
+        ? part
+        : part.replace(/[^.!?\n]+[.!?]*/g, (sentence) => {
+            if (!claimsAction(sentence, actionAsked)) return sentence;
+            removed = true;
+            return "";
+          }),
+    )
+    .join("");
   if (!removed) return { text, removed };
   const tidy = kept
     .split("\n")

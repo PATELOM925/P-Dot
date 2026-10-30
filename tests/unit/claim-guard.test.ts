@@ -72,6 +72,12 @@ describe("removeFalseClaims", () => {
     expect(out.text).toBe(`Milk is on sale at No Frills.\n\nAnything else?\n\n${NO_CARD_LINE}`);
   });
 
+  it("never cuts a fenced card block", () => {
+    const block = '```pdot-steps\n{"title":"Plan","items":[{"title":"Reminder set for 6pm. Call mom."}]}\n```';
+    const out = removeFalseClaims(`I've set a reminder for 6pm.\n\n${block}`, true);
+    expect(out.text).toBe(`${block}\n\n${NO_CARD_LINE}`);
+  });
+
   it("counts 'reminder set' as a claim only when the user asked for an action", () => {
     const howTo = "Open the Clock app and tap Alarm. The alarm is set when the switch is green.";
     expect(removeFalseClaims(howTo, false)).toEqual({ text: howTo, removed: false });
