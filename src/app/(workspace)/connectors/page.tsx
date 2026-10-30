@@ -3,33 +3,29 @@ import Link from "next/link";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GoogleCard } from "@/features/connectors/GoogleCard";
 import { googleCardState, googleOutcomeMessage } from "@/features/connectors/google";
+import { connectorLayout } from "@/features/connectors/layout";
 import { McpCard } from "@/features/connectors/McpCard";
 import { mcpCardState, mcpOutcomeMessage } from "@/features/connectors/mcp";
+import { OpenOnPhoneCard } from "@/features/connectors/OpenOnPhoneCard";
 import { builtInStatus } from "@/features/connectors/status";
-import { MCP_SERVER_IDS } from "@/lib/connectors";
+import { TelegramCard, type TelegramCardState } from "@/features/connectors/TelegramCard";
+import { telegramOutcomeMessage } from "@/lib/telegram";
 import { DOCUMENT_LIST_LIMIT, MEMORY_LIST_LIMIT, REMINDER_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
 import { MODE_LABELS } from "@/lib/mode";
 import { requireAuth, type AuthContext } from "@/server/auth/session";
-import { getGoogleConfig, getMcpConfig } from "@/server/config";
+import { getGoogleConfig, getMcpConfig, getSiteUrl, getTelegramConfig, isMcpServerReady } from "@/server/config";
 import { createConnectedAccountRepository, createMcpAccountRepository } from "@/server/db/connected-accounts";
 import { createDocumentRepository } from "@/server/db/documents";
 import { createMemoryRepository } from "@/server/db/memories";
 import { createReminderRepository } from "@/server/db/reminders";
 import { createTaskRepository } from "@/server/db/tasks";
+import { createTelegramLinkRepository } from "@/server/db/telegram-links";
 import { listConnections, type McpConnectionView } from "@/server/mcp/health";
 import { getMode } from "@/server/mode";
+import { telegramLinkState } from "@/server/telegram/view";
 import type { Mode } from "@/types/api";
 
 export const metadata: Metadata = { title: "Connectors · P-Dot" };
-
-// Planned connectors, shown as a preview. None can be connected yet.
-const PLANNED = [
-  { key: "telegram", name: "Telegram", can: "deliver your daily brief and to-do list to your own chat", asks: "before messaging anyone else" },
-  { key: "github", name: "GitHub", can: "read pull requests and issues you can see", asks: "before commenting, merging or changing anything" },
-  { key: "vercel", name: "Vercel", can: "report deploy status and errors", asks: "before deploying or changing settings" },
-  { key: "whatsapp", name: "WhatsApp", can: "send you briefs and reminders", asks: "before every message to another person" },
-  { key: "phone", name: "Phone calls", can: "call to book appointments for you", asks: "before every call, with the number and purpose shown" },
-];
 
 /** Reads the user's lists for one mode and turns them into status lines, as of the time of the request. */
 async function loadBuiltInStatus(auth: AuthContext, mode: Mode) {
@@ -64,8 +60,17 @@ async function loadMcpConnections(auth: AuthContext, key: Uint8Array): Promise<M
   }
 }
 
+/** The Telegram card for a user with an account. A failure here never breaks the rest of the page. */
+async function loadTelegramCard(auth: AuthContext, key: Uint8Array): Promise<TelegramCardState> {
+  try {
+    return await telegramLinkState(createTelegramLinkRepository(auth.supabase), key, auth.userId);
+  } catch {
+    return { kind: "load_failed" };
+  }
+}
+
 interface ConnectorsPageProps {
-  searchParams: Promise<{ google?: string | string[]; mcp?: string | string[]; app?: string | string[] }>;
+  searchParams: Promise<{ google?: string | string[]; mcp?: string | string[]; app?: string | string[]; telegram?: string | string[] }>;
 }
 
 export default async function ConnectorsPage({ searchParams }: ConnectorsPageProps) {
@@ -73,14 +78,23 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
   const mode = await getMode();
   const configured = getGoogleConfig().status === "ready";
   const mcpConfig = getMcpConfig();
-  const [status, google, mcpViews] = await Promise.all([
+  const telegramConfig = getTelegramConfig();
+  // A connector without its settings stays under "Coming soon" (decision 0020).
+  const layout = connectorLayout({ isAppReady: (app) => isMcpServerReady(app), telegramReady: telegramConfig.status === "ready" });
+  const [status, google, mcpViews, telegram] = await Promise.all([
     loadBuiltInStatus(auth, mode),
     configured && !auth.isAnonymous ? loadGoogleConnection(auth) : Promise.resolve(null),
     mcpConfig.status === "ready" && !auth.isAnonymous ? loadMcpConnections(auth, mcpConfig.encryptionKey) : Promise.resolve([]),
+    telegramConfig.status !== "ready"
+      ? Promise.resolve(null)
+      : auth.isAnonymous
+        ? Promise.resolve<TelegramCardState>({ kind: "account_required" })
+        : loadTelegramCard(auth, telegramConfig.config.sealKey),
   ]);
   const params = await searchParams;
   const googleMessage = googleOutcomeMessage(params.google);
   const mcpMessage = mcpOutcomeMessage(params.mcp, params.app);
+  const telegramMessage = telegramOutcomeMessage(params.telegram);
 
   // P-Dot's own lists and files. The first three are the only things an approved action can change (decision 0009).
   const builtIn = [
@@ -128,7 +142,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
         )}
         <div className="card-grid">
           <GoogleCard state={googleCardState(configured, google, auth.isAnonymous === true)} message={googleMessage} />
-          {MCP_SERVER_IDS.map((app) => (
+          {layout.apps.map((app) => (
             <McpCard
               key={app}
               app={app}
@@ -140,6 +154,14 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
               message={params.app === app ? mcpMessage : null}
             />
           ))}
+          {telegram && <TelegramCard state={telegram} message={telegramMessage} />}
+        </div>
+      </section>
+
+      <section className="stack" aria-labelledby="devices-heading">
+        <h2 id="devices-heading">Your devices</h2>
+        <div className="card-grid">
+          <OpenOnPhoneCard siteUrl={getSiteUrl()} />
         </div>
       </section>
 
@@ -163,9 +185,9 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
       </section>
 
       <details className="more-details stack">
-        <summary>Coming soon ({PLANNED.length + 1})</summary>
+        <summary>Coming soon ({layout.planned.length + 1})</summary>
         <div className="card-grid">
-          {PLANNED.map((connector) => (
+          {layout.planned.map((connector) => (
             <article key={connector.name} className="panel">
               <div className="panel-heading">
                 <h3>

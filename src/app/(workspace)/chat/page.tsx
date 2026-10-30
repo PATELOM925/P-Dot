@@ -5,10 +5,12 @@ import { hasAccount } from "@/lib/auth-identity";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type { McpServerId } from "@/lib/connectors";
 import { requireAuth, type AuthContext } from "@/server/auth/session";
-import { getGoogleConfig, getMcpConfig, isMcpServerReady } from "@/server/config";
+import { getGoogleConfig, getMcpConfig, getTelegramConfig, isMcpServerReady } from "@/server/config";
 import { createConnectedAccountRepository, createMcpAccountRepository } from "@/server/db/connected-accounts";
+import { createTelegramLinkRepository } from "@/server/db/telegram-links";
 import { listConnections, usableApps } from "@/server/mcp/health";
 import { getMode } from "@/server/mode";
+import { telegramLinkState } from "@/server/telegram/view";
 
 export const metadata: Metadata = { title: "Chat · P-Dot" };
 
@@ -40,10 +42,22 @@ async function loadConnectedApps(auth: AuthContext): Promise<McpServerId[]> {
   }
 }
 
+/** The linked Telegram chat for "Send to Telegram" (decision 0020). Null when off, not linked or on any failure. */
+async function loadTelegram(auth: AuthContext): Promise<{ name: string } | null> {
+  const config = getTelegramConfig();
+  if (config.status !== "ready" || !hasAccount(auth)) return null;
+  try {
+    const state = await telegramLinkState(createTelegramLinkRepository(auth.supabase), config.config.sealKey, auth.userId);
+    return state.kind === "linked" ? { name: state.name } : null;
+  } catch {
+    return null;
+  }
+}
+
 export default async function ChatPage({ searchParams }: ChatPageProps) {
   const { c, ask } = await searchParams;
   const [auth, mode] = await Promise.all([requireAuth("/chat"), getMode()]);
-  const [connectedApps, google] = await Promise.all([loadConnectedApps(auth), googleState(auth)]);
+  const [connectedApps, google, telegram] = await Promise.all([loadConnectedApps(auth), googleState(auth), loadTelegram(auth)]);
   // Keyed by mode so switching Personal/Work starts a fresh workspace for that side.
   return (
     <ChatWorkspace
@@ -55,6 +69,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
       initialConversationId={typeof c === "string" ? c : null}
       initialDraft={typeof ask === "string" ? ask.slice(0, MAX_MESSAGE_CHARS) : ""}
       connectedApps={connectedApps}
+      telegram={telegram}
     />
   );
 }
