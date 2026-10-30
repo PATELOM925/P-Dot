@@ -36,7 +36,7 @@ export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionPr
   const otherMode: Mode = mode === "work" ? "personal" : "work";
 
   return (
-    <section className="panel" aria-labelledby="approval-heading">
+    <section className="panel" id="approvals" aria-labelledby="approval-heading">
       <div className="panel-heading">
         <h2 id="approval-heading">Waiting for your approval</h2>
         {waiting > 0 && <span className="status-pill status-proposed">{waiting} waiting</span>}

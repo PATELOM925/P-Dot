@@ -150,13 +150,44 @@ NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<publishable key from db:start>
 SITE_URL=http://localhost:3000
 
-# Needed only for chat replies; auth and history work without them
+# Needed only for chat replies; auth and history work without them.
+# No keys yet? See "Try chat without API keys" below.
 NEBIUS_API_KEY=<your Nebius key>
 # Optional: the model chains for each tier have defaults (see .env.example).
 TAVILY_API_KEY=
 ```
 
 If the CLI prints an "anon key" instead of a publishable key, use that.
+
+### Seed example data
+
+`npm run seed:local` creates a demo account on your local Supabase and fills it with example data, so every screen has something to show: 8 tasks, 5 reminders, 6 memories (one waiting for approval) and 2 conversations, split across Personal and Work. Run it again any time to reset that account. It refuses to run against anything except this machine. The demo login (email and password) is at the top of [`scripts/seed-local.mjs`](scripts/seed-local.mjs); sign in at `http://localhost:3000/login`.
+
+### Try chat without API keys (simulated Nebius and Tavily)
+
+`npm run mock:providers` starts a small local server that stands in for Nebius Token Factory and Tavily on `http://127.0.0.1:4010`. It speaks the same wire formats the app parses (streamed chat completions with tool calls, embeddings, model list, Tavily search), so chat, streaming, web search with source chips, approval cards, memories and reminders all work end to end. **It is not a real model:** replies are rule-based and start with "Simulated reply", and its "web pages" are fake `example.com` pages. Use it to test the app, not the quality of answers.
+
+In `.env.local`:
+
+```env
+NEBIUS_API_KEY=local-mock-key
+NEBIUS_BASE_URL=http://127.0.0.1:4010/v1
+TAVILY_API_KEY=local-mock-key
+TAVILY_BASE_URL=http://127.0.0.1:4010/tavily
+```
+
+Then run the mock in one terminal and the app in another:
+
+```bash
+npm run mock:providers
+npm run dev
+```
+
+Things the simulator reacts to: "Remind me to call the dentist tomorrow at 10 am" (a reminder card), "Remember that I prefer short answers" (a memory card), "Add a task to buy flowers" (a task card), the Search the web toggle (three simulated sources), and topics outside the current Work or Personal mode (a redirect message).
+
+### Use the real Nebius and Tavily
+
+Put your real keys in `.env.local`, remove `NEBIUS_BASE_URL` (the default is `https://api.tokenfactory.nebius.com/v1`) and leave `TAVILY_BASE_URL` empty. `TAVILY_BASE_URL` only accepts https, or http to this machine, so a key cannot be sent in the clear to another host. Restart `npm run dev`, then check `http://localhost:3000/api/health`: `"inference": true` and `"webSearch": true` mean the keys are present (it does not call the providers). Send one message with and without "Search the web" to confirm real replies and sources. Chat costs money on a real key; the daily caps in `.env.example` apply.
 
 ### 3. Run the app
 

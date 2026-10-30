@@ -1,6 +1,16 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  approvalIndex,
+  isSettled,
+  revealedAfterDecision,
+  runProgress,
+  runStatusLine,
+  runTarget,
+  stepPhase,
+  type ApprovalStatus,
+} from "./agent-run";
 
 export type AgentStepState = "done" | "approval" | "next";
 
@@ -252,18 +262,266 @@ export const USE_CASES: readonly UseCase[] = [
   },
 ] as const;
 
-type ApprovalStatus = "waiting" | "approved" | "skipped";
+const STEP_MS = 950;
+/** How long the old scenario takes to fade out before the new one fades in. */
+const FADE_MS = 260;
+/** Matches the wrapper's 0.375rem padding in the stylesheet (6px on each side). */
+const PANEL_PADDING_PX = 6;
+const FIRST_STEP_MS = 600;
+/** The demo approves the waiting step after this short pause, so every run is shown to the end by default. */
+const AUTO_APPROVE_MS = 1800;
+/** After a run has fully finished, the card waits this long, then moves to the next scenario. */
+const ADVANCE_AFTER_MS = 3200;
+
+const subscribeReducedMotion = (onChange: () => void) => {
+  const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+};
+const readReducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function useReducedMotion(): boolean {
+  return useSyncExternalStore(subscribeReducedMotion, readReducedMotion, () => false);
+}
+
+interface AgentRunProps {
+  useCase: UseCase;
+  reducedMotion: boolean;
+  /** The visitor is hovering or focused on the card: nothing happens on its own. */
+  paused: boolean;
+  onAdvance: () => void;
+}
+
+/**
+ * One simulated run: steps appear one by one, the run pauses at the step that
+ * needs the user, and carries on after Approve or Skip. Mount it with a new key
+ * to start over. Nothing here talks to a server; it is only an illustration.
+ */
+function AgentRun({ useCase, reducedMotion, paused, onAdvance }: AgentRunProps) {
+  const { steps } = useCase;
+  const [status, setStatus] = useState<ApprovalStatus>("waiting");
+  const [revealed, setRevealed] = useState(0);
+  const [decidedBy, setDecidedBy] = useState<"you" | "demo">("you");
+
+  // With reduced motion there is no animation: the run is shown at its stopping point at once.
+  const shown = reducedMotion ? runTarget(steps, status) : revealed;
+  const settled = isSettled(steps, shown, status);
+
+  useEffect(() => {
+    if (reducedMotion || settled) return;
+    const timer = setTimeout(() => setRevealed((count) => count + 1), shown === 0 ? FIRST_STEP_MS : STEP_MS);
+    return () => clearTimeout(timer);
+  }, [reducedMotion, settled, shown]);
+
+  const finished = settled && status !== "waiting";
+
+  // By default the demo plays the part of the user and approves the waiting step, so nobody has to
+  // click to see how a finished run looks. The visitor can still choose Approve or Skip first, or switch afterwards.
+  useEffect(() => {
+    if (!settled || status !== "waiting") return;
+    const timer = setTimeout(() => {
+      setDecidedBy("demo");
+      setStatus("approved");
+      setRevealed((count) => revealedAfterDecision(steps, Math.max(count, shown)));
+    }, AUTO_APPROVE_MS);
+    return () => clearTimeout(timer);
+  }, [settled, status, steps, shown]);
+
+  // The tab moves on only after every step has finished (including the ones after the approval).
+  useEffect(() => {
+    if (!finished || paused) return;
+    const timer = setTimeout(onAdvance, ADVANCE_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [finished, paused, onAdvance]);
+
+  const decide = (next: ApprovalStatus) => {
+    setDecidedBy("you");
+    setStatus(next);
+    setRevealed((count) => revealedAfterDecision(steps, Math.max(count, shown)));
+  };
+
+  /** Show the other outcome: the steps after the approval step run again from there. */
+  const switchOutcome = (next: ApprovalStatus) => {
+    setDecidedBy("you");
+    setStatus(next);
+    setRevealed(revealedAfterDecision(steps, approvalIndex(steps)));
+  };
+
+  const progress = runProgress(steps, shown);
+
+  return (
+    <>
+      <div className="agent-card-head">
+        <div>
+          <p className="small muted agent-label">
+            Task <span className="agent-category-tag">• {useCase.category}</span>
+          </p>
+          <p className="agent-task">{useCase.task}</p>
+        </div>
+        {!settled ? (
+          <span key="working" className="chip chip-working agent-badge">
+            Working…
+          </span>
+        ) : status === "waiting" ? (
+          <span key="waiting" className="chip chip-warning agent-badge">
+            {useCase.badgeWaiting}
+          </span>
+        ) : status === "approved" ? (
+          <span key="approved" className="chip chip-success agent-badge">
+            {useCase.badgeApproved}
+          </span>
+        ) : (
+          <span key="skipped" className="chip chip-neutral agent-badge">
+            {useCase.badgeSkipped}
+          </span>
+        )}
+      </div>
+
+      <div className="agent-progress">
+        <div
+          className="agent-progress-bar"
+          role="progressbar"
+          aria-label="Simulated run progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress * 100)}
+        >
+          <span style={{ width: `${progress * 100}%` }} />
+        </div>
+        <p className="small muted agent-status-line" role="status">
+          {runStatusLine(steps, shown, status)}
+        </p>
+      </div>
+
+      <ol className="agent-steps">
+        {steps.map((step, index) => {
+          const phase = stepPhase(steps, index, shown, status);
+          const isApprovalStep = step.state === "approval";
+          const bulletClass =
+            phase === "done" || phase === "approved"
+              ? "agent-bullet agent-bullet-done"
+              : phase === "skipped"
+                ? "agent-bullet agent-bullet-skipped"
+                : phase === "approval"
+                  ? "agent-bullet agent-bullet-approval"
+                  : phase === "working"
+                    ? "agent-bullet agent-bullet-working"
+                    : "agent-bullet agent-bullet-queued";
+
+          return (
+            <li key={step.title} className={`agent-step agent-step-${phase}`}>
+              <span className={bulletClass} aria-hidden="true">
+                {phase === "approved" || phase === "done" ? "✓" : index + 1}
+              </span>
+
+              <div className="agent-step-body">
+                <p className="agent-step-title">{step.title}</p>
+
+                {phase === "working" && (
+                  <p className="agent-step-detail agent-working">
+                    {step.tool && <span className={`chip chip-${step.tool.toLowerCase()}`}>{step.tool}</span>}
+                    <span className="agent-dots" aria-label="Working">
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  </p>
+                )}
+
+                {phase === "done" && step.detail && (
+                  <p className="agent-step-detail">
+                    {step.tool && <span className={`chip chip-${step.tool.toLowerCase()}`}>{step.tool}</span>} {step.detail}
+                  </p>
+                )}
+
+                {!isApprovalStep && phase === "queued" && step.tool && (
+                  <p className="agent-step-detail">
+                    <span className={`chip chip-${step.tool.toLowerCase()} chip-queued`}>{step.tool}</span>
+                  </p>
+                )}
+
+                {isApprovalStep && phase === "approval" && (
+                  <div className="agent-approval">
+                    <p className="small">{step.approvalPrompt}</p>
+                    <div className="actions">
+                      <button type="button" className="button button-primary button-small" onClick={() => decide("approved")}>
+                        Approve
+                      </button>
+                      <button type="button" className="button button-small" onClick={() => decide("skipped")}>
+                        Skip
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {isApprovalStep && phase === "approved" && (
+                  <div className="agent-approval agent-approval-confirmed">
+                    <div className="agent-approval-header">
+                      <span>{decidedBy === "you" ? "✓ Approved by you" : "✓ Approved (demo)"}</span>
+                      {finished && (
+                        <button type="button" className="agent-switch-btn" onClick={() => switchOutcome("skipped")}>
+                          See it skipped instead
+                        </button>
+                      )}
+                    </div>
+                    <p className="small">{step.approvedDetail}</p>
+                  </div>
+                )}
+
+                {isApprovalStep && phase === "skipped" && (
+                  <div className="agent-approval agent-approval-skipped">
+                    <div className="agent-approval-header">
+                      <span>Skipped by you</span>
+                      {finished && (
+                        <button type="button" className="agent-switch-btn" onClick={() => switchOutcome("approved")}>
+                          See it approved instead
+                        </button>
+                      )}
+                    </div>
+                    <p className="small">{step.skippedDetail}</p>
+                  </div>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </>
+  );
+}
 
 export function DynamicAgentCard() {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalStatus>>({});
+  // The scenario on screen. It follows the selected tab after the old one has faded out.
+  const [shownIndex, setShownIndex] = useState(0);
+  const [panelHeight, setPanelHeight] = useState<number | null>(null);
   const [isPaused, setIsPaused] = useState(false);
-  const [userInteracted, setUserInteracted] = useState(false);
   const containerRef = useRef<HTMLElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotion();
 
   const fallbackCase: UseCase = USE_CASES[0] as UseCase;
-  const currentCase: UseCase = USE_CASES[selectedIndex] ?? fallbackCase;
-  const currentApprovalStatus = approvalStates[currentCase.id] ?? "waiting";
+  const currentCase: UseCase = USE_CASES[shownIndex] ?? fallbackCase;
+  const leaving = shownIndex !== selectedIndex;
+  const innerRef = useRef<HTMLDivElement>(null);
+
+  // Fade the old scenario out, swap, and fade the new one in.
+  useEffect(() => {
+    if (shownIndex === selectedIndex) return;
+    const timer = setTimeout(() => setShownIndex(selectedIndex), reducedMotion ? 0 : FADE_MS);
+    return () => clearTimeout(timer);
+  }, [selectedIndex, shownIndex, reducedMotion]);
+
+  // Let the card grow and shrink smoothly when the content changes height.
+  useEffect(() => {
+    const inner = innerRef.current;
+    if (!inner || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setPanelHeight(Math.ceil(entry.contentRect.height));
+    });
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
 
   const nextUseCase = useCallback(() => {
     setSelectedIndex((prev) => (prev + 1) % USE_CASES.length);
@@ -273,49 +531,39 @@ export function DynamicAgentCard() {
     setSelectedIndex((prev) => (prev - 1 + USE_CASES.length) % USE_CASES.length);
   }, []);
 
-  const handleSelectCase = (index: number) => {
-    setUserInteracted(true);
+  const select = (index: number) => {
     setSelectedIndex(index);
   };
 
-  const handleApprove = () => {
-    setUserInteracted(true);
-    setApprovalStates((prev) => ({
-      ...prev,
-      [currentCase.id]: "approved",
-    }));
-  };
-
-  const handleSkip = () => {
-    setUserInteracted(true);
-    setApprovalStates((prev) => ({
-      ...prev,
-      [currentCase.id]: "skipped",
-    }));
-  };
-
-  const handleReset = () => {
-    setApprovalStates((prev) => ({
-      ...prev,
-      [currentCase.id]: "waiting",
-    }));
-  };
-
-  // Auto-advance through use cases unless user is hovering, focused, or manually interacted
+  // Centre the selected tab in the scrolling tab row, so it is fully visible and clear of the soft
+  // fade at both edges (the browser stops at the ends, so the first and last tabs sit against them).
   useEffect(() => {
-    if (isPaused || userInteracted) return;
+    const list = tabsRef.current;
+    if (!list) return;
+    const reveal = (smooth: boolean) => {
+      const tab = list.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+      if (!tab) return;
+      const left = tab.offsetLeft - (list.clientWidth - tab.offsetWidth) / 2;
+      list.scrollTo({ left: Math.max(0, left), behavior: smooth && !reducedMotion ? "smooth" : "auto" });
+    };
+    reveal(true);
+    // A narrower window or a late font can move the tab, so centre it again then, without animation.
+    const onResize = () => reveal(false);
+    window.addEventListener("resize", onResize);
+    void document.fonts?.ready.then(() => reveal(false));
+    return () => window.removeEventListener("resize", onResize);
+  }, [selectedIndex, reducedMotion]);
 
-    // Honor prefers-reduced-motion
-    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setSelectedIndex((prev) => (prev + 1) % USE_CASES.length);
-    }, 7000);
-
-    return () => clearInterval(timer);
-  }, [isPaused, userInteracted]);
+  const onTabKeyDown = (event: React.KeyboardEvent) => {
+    const key = event.key;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return;
+    event.preventDefault();
+    const last = USE_CASES.length - 1;
+    const next =
+      key === "Home" ? 0 : key === "End" ? last : key === "ArrowRight" ? (selectedIndex + 1) % USE_CASES.length : (selectedIndex - 1 + USE_CASES.length) % USE_CASES.length;
+    select(next);
+    requestAnimationFrame(() => document.getElementById(`agent-tab-${USE_CASES[next]?.id}`)?.focus());
+  };
 
   return (
     <section
@@ -328,27 +576,30 @@ export function DynamicAgentCard() {
       onBlur={() => setIsPaused(false)}
     >
       <div className="agent-card-nav">
-        <div className="agent-tabs" role="tablist" aria-label="Personal bot use cases">
-          {USE_CASES.map((useCase, idx) => {
-            const isActive = idx === selectedIndex;
-            return (
-              <button
-                key={useCase.id}
-                type="button"
-                role="tab"
-                id={`agent-tab-${useCase.id}`}
-                aria-selected={isActive}
-                aria-controls={`agent-panel-${useCase.id}`}
-                className={`agent-tab${isActive ? " is-active" : ""}`}
-                onClick={() => handleSelectCase(idx)}
-              >
-                <span className="agent-tab-icon" aria-hidden="true">
-                  {useCase.icon}
-                </span>
-                <span>{useCase.tabLabel}</span>
-              </button>
-            );
-          })}
+        <div className="agent-tabs-wrap">
+          <div className="agent-tabs" role="tablist" aria-label="Personal bot use cases" ref={tabsRef} onKeyDown={onTabKeyDown}>
+            {USE_CASES.map((useCase, idx) => {
+              const isActive = idx === selectedIndex;
+              return (
+                <button
+                  key={useCase.id}
+                  type="button"
+                  role="tab"
+                  id={`agent-tab-${useCase.id}`}
+                  aria-selected={isActive}
+                  aria-controls={`agent-panel-${useCase.id}`}
+                  tabIndex={isActive ? 0 : -1}
+                  className={`agent-tab${isActive ? " is-active" : ""}`}
+                  onClick={() => select(idx)}
+                >
+                  <span className="agent-tab-icon" aria-hidden="true">
+                    {useCase.icon}
+                  </span>
+                  <span>{useCase.tabLabel}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <div className="agent-nav-controls" aria-label="Use case carousel controls">
@@ -356,7 +607,6 @@ export function DynamicAgentCard() {
             type="button"
             className="agent-nav-btn"
             onClick={() => {
-              setUserInteracted(true);
               prevUseCase();
             }}
             aria-label="Previous scenario"
@@ -368,7 +618,6 @@ export function DynamicAgentCard() {
             type="button"
             className="agent-nav-btn"
             onClick={() => {
-              setUserInteracted(true);
               nextUseCase();
             }}
             aria-label="Next scenario"
@@ -379,147 +628,22 @@ export function DynamicAgentCard() {
         </div>
       </div>
 
-      <div
-        id={`agent-panel-${currentCase.id}`}
-        role="tabpanel"
-        aria-labelledby={`agent-tab-${currentCase.id}`}
-        className="agent-card-panel"
-      >
-        <div className="agent-card-head">
-          <div>
-            <p className="small muted agent-label">
-              Task <span className="agent-category-tag">• {currentCase.category}</span>
-            </p>
-            <p className="agent-task">{currentCase.task}</p>
-          </div>
-          {currentApprovalStatus === "waiting" && (
-            <span className="chip chip-warning">{currentCase.badgeWaiting}</span>
-          )}
-          {currentApprovalStatus === "approved" && (
-            <span className="chip chip-success">{currentCase.badgeApproved}</span>
-          )}
-          {currentApprovalStatus === "skipped" && (
-            <span className="chip chip-neutral">{currentCase.badgeSkipped}</span>
-          )}
+      <div className="agent-panel-wrap" style={panelHeight === null ? undefined : { height: panelHeight + PANEL_PADDING_PX * 2 }}>
+        <div
+          ref={innerRef}
+          id={`agent-panel-${currentCase.id}`}
+          role="tabpanel"
+          aria-labelledby={`agent-tab-${currentCase.id}`}
+          className={`agent-card-panel${leaving ? " is-leaving" : ""}`}
+        >
+          <AgentRun
+            key={currentCase.id}
+            useCase={currentCase}
+            reducedMotion={reducedMotion}
+            paused={isPaused || leaving}
+            onAdvance={nextUseCase}
+          />
         </div>
-
-        <ol className="agent-steps">
-          {currentCase.steps.map((step, index) => {
-            const isApprovalStep = step.state === "approval";
-            const isSubsequentStep = index > 3;
-
-            // Compute dynamic step display based on interactive approval state
-            let stepStateClass = `agent-step-${step.state}`;
-            let bulletClass = "agent-bullet";
-
-            if (isApprovalStep) {
-              if (currentApprovalStatus === "approved") {
-                stepStateClass = "agent-step-done";
-                bulletClass = "agent-bullet agent-bullet-done";
-              } else if (currentApprovalStatus === "skipped") {
-                stepStateClass = "agent-step-skipped";
-                bulletClass = "agent-bullet agent-bullet-skipped";
-              } else {
-                stepStateClass = "agent-step-approval";
-              }
-            } else if (isSubsequentStep && currentApprovalStatus === "approved") {
-              stepStateClass = "agent-step-done";
-              bulletClass = "agent-bullet agent-bullet-done";
-            }
-
-            return (
-              <li key={step.title} className={`agent-step ${stepStateClass}`}>
-                <span className={bulletClass} aria-hidden="true">
-                  {isApprovalStep && currentApprovalStatus === "approved" ? "✓" : index + 1}
-                </span>
-
-                <div className="agent-step-body">
-                  <p className="agent-step-title">{step.title}</p>
-
-                  {step.tool && (
-                    <p className="agent-step-detail">
-                      <span className={`chip chip-${step.tool.toLowerCase()}`}>{step.tool}</span> {step.detail}
-                    </p>
-                  )}
-
-                  {!step.tool && step.state === "done" && !isApprovalStep && (
-                    <p className="agent-step-detail">{step.detail}</p>
-                  )}
-
-                  {!step.tool && isSubsequentStep && (
-                    <p className="agent-step-detail">
-                      {currentApprovalStatus === "approved"
-                        ? step.detail
-                        : currentApprovalStatus === "skipped"
-                        ? "Proceeding with remaining items..."
-                        : step.detail}
-                    </p>
-                  )}
-
-                  {isApprovalStep && (
-                    <>
-                      {currentApprovalStatus === "waiting" && (
-                        <div className="agent-approval">
-                          <p className="small">{step.approvalPrompt}</p>
-                          <div className="actions">
-                            <button
-                              type="button"
-                              className="button button-primary button-small"
-                              onClick={handleApprove}
-                            >
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              className="button button-small"
-                              onClick={handleSkip}
-                            >
-                              Skip
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {currentApprovalStatus === "approved" && (
-                        <div className="agent-approval agent-approval-confirmed">
-                          <div className="agent-approval-header">
-                            <span>✓ Approved by you</span>
-                            <button
-                              type="button"
-                              className="agent-reset-btn"
-                              onClick={handleReset}
-                              title="Reset step state"
-                            >
-                              ↺ Reset
-                            </button>
-                          </div>
-                          <p className="small">{step.approvedDetail}</p>
-                        </div>
-                      )}
-
-                      {currentApprovalStatus === "skipped" && (
-                        <div className="agent-approval agent-approval-skipped">
-                          <div className="agent-approval-header">
-                            <span>Bypassed by you</span>
-                            <button
-                              type="button"
-                              className="agent-reset-btn"
-                              onClick={handleReset}
-                              title="Reset step state"
-                            >
-                              ↺ Reset
-                            </button>
-                          </div>
-                          <p className="small">{step.skippedDetail}</p>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
       </div>
 
       <div className="agent-foot">

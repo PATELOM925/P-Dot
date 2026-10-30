@@ -7,7 +7,7 @@ import { NavLinks } from "./NavLinks";
 
 export function WorkspaceHeader({ email, trial, mode }: { email: string | null; trial: boolean; mode: Mode }) {
   return (
-    <header className="workspace-header">
+    <header className="workspace-header" data-mode={mode}>
       <Link href="/chat" className="brand">
         P-Dot
       </Link>

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { ChatWorkspace } from "@/features/chat/ChatWorkspace";
 import type { GoogleChatState } from "@/features/chat/composer-sources";
 import { hasAccount } from "@/lib/auth-identity";
+import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type { McpServerId } from "@/lib/connectors";
 import { requireAuth, type AuthContext } from "@/server/auth/session";
 import { getGoogleConfig, getMcpConfig } from "@/server/config";
@@ -12,7 +13,7 @@ import { getMode } from "@/server/mode";
 export const metadata: Metadata = { title: "Chat · P-Dot" };
 
 interface ChatPageProps {
-  searchParams: Promise<{ c?: string | string[] }>;
+  searchParams: Promise<{ c?: string | string[]; ask?: string | string[] }>;
 }
 
 /** What the "Use Google" item shows. The server checks every flag again on each message (decision 0014). */
@@ -39,7 +40,7 @@ async function loadConnectedApps(auth: AuthContext): Promise<McpServerId[]> {
 }
 
 export default async function ChatPage({ searchParams }: ChatPageProps) {
-  const { c } = await searchParams;
+  const { c, ask } = await searchParams;
   const [auth, mode] = await Promise.all([requireAuth("/chat"), getMode()]);
   const [connectedApps, google] = await Promise.all([loadConnectedApps(auth), googleState(auth)]);
   // Keyed by mode so switching Personal/Work starts a fresh workspace for that side.
@@ -51,6 +52,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
       trial={auth.isAnonymous === true}
       google={google}
       initialConversationId={typeof c === "string" ? c : null}
+      initialDraft={typeof ask === "string" ? ask.slice(0, MAX_MESSAGE_CHARS) : ""}
       connectedApps={connectedApps}
     />
   );

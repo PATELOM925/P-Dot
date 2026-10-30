@@ -88,10 +88,16 @@ describe("check-worker-env command", () => {
     expect(result.stdout + result.stderr).not.toContain(FAKE);
   });
 
-  it("fails when started through a symbolic link", () => {
+  it("fails when started through a symbolic link", (context) => {
     const dir = project(withSecret);
     const link = join(dir, "linked-check.mjs");
-    symlinkSync(SCRIPT, link);
+    try {
+      symlinkSync(SCRIPT, link);
+    } catch (error) {
+      // Windows only lets accounts with the symlink privilege (or Developer Mode) create links.
+      if ((error as NodeJS.ErrnoException).code === "EPERM") context.skip("This account cannot create symbolic links");
+      throw error;
+    }
     expect(run(dir, link).status).toBe(1);
   });
 

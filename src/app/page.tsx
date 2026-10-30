@@ -2,6 +2,7 @@ import Link from "next/link";
 import { TryWithoutAccount } from "@/features/auth/TryWithoutAccount";
 import { DynamicAgentCard } from "@/features/landing/DynamicAgentCard";
 import { SiteFooter } from "@/components/layout/SiteFooter";
+import { Mascot } from "@/components/ui/Mascot";
 
 const CONNECTORS = [
   { name: "Gmail", chip: "chip-gmail" },
@@ -35,7 +36,10 @@ export default function LandingPage() {
 
       <main className="landing-body">
         <section className="landing-copy">
-          <p className="pill">Your personal assistant bot</p>
+          <div className="hero-intro">
+            <Mascot size={64} float />
+            <p className="pill">Your personal assistant bot</p>
+          </div>
           <h1>
             Don&apos;t just chat.
             <br />
