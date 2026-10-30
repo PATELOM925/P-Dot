@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { ThisDevice } from "@/features/pwa/ThisDevice";
 import { requireAuth } from "@/server/auth/session";
 
@@ -18,24 +19,31 @@ export default async function DevicesPage() {
 
   return (
     <main className="page stack">
-      <div>
-        <h1>Devices</h1>
-        <p className="muted">
-          Pair your own laptop and phone so P-Dot can act on them. Every action on a device will wait for your approval
-          and be written to the <Link href="/action-log">action log</Link>.
-        </p>
-      </div>
+      <PageHeader
+        title="Devices"
+        info={
+          <>
+            <p>
+              Later, you can pair your own laptop and phone so P-Dot can act on them. Each action on a device will wait
+              for your approval and show in <Link href="/activity">Activity</Link>.
+            </p>
+            <p>
+              Pairing needs a pairing service and a small P-Dot app on each device. These are not built yet. Nothing on
+              this page connects to another device.
+            </p>
+          </>
+        }
+      />
 
       <p className="alert alert-warning" role="status">
-        Device pairing is not available yet. It needs a pairing service and a small P-Dot app on each device, which are
-        not built. Nothing on this page connects to another device; the steps below preview the plan.
+        Device pairing is not available yet.
       </p>
 
       <section className="card stack" aria-labelledby="this-device-heading">
         <h2 id="this-device-heading">This device</h2>
         <ThisDevice />
         <p className="hint">
-          Read from this browser only. Install the app and allow notifications in <Link href="/settings">Settings</Link>.
+          Install the app and allow notifications in <Link href="/settings">Settings</Link>.
         </p>
       </section>
 
