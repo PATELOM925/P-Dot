@@ -1,6 +1,9 @@
 import "server-only";
 import {
   BRIEF_MAX_TOPICS,
+  DOCUMENT_CONTEXT_MAX_CHARS,
+  DOCUMENT_CONTEXT_MAX_DOCUMENTS,
+  MAX_DOCUMENT_TITLE_CHARS,
   BRIEF_RESULTS_PER_TOPIC,
   MAX_MEMORY_CHARS,
   MEMORY_CONTEXT_COUNT,
@@ -61,6 +64,14 @@ export const BRIEF_RESULTS_MAX_BYTES = BRIEF_MAX_TOPICS * BRIEF_RESULTS_PER_TOPI
  * character, and the wrapper text.
  */
 export const MEMORY_BLOCK_MAX_BYTES = MEMORY_CONTEXT_COUNT * (MAX_MEMORY_CHARS * 4 + 64) + 512;
+
+/**
+ * Bytes that the documents block of a chat turn can add: the most document
+ * text, with up to 4 UTF-8 bytes per character, a title and a wrapper for
+ * each document, and the block wrapper.
+ */
+export const DOCUMENT_BLOCK_MAX_BYTES =
+  DOCUMENT_CONTEXT_MAX_CHARS * 4 + DOCUMENT_CONTEXT_MAX_DOCUMENTS * (MAX_DOCUMENT_TITLE_CHARS * 4 + 96) + 512;
 
 /** The model's price. A model without a price is a configuration error: it is never called. */
 function requirePrice(model: string): ModelPrice {

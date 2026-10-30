@@ -19,6 +19,23 @@ export interface DocumentChunkMatch {
   similarity: number;
 }
 
+/** A ready document of the mode, without its text. */
+export interface ReadyDocument {
+  id: string;
+  title: string;
+  charCount: number;
+}
+
+/** One stored part of a document, in document order. */
+export interface DocumentChunk {
+  id: string;
+  documentId: string;
+  content: string;
+}
+
+const readyDocumentRow = z.object({ id: z.string(), title: z.string(), char_count: z.number() });
+const documentChunkRow = z.object({ id: z.string(), document_id: z.string(), content: z.string() });
+
 const memoryRow = z.object({ id: z.string(), content: z.string(), similarity: z.number() });
 const chunkRow = z.object({
   id: z.string(),
@@ -36,6 +53,10 @@ const chunkRow = z.object({
 export interface RetrievalRepository {
   matchMemories(vector: number[], mode: Mode, count: number): Promise<MemoryMatch[]>;
   matchDocumentChunks(vector: number[], mode: Mode, count: number): Promise<DocumentChunkMatch[]>;
+  /** The user's ready documents of the mode, newest first, at most `limit`. Titles and sizes only. */
+  readyDocuments(userId: string, mode: Mode, limit: number): Promise<ReadyDocument[]>;
+  /** The parts of these documents, in document order, at most `limit`. */
+  documentChunks(userId: string, documentIds: string[], limit: number): Promise<DocumentChunk[]>;
 }
 
 export function createRetrievalRepository(supabase: SupabaseClient): RetrievalRepository {
@@ -60,6 +81,37 @@ export function createRetrievalRepository(supabase: SupabaseClient): RetrievalRe
         .array(chunkRow)
         .parse(data ?? [])
         .map((r) => ({ id: r.id, documentId: r.document_id, title: r.title, content: r.content, similarity: r.similarity }));
+    },
+    async readyDocuments(userId, mode, limit) {
+      const { data, error } = await supabase
+        .from("documents")
+        .select("id, title, char_count")
+        .eq("user_id", userId)
+        .eq("mode", mode)
+        .eq("status", "ready")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      if (error) throw new RepositoryError("readyDocuments");
+      return z
+        .array(readyDocumentRow)
+        .parse(data ?? [])
+        .map((r) => ({ id: r.id, title: r.title, charCount: r.char_count }));
+    },
+    async documentChunks(userId, documentIds, limit) {
+      if (documentIds.length === 0) return [];
+      const { data, error } = await supabase
+        .from("document_chunks")
+        .select("id, document_id, content")
+        .eq("user_id", userId)
+        .in("document_id", documentIds)
+        .order("document_id")
+        .order("chunk_index")
+        .limit(limit);
+      if (error) throw new RepositoryError("documentChunks");
+      return z
+        .array(documentChunkRow)
+        .parse(data ?? [])
+        .map((r) => ({ id: r.id, documentId: r.document_id, content: r.content }));
     },
   };
 }
