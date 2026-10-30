@@ -3,6 +3,7 @@ import type { GoogleCardState } from "./google";
 
 const PILL: Record<GoogleCardState["kind"], { label: string; className: string }> = {
   not_set_up: { label: "Not set up", className: "status-pill" },
+  account_required: { label: "Needs an account", className: "status-pill" },
   load_failed: { label: "Error", className: "status-pill status-failed" },
   not_connected: { label: "Not connected", className: "status-pill" },
   needs_reconnect: { label: "Connect again", className: "status-pill status-failed" },
@@ -33,6 +34,9 @@ export function GoogleCard({ state, message }: { state: GoogleCardState; message
       {message ? <FocusedMessage text={message.text} error={message.error} /> : null}
       {state.kind === "not_set_up" && (
         <p className="muted">Google is not set up on this site yet. The site owner must add the Google settings first.</p>
+      )}
+      {state.kind === "account_required" && (
+        <p>Create an account to connect Google. A demo session cannot connect a Google account.</p>
       )}
       {state.kind === "load_failed" && (
         <p className="alert alert-error" role="alert">

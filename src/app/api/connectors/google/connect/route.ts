@@ -8,6 +8,7 @@ import {
   OAUTH_STATE_PATH,
   sealOAuthState,
 } from "@/server/google/oauth-state";
+import { accountRequired } from "@/server/http/account";
 import { withAuthenticatedRoute } from "@/server/http/route";
 
 /**
@@ -18,6 +19,8 @@ import { withAuthenticatedRoute } from "@/server/http/route";
  */
 export async function POST(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "connectors.google.connect", sameOrigin: true }, async ({ auth, requestId }) => {
+    const refused = accountRequired(auth, requestId);
+    if (refused) return refused;
     const config = readyGoogleConfig(requestId, "connectors.google.connect");
     if (!config) return backToConnectors(request, "not_set_up");
     if (!isSiteHost(request)) return backToConnectors(request, "wrong_site");

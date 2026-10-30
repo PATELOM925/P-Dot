@@ -166,6 +166,8 @@ describe("the Google card", () => {
   it("shows each state", () => {
     expect(googleCardState(false, null)).toEqual({ kind: "not_set_up" });
     expect(googleCardState(true, "load_failed")).toEqual({ kind: "load_failed" });
+    expect(googleCardState(true, null, true)).toEqual({ kind: "account_required" });
+    expect(googleOutcomeMessage("account_required")?.text).toBe("Create an account to connect Google.");
     expect(googleCardState(true, null)).toEqual({ kind: "not_connected" });
     expect(googleCardState(true, { email: "a@example.com", scopes: [], status: "needs_reconnect" })).toEqual({
       kind: "needs_reconnect",

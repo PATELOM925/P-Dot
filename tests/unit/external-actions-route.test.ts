@@ -372,6 +372,17 @@ describe("approving an external action", () => {
     expect(proposals.rows.get(id)!.dto).toMatchObject({ status: "failed", verified: false });
   });
 
+  it("refuses an anonymous demo session: 403 account_required, nothing claimed and no Google call", async () => {
+    vi.mocked(getAuthContext).mockResolvedValue({ userId: ALICE, email: null, isAnonymous: true, supabase: {} as SupabaseClient });
+    const id = proposals.add(EMAIL);
+    for (const response of [await approve(id), await recover(id), await recover(id, "done")]) {
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe("account_required");
+    }
+    expect(status(id)).toBe("proposed");
+    expect(google.google.calls).toEqual([]);
+  });
+
   it("reports account_changed without calling Google when the claim is for another account", async () => {
     const result = await runExternalAction(
       { subject: "sub-b", scopes: ["https://www.googleapis.com/auth/gmail.send"], fetch: google.google.fetch, accessToken: async () => "at" },
@@ -392,45 +403,48 @@ describe("write faults on approve, then recovery", () => {
   async function scenario(payload: ActionPayload, faults: WriteFaults) {
     setUp();
     await connect();
-    faults.wrap(proposals, ["decide", "finishExternal"], { label: "db.rpc" });
+    faults.wrap(proposals, ["decide", "finishExternal", "reclaimExternal", "settleUnknownExternal"], { label: "db.rpc" });
     faults.wrap(proposals, ["getProposal"], { label: "db.read", read: true });
     faults.wrap(accounts, ["getGoogleToken"], { label: "db.read", read: true });
     faults.wrap(accounts, ["markGoogleNeedsReconnect"], { label: "db.write" });
     const id = proposals.add(payload);
-    const response = await approve(id);
-    faults.disarm();
-
     const acted = () => (payload.kind === "send_email" ? google.sent.length : google.events.size);
-    const row = proposals.rows.get(id)!;
+    const answer = () => (acted() > 0 ? "done" : "not_done");
+
+    // Approve. The HTTP status matches what the row says.
+    const response = await approve(id);
+    const afterApprove = status(id);
     expect(acted()).toBeLessThanOrEqual(1);
-    if (row.dto.status === "executed") {
-      expect([200, 202, 500]).toContain(response.status);
-      expect(acted()).toBe(1);
-    } else if (row.dto.status === "proposed") {
+    if (afterApprove === "executed") expect([200, 202, 500]).toContain(response.status);
+    else if (afterApprove === "proposed") {
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(acted()).toBe(0);
-    } else {
-      expect(row.dto.status).toBe("executing");
-      expect([202, 500]).toContain(response.status);
-    }
+    } else expect([202, 500]).toContain(response.status);
 
-    // A second click never acts again.
+    // A second click, then the recovery calls, still with faults armed. None acts twice.
     const before = acted();
-    const waitingBefore = row.dto.status === "proposed";
     const retry = await approve(id);
-    if (!waitingBefore) {
-      expect(retry.status).toBe(409);
+    if (afterApprove !== "proposed") {
+      expect([409, 500]).toContain(retry.status);
       expect(acted()).toBe(before);
     }
-
-    // Recovery after the lease leaves no row in progress and never acts twice.
     now += LEASE_MS + 1000;
     if (status(id) === "executing") {
-      const checked = await recover(id);
-      if (status(id) === "executing") {
-        expect(checked.status).toBe(409);
-        await recover(id, acted() > 0 ? "done" : "not_done");
+      await recover(id);
+      if (status(id) === "executing") await recover(id, answer());
+    }
+    expect(acted()).toBeLessThanOrEqual(1);
+    faults.disarm();
+
+    // Repair without faults: at most a few more recovery rounds settle every row.
+    for (let round = 0; round < 3 && status(id) !== "executed" && status(id) !== "failed"; round += 1) {
+      now += LEASE_MS + 1000;
+      if (status(id) === "proposed") {
+        await approve(id);
+        continue;
       }
+      await recover(id);
+      if (status(id) === "executing") await recover(id, answer());
     }
     expect(["executed", "failed"]).toContain(status(id));
     // Done exactly once, or, when the user said it was not done, never.
@@ -445,5 +459,7 @@ describe("write faults on approve, then recovery", () => {
     const labels = new Set(cases.map((c) => c.at(-1)!.label));
     expect(labels).toContain("db.rpc.decide");
     expect(labels).toContain("db.rpc.finishExternal");
+    if (payload.kind === "send_email") expect(labels).toContain("db.rpc.settleUnknownExternal");
+    if (payload.kind === "create_calendar_event") expect(labels).toContain("db.rpc.reclaimExternal");
   });
 });

@@ -51,9 +51,10 @@ class FakeAccounts implements ConnectedAccountRepository {
     this.rows.set(this.owner, { subject, email, scopes, tokenCiphertext, status: "connected" });
   }
   async markGoogleNeedsReconnect() {}
-  async deleteGoogle(userId: string) {
+  async deleteGoogle(userId: string, tokenCiphertext: string) {
     this.deletes += 1;
     if (this.failDelete) throw new Error("delete failed");
+    if (this.rows.get(userId)?.tokenCiphertext !== tokenCiphertext) return false;
     return this.rows.delete(userId);
   }
 }
@@ -61,9 +62,9 @@ class FakeAccounts implements ConnectedAccountRepository {
 let accounts: FakeAccounts;
 let logs: string[];
 
-function signInAs(userId: string | null) {
+function signInAs(userId: string | null, isAnonymous = false) {
   vi.mocked(getAuthContext).mockResolvedValue(
-    userId ? ({ userId, email: null, supabase: {} as SupabaseClient } satisfies AuthContext) : null,
+    userId ? ({ userId, email: null, isAnonymous, supabase: {} as SupabaseClient } satisfies AuthContext) : null,
   );
   accounts.owner = userId ?? "";
 }
@@ -286,6 +287,24 @@ describe("GET /api/connectors/google/callback", () => {
   });
 });
 
+describe("anonymous demo sessions", () => {
+  it("cannot start Connect, finish it, or Disconnect: 403 account_required, and nothing calls Google", async () => {
+    const { state, cookie } = await startConnect();
+    signInAs(ALICE, true);
+    const google = stubGoogle({ [TOKEN_URL]: () => tokenAnswer(), [REVOKE_URL]: () => json({}) });
+    for (const response of [
+      await connectRoute.POST(post("/api/connectors/google/connect")),
+      await callback({ code: CODE, state }, cookie),
+      await disconnectRoute.POST(post("/api/connectors/google/disconnect")),
+    ]) {
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe("account_required");
+    }
+    expect(google.calls).toEqual([]);
+    expect(accounts.rows.size).toBe(0);
+  });
+});
+
 describe("POST /api/connectors/google/disconnect", () => {
   async function connected() {
     const { state, cookie } = await startConnect();
@@ -330,6 +349,26 @@ describe("POST /api/connectors/google/disconnect", () => {
     stubGoogle({ [REVOKE_URL]: () => json({ error: "invalid_token" }, 400) });
     expect(outcome(await disconnectRoute.POST(post("/api/connectors/google/disconnect")))).toBe("disconnected");
     expect(accounts.rows.size).toBe(0);
+  });
+
+  it("keeps a connection that another tab made while the revoke ran, and says so", async () => {
+    await connected();
+    const replacement: GoogleTokenRow = {
+      subject: "google-sub-other",
+      email: "other@example.com",
+      scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      status: "connected",
+      tokenCiphertext: `v1.${"C".repeat(16)}.${"D".repeat(40)}`,
+    };
+    const google = stubGoogle({
+      [REVOKE_URL]: () => {
+        accounts.rows.set(ALICE, replacement);
+        return json({});
+      },
+    });
+    expect(outcome(await disconnectRoute.POST(post("/api/connectors/google/disconnect")))).toBe("disconnect_changed");
+    expect(accounts.rows.get(ALICE)).toEqual(replacement);
+    expect(new URLSearchParams(google.calls[0]!.body).get("token")).toBe(REFRESH);
   });
 
   it("deletes the row without a revoke when Google is not set up any more", async () => {

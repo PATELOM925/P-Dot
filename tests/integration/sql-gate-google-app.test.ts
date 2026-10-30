@@ -104,9 +104,11 @@ describe("connected accounts repository", () => {
     const bobRepo = createConnectedAccountRepository(sqlGateClient(gate, bob));
     await aliceRepo.saveGoogle("sub-a", "a@example.com", [READ], CIPHERTEXT);
     expect(await bobRepo.getGoogleToken(alice)).toBeNull();
-    expect(await bobRepo.deleteGoogle(alice)).toBe(false);
-    expect(await aliceRepo.deleteGoogle(alice)).toBe(true);
-    expect(await aliceRepo.deleteGoogle(alice)).toBe(false);
+    expect(await bobRepo.deleteGoogle(alice, CIPHERTEXT)).toBe(false);
+    expect(await aliceRepo.deleteGoogle(alice, NEWER)).toBe(false);
+    expect(await aliceRepo.getGoogleConnection(alice)).not.toBeNull();
+    expect(await aliceRepo.deleteGoogle(alice, CIPHERTEXT)).toBe(true);
+    expect(await aliceRepo.deleteGoogle(alice, CIPHERTEXT)).toBe(false);
     expect(await aliceRepo.getGoogleConnection(alice)).toBeNull();
   });
 });

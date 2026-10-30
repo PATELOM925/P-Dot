@@ -2,6 +2,7 @@ import { z } from "zod";
 import { actionRecoverSchema } from "@/lib/schemas";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { recoverExternal } from "@/server/google/external-routes";
+import { accountRequired } from "@/server/http/account";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
@@ -24,6 +25,8 @@ const MAX_BODY_BYTES = 1024;
  */
 export async function POST(request: Request, context: Context): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "actions.recover", sameOrigin: true }, async ({ auth, requestId }) => {
+    const refused = accountRequired(auth, requestId);
+    if (refused) return refused;
     const id = idSchema.safeParse((await context.params).id);
     if (!id.success) return errorResponse(404, "not_found", "Action not found.", requestId);
     const body = await readJsonBody(request, MAX_BODY_BYTES);

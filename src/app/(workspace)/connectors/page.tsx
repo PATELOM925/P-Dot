@@ -60,7 +60,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
   const configured = getGoogleConfig().status === "ready";
   const [status, google] = await Promise.all([
     loadBuiltInStatus(auth, mode),
-    configured ? loadGoogleConnection(auth) : Promise.resolve(null),
+    configured && !auth.isAnonymous ? loadGoogleConnection(auth) : Promise.resolve(null),
   ]);
   const googleMessage = googleOutcomeMessage((await searchParams).google);
 
@@ -133,7 +133,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           </p>
         </div>
         <div className="card-grid">
-          <GoogleCard state={googleCardState(configured, google)} message={googleMessage} />
+          <GoogleCard state={googleCardState(configured, google, auth.isAnonymous === true)} message={googleMessage} />
         </div>
       </section>
 

@@ -6,6 +6,7 @@ import { sameText, sealText, tokenAssociatedData } from "@/server/google/crypto"
 import { GoogleApiError } from "@/server/google/http";
 import { exchangeCode, revokeToken } from "@/server/google/oauth";
 import { OAUTH_STATE_COOKIE, OAUTH_STATE_PATH, openOAuthState } from "@/server/google/oauth-state";
+import { accountRequired } from "@/server/http/account";
 import { newRequestId } from "@/server/http/responses";
 import { logEvent } from "@/server/log";
 
@@ -34,6 +35,13 @@ export async function GET(request: NextRequest): Promise<Response> {
       const login = NextResponse.redirect(new URL("/login?next=/connectors", request.url), 303);
       login.cookies.set(OAUTH_STATE_COOKIE, "", { path: OAUTH_STATE_PATH, maxAge: 0, httpOnly: true });
       return login;
+    }
+
+    const refused = accountRequired(auth, requestId);
+    if (refused) {
+      const response = new NextResponse(refused.body, { status: refused.status, headers: refused.headers });
+      response.cookies.set(OAUTH_STATE_COOKIE, "", { path: OAUTH_STATE_PATH, maxAge: 0, httpOnly: true });
+      return response;
     }
 
     const params = request.nextUrl.searchParams;

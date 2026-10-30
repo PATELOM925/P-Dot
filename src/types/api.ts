@@ -55,6 +55,7 @@ export interface ConversationDetail {
 export type ApiErrorCode =
   | "unauthorized"
   | "forbidden"
+  | "account_required"
   | "invalid_request"
   | "unsupported_media_type"
   | "payload_too_large"

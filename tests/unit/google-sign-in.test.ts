@@ -18,13 +18,15 @@ const { createSupabaseServerClient } = await import("@/server/db/supabase");
 const { signInWithGoogleAction } = await import("@/features/auth/actions");
 const callbackRoute = await import("@/app/auth/callback/route");
 const { updateSession } = await import("@/server/auth/proxy-session");
+const { getAuthContext } = await import("@/server/auth/session");
 
 const signInWithOAuth = vi.fn();
 const exchangeCodeForSession = vi.fn();
+const getClaims = vi.fn();
 
 beforeEach(() => {
   vi.mocked(createSupabaseServerClient).mockResolvedValue({
-    auth: { signInWithOAuth, exchangeCodeForSession },
+    auth: { signInWithOAuth, exchangeCodeForSession, getClaims },
   } as never);
   vi.stubEnv("SITE_URL", "https://pdot.iampatelom.com");
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -114,6 +116,17 @@ describe("GET /auth/callback", () => {
   it("refuses an off-site next path", async () => {
     exchangeCodeForSession.mockResolvedValue({ error: null });
     expect((await get("?code=abc&next=%2F%2Fevil.example")).headers.get("location")).toBe("http://localhost/chat");
+  });
+});
+
+describe("the anonymous flag", () => {
+  it("comes only from the verified claims", async () => {
+    getClaims.mockResolvedValueOnce({ data: { claims: { sub: "u1", is_anonymous: true } }, error: null });
+    expect((await getAuthContext())?.isAnonymous).toBe(true);
+    getClaims.mockResolvedValueOnce({ data: { claims: { sub: "u1", is_anonymous: "true" } }, error: null });
+    expect((await getAuthContext())?.isAnonymous).toBe(false);
+    getClaims.mockResolvedValueOnce({ data: { claims: { sub: "u1" } }, error: null });
+    expect((await getAuthContext())?.isAnonymous).toBe(false);
   });
 });
 

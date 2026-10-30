@@ -6,6 +6,8 @@ import { createSupabaseServerClient } from "@/server/db/supabase";
 export interface AuthContext {
   userId: string;
   email: string | null;
+  /** True for an anonymous demo session (the verified JWT claim `is_anonymous`). */
+  isAnonymous?: boolean;
   /** Client bound to this user's session; queries run under RLS as this user. */
   supabase: SupabaseClient;
 }
@@ -26,6 +28,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
   return {
     userId: claims.sub,
     email: typeof claims.email === "string" ? claims.email : null,
+    isAnonymous: claims.is_anonymous === true,
     supabase,
   };
 }

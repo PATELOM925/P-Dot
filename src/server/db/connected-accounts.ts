@@ -30,8 +30,11 @@ export interface ConnectedAccountRepository {
   saveGoogle(subject: string, email: string, scopes: DataScope[], tokenCiphertext: string): Promise<void>;
   /** Only while the row still has this ciphertext, so a newer connection is not overwritten. */
   markGoogleNeedsReconnect(userId: string, tokenCiphertext: string): Promise<void>;
-  /** True when a row was deleted. */
-  deleteGoogle(userId: string): Promise<boolean>;
+  /**
+   * Deletes the row only while it still has this ciphertext, so a connection
+   * made in another tab after the read is never deleted. True when a row was deleted.
+   */
+  deleteGoogle(userId: string, tokenCiphertext: string): Promise<boolean>;
 }
 
 const STATUS_COLUMNS = "account_email, scopes, status";
@@ -105,12 +108,13 @@ export function createConnectedAccountRepository(supabase: SupabaseClient): Conn
       if (error) throw new RepositoryError("markGoogleNeedsReconnect");
     },
 
-    async deleteGoogle(userId) {
+    async deleteGoogle(userId, tokenCiphertext) {
       const { data, error } = await supabase
         .from("connected_accounts")
         .delete()
         .eq("user_id", userId)
         .eq("provider", "google")
+        .eq("token_ciphertext", tokenCiphertext)
         .select("provider");
       if (error) throw new RepositoryError("deleteGoogle");
       return Array.isArray(data) && data.length > 0;

@@ -18,6 +18,8 @@ export const GOOGLE_OUTCOMES = [
   "disconnected",
   "disconnected_unconfirmed",
   "disconnect_error",
+  "disconnect_changed",
+  "account_required",
 ] as const;
 export type GoogleOutcome = (typeof GOOGLE_OUTCOMES)[number];
 

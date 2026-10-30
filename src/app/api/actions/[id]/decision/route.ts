@@ -7,6 +7,7 @@ import { createActionProposalRepository, type DecisionResult } from "@/server/db
 import { createMemoryRepository } from "@/server/db/memories";
 import { isExternalPayload } from "@/server/google/external-action";
 import { approveExternal } from "@/server/google/external-routes";
+import { accountRequired } from "@/server/http/account";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
@@ -54,6 +55,8 @@ export async function POST(request: Request, context: Context): Promise<Response
     if (decision === "approve") {
       const stored = await proposals.getProposal(auth.userId, id.data);
       if (stored && stored.status === "proposed" && isExternalPayload(stored.payload)) {
+        const refused = accountRequired(auth, requestId);
+        if (refused) return refused;
         return approveExternal(auth, requestId, proposals, { ...stored, payload: stored.payload }, edited, respond);
       }
     }

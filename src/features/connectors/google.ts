@@ -5,6 +5,7 @@ import { GOOGLE_OUTCOMES, type GoogleOutcome } from "@/server/google/connect-flo
 
 export type GoogleCardState =
   | { kind: "not_set_up" }
+  | { kind: "account_required" }
   | { kind: "load_failed" }
   | { kind: "not_connected" }
   | { kind: "needs_reconnect"; email: string }
@@ -13,8 +14,10 @@ export type GoogleCardState =
 export function googleCardState(
   configured: boolean,
   connection: GoogleConnection | null | "load_failed",
+  anonymous = false,
 ): GoogleCardState {
   if (!configured) return { kind: "not_set_up" };
+  if (anonymous) return { kind: "account_required" };
   if (connection === "load_failed") return { kind: "load_failed" };
   if (!connection) return { kind: "not_connected" };
   if (connection.status === "needs_reconnect") return { kind: "needs_reconnect", email: connection.email };
@@ -48,6 +51,11 @@ export function googleOutcomeMessage(value: unknown): { text: string; error: boo
       error: false,
     },
     disconnect_error: { text: "Google did not disconnect. Try again.", error: true },
+    disconnect_changed: {
+      text: "Your Google connection changed in another tab while P-Dot disconnected the earlier one. The new connection stays. Disconnect again to remove it.",
+      error: true,
+    },
+    account_required: { text: "Create an account to connect Google.", error: true },
   };
   return messages[value as GoogleOutcome];
 }
