@@ -140,8 +140,24 @@ export function matchesFilter(proposal: ActionProposalDTO, filter: ProposalFilte
 }
 
 /**
- * What an approval list shows: proposals still waiting, plus the ones decided
- * in this view so their outcome stays visible. Also counts proposals waiting
+ * A proposal that needs the user: one waiting for a decision, or an external
+ * action still "executing" (it has recovery controls, decision 0014). Read
+ * from the server's status, so it stays after a reload.
+ */
+export function needsUser(proposal: Pick<ActionProposalDTO, "status">): boolean {
+  return proposal.status === "proposed" || proposal.status === "executing";
+}
+
+/** Milliseconds until an external action's lease ends, 0 when it has ended or the start time is unknown. */
+export function leaseRemainingMs(executionStartedAt: string | null | undefined, now: number, leaseSeconds: number): number {
+  const started = executionStartedAt ? Date.parse(executionStartedAt) : Number.NaN;
+  if (!Number.isFinite(started)) return 0;
+  return Math.max(0, started + leaseSeconds * 1000 - now);
+}
+
+/**
+ * What an approval list shows: proposals that need the user, plus the ones
+ * decided in this view so their outcome stays visible. Also counts proposals waiting
  * in the other mode, which the Today page mentions.
  */
 export function visibleProposals(
@@ -150,7 +166,7 @@ export function visibleProposals(
   decidedHere: ReadonlySet<string>,
 ): { visible: ActionProposalDTO[]; waitingInOtherMode: number } {
   const visible = proposals.filter(
-    (p) => matchesFilter(p, filter) && (p.status === "proposed" || decidedHere.has(p.id)),
+    (p) => matchesFilter(p, filter) && (needsUser(p) || decidedHere.has(p.id)),
   );
   const waitingInOtherMode =
     filter.mode === undefined

@@ -8,6 +8,8 @@ import {
   payloadDetails,
   toLocalInputValue,
   visibleProposals,
+  needsUser,
+  leaseRemainingMs,
 } from "@/features/actions/format";
 import { builtInStatus, countPhrase } from "@/features/connectors/status";
 import { describeFile, fileSizeProblem, textProblem } from "@/features/documents/file";
@@ -55,6 +57,26 @@ describe("approval list filtering", () => {
     const decidedElsewhere = proposal({ id: "c", status: "rejected" });
     const { visible } = visibleProposals([waiting, decidedHere, decidedElsewhere], {}, new Set(["b"]));
     expect(visible.map((p) => p.id)).toEqual(["a", "b"]);
+  });
+
+  it("keeps an executing external action visible after a reload, with nothing decided here", () => {
+    const executing = proposal({
+      id: "e",
+      status: "executing",
+      payload: { kind: "send_email", mode: "personal", to: ["sam@example.com"], subject: "Hi", body: "B" },
+    });
+    expect(needsUser(executing)).toBe(true);
+    expect(needsUser(proposal({ status: "executed" }))).toBe(false);
+    expect(visibleProposals([executing], {}, new Set()).visible.map((p) => p.id)).toEqual(["e"]);
+  });
+
+  it("measures the lease left for recovery", () => {
+    const start = "2026-10-30T09:00:00.000Z";
+    const t0 = Date.parse(start);
+    expect(leaseRemainingMs(start, t0 + 10_000, 120)).toBe(110_000);
+    expect(leaseRemainingMs(start, t0 + 121_000, 120)).toBe(0);
+    expect(leaseRemainingMs(null, t0, 120)).toBe(0);
+    expect(leaseRemainingMs("not a date", t0, 120)).toBe(0);
   });
 
   it("counts proposals waiting in the other mode", () => {

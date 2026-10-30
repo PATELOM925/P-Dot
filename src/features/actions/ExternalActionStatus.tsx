@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, errorMessage } from "@/lib/api-client";
 import { EXTERNAL_ACTION_LEASE_SECONDS } from "@/lib/limits";
 import type { ActionProposalDTO } from "@/types/api";
 import { recoverAction } from "./api";
-import { EXTERNAL_CHECK_PLACE } from "./format";
+import { EXTERNAL_CHECK_PLACE, leaseRemainingMs } from "./format";
 
 /**
  * An external action that has no stored outcome yet (decision 0014). Inside
@@ -26,9 +26,16 @@ export function ExternalActionStatus({
   const [askUser, setAskUser] = useState(kind === "send_email");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const started = proposal.executionStartedAt ? Date.parse(proposal.executionStartedAt) : Number.NaN;
-  const [now] = useState(() => Date.now());
-  const leaseOver = !Number.isFinite(started) || now - started > EXTERNAL_ACTION_LEASE_SECONDS * 1000;
+  const [now, setNow] = useState(() => Date.now());
+  const remaining = leaseRemainingMs(proposal.executionStartedAt, now, EXTERNAL_ACTION_LEASE_SECONDS);
+  const leaseOver = remaining === 0;
+
+  // One re-render when the lease ends, so the recovery controls appear on an open page.
+  useEffect(() => {
+    if (remaining === 0) return;
+    const timer = setTimeout(() => setNow(Date.now()), remaining + 500);
+    return () => clearTimeout(timer);
+  }, [remaining]);
 
   async function recover(answer?: "done" | "not_done") {
     setBusy(true);
