@@ -67,6 +67,22 @@ describe("googleToolItem", () => {
   });
 });
 
+describe("toggleSource with deep research", () => {
+  it("turns web search on with deep research and turns Google and the apps off", () => {
+    expect(toggleSource({ ...NONE, useGoogle: true }, "research", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [], research: true });
+    expect(toggleSource({ ...NONE, apps: ["notion"] }, "research", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [], research: true });
+  });
+
+  it("turns deep research off with Google or an app, and swaps with plain web search", () => {
+    const research: MessageSources = { webSearch: true, useGoogle: false, apps: [], research: true };
+    expect(toggleSource(research, "google", CONNECTED)).toEqual({ webSearch: false, useGoogle: true, apps: [] });
+    expect(toggleSource(research, "app:notion", CONNECTED)).toEqual({ webSearch: false, useGoogle: false, apps: ["notion"] });
+    expect(toggleSource(research, "web", CONNECTED)).toEqual({ webSearch: true, useGoogle: false, apps: [] });
+    expect(toggleSource(research, "research", CONNECTED)).toEqual(NONE);
+    expect(toggleSource({ ...NONE, webSearch: true }, "research", CONNECTED).research).toBe(true);
+  });
+});
+
 describe("autoSources", () => {
   const ALL: McpServerId[] = ["notion", "linear", "todoist"];
   const GOOGLE = { ...NONE, useGoogle: true };
@@ -87,6 +103,12 @@ describe("autoSources", () => {
     "Show my agenda for Monday",
     "Am I free on Friday afternoon?",
     "Find free time next week",
+    "What's my schedule today?",
+    "What's on my schedule?",
+    "Show me the schedule today",
+    "Do I have any meetings tomorrow?",
+    "Search my Gmail",
+    "Is anything new in my inbox?",
     "Any free slot on Tuesday?",
     "Am I busy at 3pm?",
     "What's on today?",
@@ -123,10 +145,14 @@ describe("autoSources", () => {
     "Is this in linear time?",
     "I like the notion of a short work week",
     "Remind me to mail the package",
+    "Schedule it for Monday",
     "Add a task to email Sam",
     "Remember that my work email is sam@example.com",
     "Give me ideas, e.g. for dinner",
     "What are current events in Toronto?",
+    "Any news about the Fed meeting today?",
+    "mail merge in Word",
+    "Translate 'appointment'",
     "",
   ])("turns nothing on for %j", (message) => {
     expect(auto(message)).toEqual(NONE);

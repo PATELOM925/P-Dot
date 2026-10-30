@@ -34,7 +34,7 @@ import { Markdown } from "./markdown/Markdown";
 import { AssistantReply } from "./AssistantReply";
 import { MessageItem, SearchNotice, type UiMessage } from "./MessageView";
 import { ToolChips, ToolsMenu, type ToolItem } from "./ComposerTools";
-import { autoSources, googleToolItem, toggleSource, type GoogleChatState } from "./composer-sources";
+import { autoSources, googleToolItem, toggleSource, type GoogleChatState, type MessageSources } from "./composer-sources";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
@@ -119,8 +119,12 @@ export function ChatWorkspace({
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
   const [draft, setDraft] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  // Deep research for the next message only (decision 0018). Web search is on with it.
+  const [research, setResearch] = useState(false);
   // True while the tools on come from a starter prompt, so clearing its text turns them off.
   const starterToolsRef = useRef(false);
+  // The sources of the last sent message, so Retry uses them and not the composer's next pick.
+  const lastSentRef = useRef<{ conversationId: string | null; sources: MessageSources } | null>(null);
   // One message only; it turns off at Send. `toggleSource` keeps one kind of source on at a time.
   const [useGoogle, setUseGoogle] = useState(false);
   // Apps to read for the next message only.
@@ -343,7 +347,7 @@ export function ChatWorkspace({
   }
 
   // The sources the next message uses: the user's pick, or the source that the draft names.
-  const picked = { webSearch, useGoogle, apps };
+  const picked = { webSearch, useGoogle, apps, ...(research ? { research: true as const } : {}) };
   const sources = autoOff ? picked : autoSources(draft, picked, google, connectedApps);
 
   async function submit(action: "send" | "retry") {
@@ -352,7 +356,10 @@ export function ChatWorkspace({
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
     if (action === "retry" && !activeId) return;
 
-    const sentApps = sources.apps;
+    const lastSent = lastSentRef.current;
+    const turnSources = action === "retry" && lastSent && lastSent.conversationId === activeId ? lastSent.sources : sources;
+    if (action === "send") lastSentRef.current = { conversationId: activeId, sources };
+    const sentApps = turnSources.apps;
     const connectors = sentApps.length > 0 ? { connectors: [...sentApps] } : {};
     const timeZone = browserTimeZone();
     const zone = timeZone ? { timeZone } : {};
@@ -362,6 +369,7 @@ export function ChatWorkspace({
             action,
             message: text,
             webSearch: sources.webSearch,
+            ...(sources.research && sources.webSearch ? { research: true as const } : {}),
             effort,
             ...connectors,
             ...(sources.useGoogle ? { useGoogle: true as const } : {}),
@@ -371,10 +379,11 @@ export function ChatWorkspace({
         : {
             action,
             conversationId: activeId!,
-            webSearch,
+            webSearch: turnSources.webSearch,
+            ...(turnSources.research && turnSources.webSearch ? { research: true as const } : {}),
             effort,
             ...connectors,
-            ...(useGoogle ? { useGoogle: true as const } : {}),
+            ...(turnSources.useGoogle ? { useGoogle: true as const } : {}),
             ...zone,
           };
 
@@ -413,6 +422,10 @@ export function ChatWorkspace({
       dictation.cancel();
       setDraft("");
       setUseGoogle(false);
+      if (research) {
+        setResearch(false);
+        setWebSearch(false);
+      }
       setAutoOff(false);
       starterToolsRef.current = false;
       setMessages((current) => [
@@ -465,6 +478,7 @@ export function ChatWorkspace({
             // One message only. An app the user turned on after Send stays on for the next message.
             if (sentApps.length > 0) setApps((current) => current.filter((app) => !sentApps.includes(app)));
             setActiveId(event.conversation.id);
+            if (lastSentRef.current && lastSentRef.current.conversationId === null) lastSentRef.current.conversationId = event.conversation.id;
             syncUrl(event.conversation.id);
             setConversations((list) => [event.conversation, ...list.filter((c) => c.id !== event.conversation.id)]);
             if (action === "send") {
@@ -486,7 +500,7 @@ export function ChatWorkspace({
             setStatus(event.status === "used" ? "Web search complete. P-Dot is replying…" : (event.message ?? ""));
             break;
           case "status": {
-            const line = toolStatusLine(event.tool, event.query);
+            const line = toolStatusLine(event.tool, event.query, event.count);
             setStreaming((current) => ({
               text: current?.text ?? "",
               search: current?.search ?? null,
@@ -583,7 +597,16 @@ export function ChatWorkspace({
       chip: "Web search",
       chipClass: "chip-web",
       icon: "web",
-      on: webSearch,
+      on: webSearch && !research,
+    },
+    {
+      key: "research",
+      title: "Deep research",
+      description: "Reads the top pages and writes a cited brief. Slower. This message only.",
+      chip: "Deep research",
+      chipClass: "chip-web",
+      icon: "web",
+      on: research,
     },
     {
       key: "deep",
@@ -619,6 +642,7 @@ export function ChatWorkspace({
     const next = toggleSource(sources, key, connectedApps);
     setAutoOff(true);
     setWebSearch(next.webSearch);
+    setResearch(next.research === true);
     setUseGoogle(next.useGoogle);
     setApps(next.apps);
   }
@@ -626,6 +650,7 @@ export function ChatWorkspace({
   function pickStarter(prompt: StarterPrompt) {
     setDraft(prompt.text);
     setWebSearch(prompt.webSearch);
+    setResearch(false);
     if (prompt.webSearch) {
       setUseGoogle(false);
       setApps([]);
@@ -939,6 +964,7 @@ export function ChatWorkspace({
                       text: streaming.text,
                       tool: streaming.tool,
                       searching: webSearch && !streaming.search,
+                      deep: research,
                       tier: streaming.tier,
                     })}
               </p>

@@ -2,6 +2,13 @@
 // Pure and cheap, like the router: no model call. A plain everyday message
 // gets no tools, so it stays on the fast tier.
 
+/**
+ * "schedule" as a verb ("schedule a call", "can you schedule it"). The noun
+ * ("my schedule", "the schedule today", "what's on my schedule") is a
+ * calendar read, not a task request.
+ */
+export const SCHEDULE_VERB = String.raw`(?<!\b(?:my|our|your|the|a|this|that|today(?:'|’)?s|tomorrow(?:'|’)?s|work|daily|weekly|class)\s+)\bschedule\b(?!\s+(?:today|tonight|tomorrow|this\s+(?:week|weekend|morning|afternoon|evening)|next\s+week|for\s+(?:today|tonight|tomorrow|this|next))\b(?!['’]))`;
+
 /** Why the own-data tools are offered. Each value is also a route reason. */
 export type ToolIntent = "task_request" | "memory_request" | "own_data";
 
@@ -11,7 +18,7 @@ const RULES: readonly { intent: ToolIntent; pattern: RegExp }[] = [
     pattern: new RegExp(
       [
         String.raw`\bremind(?!\s+me\s+(?:what|who|whom|whose|which|where|why|how)\b)(?:er|ers)?\b`,
-        String.raw`\bschedule\b`,
+        SCHEDULE_VERB,
         String.raw`\bto-?dos?\b`,
         String.raw`\b(?:add|create|make|set|put)\b[^.?!]{0,30}\b(?:task|tasks|to-?do|reminder|alarm)\b`,
         String.raw`\b(?:add|put)\b[^.?!]{0,40}\bto\s+(?:my|the)\b[^.?!]{0,20}\blist\b`,

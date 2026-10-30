@@ -1,5 +1,15 @@
 import "server-only";
-import { MAX_MEMORY_CHARS, MEMORY_CONTEXT_COUNT, SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
+import {
+  BRIEF_MAX_TOPICS,
+  BRIEF_RESULTS_PER_TOPIC,
+  MAX_MEMORY_CHARS,
+  MEMORY_CONTEXT_COUNT,
+  RESEARCH_MAX_RESULTS,
+  RESEARCH_PAGE_CHARS,
+  RESEARCH_PAGES,
+  SEARCH_EXCERPT_CHARS,
+  SEARCH_MAX_RESULTS,
+} from "@/lib/limits";
 import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
 import type { ApiErrorCode } from "@/types/api";
@@ -16,16 +26,34 @@ import {
 /** The largest hold the database accepts for one Nebius call ($0.25). */
 export const MAX_NEBIUS_HOLD_MICRO_USD = 250_000;
 
-/** Credits for one Tavily search at `basic` depth (the only depth this app uses). */
+/** Credits for one Tavily search at `basic` depth: web search and each topic of the morning brief. */
 export const TAVILY_BASIC_SEARCH_CREDITS = 1;
+
+/** Credits for one Tavily search at `advanced` depth: deep research (decision 0018). */
+export const TAVILY_ADVANCED_SEARCH_CREDITS = 2;
+
+/**
+ * Credits for one basic Tavily extract of at most RESEARCH_PAGES pages. Tavily
+ * charges 1 credit for each 5 pages that succeed, so 1 credit covers it.
+ */
+export const TAVILY_EXTRACT_CREDITS = 1;
+
+/** Bytes of one search result in the prompt: title, excerpt (4 bytes per character), URL and wrapper. */
+const SEARCH_RESULT_MAX_BYTES = (200 + SEARCH_EXCERPT_CHARS) * 4 + MAX_SAFE_URL_CHARS + 128;
 
 /**
  * Bytes that search results can add to the prompt: each result has a title
  * (200 characters) and an excerpt, with up to 4 UTF-8 bytes per character,
  * a normalized ASCII URL, and the wrapper text.
  */
-export const SEARCH_RESULTS_MAX_BYTES =
-  SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + MAX_SAFE_URL_CHARS + 128) + 512;
+export const SEARCH_RESULTS_MAX_BYTES = SEARCH_MAX_RESULTS * SEARCH_RESULT_MAX_BYTES + 512;
+
+/** Bytes that deep research can add: the advanced results and the text of the pages read. */
+export const RESEARCH_RESULTS_MAX_BYTES =
+  RESEARCH_MAX_RESULTS * SEARCH_RESULT_MAX_BYTES + RESEARCH_PAGES * (RESEARCH_PAGE_CHARS * 4 + 64) + 512;
+
+/** Bytes that the morning brief can add: the news results of every topic. */
+export const BRIEF_RESULTS_MAX_BYTES = BRIEF_MAX_TOPICS * BRIEF_RESULTS_PER_TOPIC * SEARCH_RESULT_MAX_BYTES + 512;
 
 /**
  * Bytes that the saved memories block can add to the prompt: the most

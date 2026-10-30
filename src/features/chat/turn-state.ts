@@ -9,11 +9,13 @@ export function turnStepLine(step: {
   text: string;
   tool?: string;
   searching: boolean;
+  /** Deep research (decision 0018). */
+  deep?: boolean;
   tier?: string;
 }): string {
   if (step.tool) return step.tool;
   if (step.text) return "Writing the reply…";
-  if (step.searching) return "Searching the web…";
+  if (step.searching) return step.deep ? "Searching the web (deep)…" : "Searching the web…";
   return step.tier === "heavy" ? "Thinking harder…" : "Thinking…";
 }
 

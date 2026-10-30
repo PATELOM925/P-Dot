@@ -25,7 +25,7 @@ All users together share caps on paid calls. The caps are in Postgres, so they w
 
 Production values from 2026-10-30, for the hackathon judging period ([PR #28](https://github.com/PATELOM925/P-Dot/pull/28)): `wrangler.jsonc` sets $10.00 for all users each UTC day, $25.00 for all time and $0.50 for one user each UTC day. The code defaults above stay the same. The all-time cap now equals the confirmed $25 credit, so it keeps no headroom. Trial users keep their lower cap (decision 0015).
 
-All Nebius models count together. Only models with a price in the table can be used. A basic Tavily search costs 1 credit. The app uses only basic search.
+All Nebius models count together. Only models with a price in the table can be used. A basic Tavily search costs 1 credit. Deep research (decision 0018) uses one advanced search (2 credits) and one basic extract (1 credit for each 5 pages that succeed). Each search holds its own credits, because one reservation can hold at most 2.
 
 ### How a request is counted
 

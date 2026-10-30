@@ -238,4 +238,13 @@ describe("toolStatusLine", () => {
     expect(toolStatusLine("web_search", "x".repeat(300)).length).toBeLessThan(150);
     expect(toolStatusLine("toString", "q")).toBe("P-Dot is using a tool…");
   });
+
+  it("has the deep research and brief lines", () => {
+    expect(toolStatusLine("research_search", "heat pumps")).toBe("Searching the web (deep)…");
+    expect(toolStatusLine("research_read", undefined, 3)).toBe("Reading 3 pages…");
+    expect(toolStatusLine("research_read", undefined, 1)).toBe("Reading 1 page…");
+    expect(toolStatusLine("research_read", undefined, -2)).toBe("Reading the top pages…");
+    expect(toolStatusLine("research_write", undefined)).toBe("Writing the brief…");
+    expect(toolStatusLine("brief_search", "cricket")).toBe("Searching today's news for “cricket”…");
+  });
 });

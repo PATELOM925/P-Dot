@@ -16,7 +16,7 @@ import { toNdjsonStream } from "@/server/http/ndjson";
 import { ProviderError } from "@/server/providers/errors";
 import { streamChatCompletion } from "@/server/providers/nebius/client";
 import { costMicroUsd, priceForModel } from "@/server/providers/nebius/pricing";
-import { searchWeb } from "@/server/providers/tavily/client";
+import { extractPages, searchWeb } from "@/server/providers/tavily/client";
 import type { ChatRequest, ChatStreamEvent } from "@/types/api";
 import { FakeQuota, FakeSpend, MemoryRepository, fakeDeps } from "../support/fakes";
 import { collect, deltaChunk, sseEvent, streamFrom } from "../support/streams";
@@ -164,6 +164,40 @@ describe("chat hold ceiling", () => {
     const held = spend.reservations.find((r) => r.provider === "nebius")!.held;
     expect(held).toBeGreaterThanOrEqual(nebiusHoldMicroUsd(ULTRA, final, 8192));
     expect(held).toBeLessThan(150_000);
+  });
+
+  it("holds at least the final prompt's cost for the largest deep research turn, under the ceiling", async () => {
+    const repo = new MemoryRepository();
+    const conversation = await repo.createConversation(ALICE, "Long", "work");
+    for (let i = 0; i < HISTORY_MESSAGE_LIMIT; i += 1) {
+      const role = i % 2 === 0 ? ("user" as const) : ("assistant" as const);
+      await repo.insertMessage(ALICE, { conversationId: conversation.id, role, content: "中".repeat(585) });
+    }
+    const message = "中".repeat(HISTORY_CHAR_BUDGET - HISTORY_MESSAGE_LIMIT * 585);
+    const fill = (host: string) => `https://${host}.com/${"中".repeat(225)}aaaaaaaa`;
+    const items = Array.from({ length: 8 }, (_, i) => ({ url: fill(`e${i}`), title: "題".repeat(200), content: "文".repeat(2_000) }));
+    const searchFetch = vi.fn(async () => new Response(JSON.stringify({ results: items }), { status: 200 }));
+    const extractFetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const urls = JSON.parse(String(init?.body)).urls as string[];
+      return new Response(JSON.stringify({ results: urls.map((url) => ({ url, raw_content: "頁".repeat(9_000) })) }), { status: 200 });
+    });
+
+    const spend = new FakeSpend();
+    const { deps, prompts } = fakeDeps({ repo, spend, routing: ultraRouting(8192) });
+    deps.research = {
+      search: (query, options, signal) =>
+        searchWeb({ apiKey: "test-key" }, query, { ...options, signal, fetchImpl: searchFetch as typeof fetch }),
+      extract: (urls, signal) => extractPages({ apiKey: "test-key" }, urls, { signal, fetchImpl: extractFetch as typeof fetch }),
+    };
+    const { events } = await runTurn(deps, { action: "send", conversationId: conversation.id, message, webSearch: true, research: true });
+    expect(events.some((event) => event.type === "done")).toBe(true);
+
+    const final = prompts[0]!;
+    expect([...final.at(-1)!.content.matchAll(/^Page text: /gm)]).toHaveLength(3);
+    expect([...final.at(-1)!.content.matchAll(/^URL: /gm)]).toHaveLength(8);
+    const held = spend.reservations.find((r) => r.provider === "nebius")!.held;
+    expect(held).toBeGreaterThanOrEqual(nebiusHoldMicroUsd(ULTRA, final, 8192));
+    expect(held).toBeLessThan(MAX_NEBIUS_HOLD_MICRO_USD);
   });
 });
 
