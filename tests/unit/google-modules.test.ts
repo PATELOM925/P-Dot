@@ -17,7 +17,7 @@ const B64_KEY = Buffer.from(KEY).toString("base64");
 afterEach(() => vi.unstubAllEnvs());
 
 describe("getGoogleConfig", () => {
-  const env = (values: Record<string, string | undefined>) => ({ SITE_URL: "https://pdot.iampatelom.com", ...values }) as NodeJS.ProcessEnv;
+  const env = (values: Record<string, string | undefined>) => ({ SITE_URL: "https://pdot.iampatelom.com", ...values }) as unknown as NodeJS.ProcessEnv;
 
   it("is ready with all three values and builds the callback from SITE_URL", () => {
     const state = getGoogleConfig(env({ GOOGLE_OAUTH_CLIENT_ID: "id", GOOGLE_OAUTH_CLIENT_SECRET: "s", GOOGLE_TOKEN_ENCRYPTION_KEY: B64_KEY }));
