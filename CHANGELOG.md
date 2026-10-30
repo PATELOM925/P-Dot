@@ -9,6 +9,14 @@ Lessons about provider calls, retries, backups and spending are in [docs/PROVIDE
 ## Unreleased
 
 ### Added
+- **Gmail and Calendar chat tools with a "Use Google" toggle** ([decision 0014, section 3](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #30](https://github.com/PATELOM925/P-Dot/pull/30))
+  - Problem: P-Dot could connect Google, but the assistant could not read the user's mail or calendar, or propose an email or an event. Email text can try to give the model instructions, and private text could leave through a web search query.
+  - Resolution:
+    - "Use Google" in the composer "+" menu turns on, for one message, five tools: Gmail search and read, the calendar list, and email and event proposals. It turns web search off for that message.
+    - All Google text goes to the model in untrusted blocks, at most 12,000 characters in one turn.
+    - A Google turn makes no web search, and a conversation that used Google never gets a search query that the model writes.
+    - The server writes an email or event proposal only when the user's own message asks for it, not negated, not quoted and not a question, and every address was written by the user. Otherwise nothing is saved.
+    - A credential that ended marks the connection for a reconnect, with a write that finishes after the response, and stops Google for the turn.
 - **Sign in with Google, and connect Google for Gmail and Calendar** ([decision 0014](docs/decisions/0014-google-sign-in-and-connection.md)). ([PR #25](https://github.com/PATELOM925/P-Dot/pull/25))
   - Problem: a user can sign in only with an email and a password, and P-Dot cannot read the user's Gmail or calendar or act there after approval.
   - Resolution:
