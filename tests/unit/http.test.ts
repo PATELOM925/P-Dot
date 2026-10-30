@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readChatStream, StreamFormatError } from "@/features/chat/stream";
+import { toolStatusLine } from "@/features/chat/tool-status";
 import { getAssistantConfig, getSiteUrl } from "@/server/config";
 import { ConfigError } from "@/lib/supabase-config";
 import { isSameOrigin, readJsonBody } from "@/server/http/request";
@@ -227,5 +228,14 @@ describe("getSiteUrl", () => {
   it("uses SITE_URL without a trailing slash, else localhost", () => {
     expect(getSiteUrl({ SITE_URL: "https://p-dot.example/", NODE_ENV: "test" })).toBe("https://p-dot.example");
     expect(getSiteUrl({ NODE_ENV: "test" })).toBe("http://localhost:3000");
+  });
+});
+
+describe("toolStatusLine", () => {
+  it("names the search query, shortened, and has a general line for an unknown tool", () => {
+    expect(toolStatusLine("web_search", "tokyo weather")).toBe("Searching the web for “tokyo weather”…");
+    expect(toolStatusLine("web_search", undefined)).toBe("Searching the web…");
+    expect(toolStatusLine("web_search", "x".repeat(300)).length).toBeLessThan(150);
+    expect(toolStatusLine("toString", "q")).toBe("P-Dot is using a tool…");
   });
 });
