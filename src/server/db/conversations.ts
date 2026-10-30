@@ -96,8 +96,12 @@ export interface ConversationRepository {
   insertMessage(userId: string, message: NewMessage): Promise<MessageDTO>;
   /** Returns null when no message with that ID belongs to the user. */
   getMessage(userId: string, messageId: string): Promise<MessageDTO | null>;
-  /** The `created_at` of the first user message after `after` in the conversation, as stored, or null. */
-  nextUserMessageAt(userId: string, conversationId: string, after: string): Promise<string | null>;
+  /**
+   * The `created_at`, as stored, of the first other user message in the
+   * conversation at or after `message.createdAt`, or null. An equal time is
+   * returned as is: the caller cannot tell which of the two came first.
+   */
+  nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }): Promise<string | null>;
   findMessageByClientRequest(userId: string, key: string): Promise<KeyedMessage | null>;
   findConversationByClientRequest(
     userId: string,
@@ -356,14 +360,15 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
       return data ? toMessage(data) : null;
     },
 
-    async nextUserMessageAt(userId, conversationId, after) {
+    async nextUserMessageAt(userId, conversationId, message) {
       const { data, error } = await supabase
         .from("messages")
         .select("created_at")
         .eq("user_id", userId)
         .eq("conversation_id", conversationId)
         .eq("role", "user")
-        .gt("created_at", after)
+        .neq("id", message.id)
+        .gte("created_at", message.createdAt)
         .order("created_at", { ascending: true })
         .limit(1)
         .maybeSingle();

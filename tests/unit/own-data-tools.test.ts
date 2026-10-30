@@ -455,6 +455,33 @@ describe("a repeat of a turn keeps the first attempt's cards", () => {
     expect(env.own.memories).toHaveLength(1);
   });
 
+  it("writes when another tab's message has the same time, because the two turns cannot be told apart", async () => {
+    const steps: Step[] = [{ text: "Sure." }];
+    const env = setup(steps);
+    const first = await failedFirstAttempt(env, "Add a task to buy milk");
+    const retry = await prepareRepeat(env.deps, "retry", first);
+
+    steps.splice(0, 1, { calls: [call("propose_task", { title: "Buy bread" })] }, { text: "Done." });
+    const other = await prepareChatTurn(env.deps, {
+      userId: ALICE,
+      requestId: "b",
+      request: { action: "send", conversationId: first.turn.conversation.id, message: "Add a task to buy bread", webSearch: false },
+    });
+    if (!other.ok) throw new Error(other.code);
+    env.repo.messages.find((m) => m.id === other.turn.userMessage.id)!.createdAt = retry.userMessage.createdAt;
+    other.turn.userMessage.createdAt = retry.userMessage.createdAt;
+    await collect(streamChatTurn(env.deps, other.turn, new AbortController().signal));
+    expect(env.own.proposals[0]!.createdAt).toBe(retry.userMessage.createdAt);
+
+    steps.splice(0, 1, { calls: [call("propose_task", { title: "Buy milk" })] });
+    await collect(streamChatTurn(env.deps, retry, new AbortController().signal));
+
+    expect(env.own.proposals.map((p) => p.payload)).toEqual([
+      { kind: "create_task", mode: "personal", title: "Buy bread" },
+      { kind: "create_task", mode: "personal", title: "Buy milk" },
+    ]);
+  });
+
   it("does not count a proposal of a later message that another tab sent while the retry runs", async () => {
     const steps: Step[] = [{ text: "Sure." }];
     const env = setup(steps);

@@ -119,10 +119,17 @@ export class MemoryRepository implements ConversationRepository {
       .map(toDto);
   }
 
-  async nextUserMessageAt(userId: string, conversationId: string, after: string) {
+  async nextUserMessageAt(userId: string, conversationId: string, message: { id: string; createdAt: string }) {
     return (
       this.messages
-        .filter((m) => m.userId === userId && m.conversationId === conversationId && m.role === "user" && m.createdAt > after)
+        .filter(
+          (m) =>
+            m.userId === userId &&
+            m.conversationId === conversationId &&
+            m.role === "user" &&
+            m.id !== message.id &&
+            m.createdAt >= message.createdAt,
+        )
         .map((m) => m.createdAt)
         .sort()[0] ?? null
     );

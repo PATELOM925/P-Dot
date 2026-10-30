@@ -70,7 +70,9 @@ export const searchMemoriesTool: ToolSpec<z.infer<typeof query>> = {
  * Linked to the turn: a suggested memory with the user message as its source,
  * or a proposal of the conversation saved from the user message up to the
  * next user message. Payload and status do not matter, so an edit or a
- * decision on the card still counts.
+ * decision on the card still counts. When another user message has the same
+ * time, the proposals of the two cannot be told apart, so the repeat writes:
+ * a second card the user can reject is better than a lost one.
  */
 export function earlierAttemptCheck(
   services: OwnDataServices | null | undefined,
@@ -82,7 +84,8 @@ export function earlierAttemptCheck(
     if (!turn.repeat || !services) return false;
     const { userId, conversationId, userMessage } = turn;
     if (await services.memories.hasAssistantMemoryFrom(userId, userMessage.id)) return true;
-    const next = await messages.nextUserMessageAt(userId, conversationId, userMessage.createdAt);
+    const next = await messages.nextUserMessageAt(userId, conversationId, userMessage);
+    if (next === userMessage.createdAt) return false;
     return services.proposals.hasProposalBetween(userId, conversationId, userMessage.createdAt, next);
   };
   return () => (checked ??= read());
