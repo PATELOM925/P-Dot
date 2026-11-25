@@ -25,6 +25,7 @@ interface StoredConversation extends ConversationSummary {
 }
 
 interface StoredMessage extends MessageDTO {
+  activityEvents?: NewMessage["activityEvents"];
   userId: string;
   conversationId: string;
   clientRequest?: ClientRequest | null;
@@ -172,6 +173,7 @@ export class MemoryRepository implements ConversationRepository {
       content: message.content,
       webSearch: message.webSearch ?? "off",
       sources: message.sources ?? [],
+      activityEvents: message.activityEvents,
       route: message.role === "assistant" ? (message.route ?? null) : null,
       createdAt: this.timestamp(),
       userId,

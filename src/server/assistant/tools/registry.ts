@@ -103,6 +103,7 @@ export interface ToolContext {
 export interface ToolOutcome {
   /** The tool message for the model. Retrieved text in it is delimited as untrusted. */
   content: string;
+  privateReadSucceeded?: boolean;
   /** New web sources, numbered after `ToolContext.sources`. */
   sources?: WebSearchResult[];
   /** IDs of memories and document chunks sent to the model, for the context record. */

@@ -323,6 +323,7 @@ export interface ContextRecordDTO {
 export interface PrivateSourceActivityDTO {
   id: string;
   conversationId: string;
-  source: "google_request" | "connector_read";
+  source: "google" | "connector" | "assistant_search";
+  outcome: "read_succeeded" | "search_blocked";
   createdAt: string;
 }

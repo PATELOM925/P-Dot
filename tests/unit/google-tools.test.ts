@@ -529,6 +529,7 @@ describe("failures (decisions 12 and 13)", () => {
     await runTurn(s.deps, send("Search my mail."));
     expect(toolResults(s.requests)).toEqual([expected]);
     expect(s.accounts.row!.status).toBe("connected");
+    expect(s.repo.messages.find((message) => message.role === "assistant")?.activityEvents).toEqual([]);
   });
 });
 
@@ -544,6 +545,9 @@ describe("Google on for a question about email or the calendar (live test, 2026-
     expect(system).toContain("Never say that you have no access or no permission unless a tool result says so.");
     expect(s.google.calls.some((c) => c.url.startsWith(`${GMAIL}/messages?`))).toBe(true);
     expect(s.logs).toContainEqual(expect.objectContaining({ event: "tool_ran", fields: expect.objectContaining({ tool: "gmail_search", ok: true }) }));
+    expect(s.repo.messages.find((message) => message.role === "assistant")?.activityEvents).toEqual([
+      { kind: "connector_read_succeeded", source: "google" },
+    ]);
   });
 
   it("forces gmail_search also when an earlier reply in the conversation said it had no access", async () => {

@@ -21,7 +21,8 @@ function connectorTool(server: McpServer, tool: CatalogTool, first: boolean): To
     statusQuery: (args) => tool.statusQuery(args),
     async run(args, context) {
       if (!context.connectors) return { content: `${server.name} is not on for this message. Nothing was read.` };
-      return { content: await context.connectors.run(server, tool, args) };
+      const result = await context.connectors.run(server, tool, args);
+      return { content: result.content, privateReadSucceeded: result.succeeded };
     },
   };
 }

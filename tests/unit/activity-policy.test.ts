@@ -3,23 +3,23 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { listPrivateSourceActivity, mapPrivateSourceActivityRows } from "@/server/db/activity-policy";
 
 describe("private-source Activity metadata", () => {
-  it("projects only validated IDs, route reasons and timestamps", () => {
+  it("projects only validated outcome metadata, excluding selected-only routing markers and content", () => {
     const mapped = mapPrivateSourceActivityRows([
       {
         id: "00000000-0000-4000-8000-000000000001",
-        route_reason: "connector_read",
+        sources: [{ title: "private page", url: "https://private.example/secret" }, { __pdot_activity: { kind: "connector_read_succeeded", source: "connector" } }],
         created_at: "2026-11-25T10:00:00.000Z",
         content: "private message text",
         conversation_id: "00000000-0000-4000-8000-000000000002",
       },
-      { id: "invalid", route_reason: "everyday", created_at: "bad", content: "discarded" },
+      { id: "00000000-0000-4000-8000-000000000003", sources: [], route_reason: "connector_read", created_at: "2026-11-25T10:00:00.000Z", conversation_id: "00000000-0000-4000-8000-000000000002" },
+      { id: "00000000-0000-4000-8000-000000000004", sources: [{ __pdot_activity: { kind: "assistant_search_blocked", source: "assistant_search" } }], created_at: "2026-11-25T10:01:00.000Z", conversation_id: "00000000-0000-4000-8000-000000000002" },
+      { id: "invalid", sources: [], created_at: "bad", content: "discarded" },
     ]);
-    expect(mapped).toEqual([{
-      id: "00000000-0000-4000-8000-000000000001",
-      conversationId: "00000000-0000-4000-8000-000000000002",
-      source: "connector_read",
-      createdAt: "2026-11-25T10:00:00.000Z",
-    }]);
+    expect(mapped).toEqual([
+      { id: "00000000-0000-4000-8000-000000000001:0", conversationId: "00000000-0000-4000-8000-000000000002", source: "connector", outcome: "read_succeeded", createdAt: "2026-11-25T10:00:00.000Z" },
+      { id: "00000000-0000-4000-8000-000000000004:0", conversationId: "00000000-0000-4000-8000-000000000002", source: "assistant_search", outcome: "search_blocked", createdAt: "2026-11-25T10:01:00.000Z" },
+    ]);
     expect(JSON.stringify(mapped)).not.toContain("private message text");
   });
 
@@ -32,16 +32,15 @@ describe("private-source Activity metadata", () => {
       order: vi.fn((...args: unknown[]) => { calls.push(["order", ...args]); return query; }),
       limit: vi.fn(async (...args: unknown[]) => {
         calls.push(["limit", ...args]);
-        return { data: [{ id: "00000000-0000-4000-8000-000000000001", conversation_id: "00000000-0000-4000-8000-000000000002", route_reason: "google_request", created_at: "2026-11-25T10:00:00Z", content: "secret" }], error: null };
+        return { data: [{ id: "00000000-0000-4000-8000-000000000001", conversation_id: "00000000-0000-4000-8000-000000000002", sources: [{ __pdot_activity: { kind: "connector_read_succeeded", source: "google" } }], created_at: "2026-11-25T10:00:00Z", content: "secret" }], error: null };
       }),
     };
     const supabase = { from: vi.fn(() => query) } as unknown as SupabaseClient;
     const entries = await listPrivateSourceActivity(supabase, "user-a", 20);
     expect(supabase.from).toHaveBeenCalledWith("messages");
-    expect(calls).toContainEqual(["select", "id, conversation_id, route_reason, created_at"]);
+    expect(calls).toContainEqual(["select", "id, conversation_id, sources, created_at"]);
     expect(calls).toContainEqual(["eq", "user_id", "user-a"]);
     expect(calls).toContainEqual(["eq", "role", "assistant"]);
-    expect(calls).toContainEqual(["in", "route_reason", ["google_request", "connector_read"]]);
     expect(entries).toHaveLength(1);
     expect(JSON.stringify(entries)).not.toContain("secret");
   });

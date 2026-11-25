@@ -7,7 +7,8 @@ import { LocalTime } from "@/components/ui/LocalTime";
 import Link from "next/link";
 
 function sourceLabel(source: PrivateSourceActivityDTO["source"]): string {
-  return source === "google_request" ? "Google was selected for this reply" : "Connected app access was selected for this reply";
+  if (source === "assistant_search") return "Assistant web search was blocked by the private-source policy";
+  return source === "google" ? "Google data was read successfully" : "Connected app data was read successfully";
 }
 
 export function PrivateSourceActivityList({ initialEntries }: { initialEntries: PrivateSourceActivityDTO[] }) {
@@ -39,9 +40,9 @@ export function PrivateSourceActivityList({ initialEntries }: { initialEntries: 
         </button>
       </div>
       <p className="small muted">
-        These entries show when Google or a connected app was selected for a saved reply. They do not confirm that
-        an app returned data. After a private-source reply, assistant-initiated web searches stay off in that conversation;
-        the separate web-search switch can still search with your own words.
+        These entries record successful private-source reads and an assistant web search refused by policy. Selecting
+        a source alone does not create a read entry. After a private-source reply, assistant-initiated web searches
+        stay off in that conversation; the separate web-search switch can still search with your own words.
       </p>
       {error && <p className="alert alert-error small" role="alert">{error}</p>}
       <ol className="log-list">
@@ -50,7 +51,7 @@ export function PrivateSourceActivityList({ initialEntries }: { initialEntries: 
             <span className="log-time"><LocalTime iso={entry.createdAt} style="time" /></span>
             <span className="log-body">
               <span className="log-title">{sourceLabel(entry.source)}</span>
-              <span className="hint">Assistant-initiated web search is blocked for later turns in this conversation.</span>
+              <span className="hint">{entry.outcome === "search_blocked" ? "No search was sent." : "Recorded from the completed provider read."}</span>
               <Link className="small" href={`/chat?c=${encodeURIComponent(entry.conversationId)}`}>Open conversation</Link>
             </span>
           </li>

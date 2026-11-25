@@ -4,7 +4,7 @@ import { LegalPage } from "@/components/layout/LegalPage";
 export const metadata: Metadata = { title: "Controls and evidence · P-Dot" };
 export const dynamic = "force-static";
 
-const REPOSITORY = "https://github.com/PATELOM925/P-Dot/blob/main/";
+const REPOSITORY = "https://github.com/PATELOM925/P-Dot/blob/44ba3aa023f05d2d76ea2dc1150da13941cf6376/";
 const CATALOG = "https://github.com/COHUMAIN-LABS/AGSC-agentic-controls-by-SafeAlignAI/blob/main/COHUMAIN-AGSC-repo/controls/CONTROLS.md";
 
 const controls = [
@@ -50,7 +50,7 @@ const controls = [
     href: `${CATALOG}#sec-07-memory-context-lifecycle-security`,
     status: "Partial",
     evidence: "Memory and context reads are scoped to the signed-in user and mode, memories are visible/editable/deletable, and retrieved content is treated as untrusted. Tests cover user and mode isolation for relevant routes.",
-    sources: ["src/server/db/memories.ts", "src/server/assistant/tools/own-data.ts", "src/app/(workspace)/memory/page.tsx", "tests/unit/memory-routes.test.ts", "docs/PRD.md"],
+    sources: ["src/server/db/memories.ts", "src/server/assistant/tools/own-data.ts", "src/app/(workspace)/memory/page.tsx", "tests/unit/memories-routes.test.ts", "docs/PRD.md"],
     gap: "The catalog also requires enforced expiry/purge policy and stale or poisoned context detection. There is no memory expiry policy or automated purge; a bounded follow-up assessment is documented below. Context safety has untrusted-data handling, not a complete poisoning-detection system.",
   },
   {

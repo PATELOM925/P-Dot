@@ -147,7 +147,7 @@ async function googleRead(
   }
   if (!opened.ok) return failed(opened.content === NOT_CONNECTED ? "not_connected" : "ended", opened.content);
   try {
-    return { content: await read(opened.access) };
+    return { content: await read(opened.access), privateReadSucceeded: true };
   } catch (error) {
     if (context.signal.aborted) throw error;
     if (error instanceof GoogleReconnectNeededError) {
