@@ -95,6 +95,7 @@ If `npm run check` fails, the build stops and nothing is deployed.
 | `CONNECTOR_TOKEN_ENCRYPTION_KEY` | Runtime secret, optional. 32 bytes, base64 (`openssl rand -base64 32`). It seals the Notion, Linear, Todoist and GitHub tokens and the Telegram link. Without it, those cards show "Not set up" and chat offers no app. Never on the bundle allow list ([decision 0016](decisions/0016-mcp-connectors.md)). | `npx wrangler secret put NAME` (owner only) |
 | `GITHUB_MCP_CLIENT_ID`, `GITHUB_MCP_CLIENT_SECRET` | Runtime secrets, optional. The read-only GitHub App. Without both, GitHub stays under "Coming soon" and chat does not offer it ([decision 0020](decisions/0020-connectors-v2.md)). | `npx wrangler secret put NAME` (owner only) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` | Runtime secrets, optional. One bot. Without all three (and `CONNECTOR_TOKEN_ENCRYPTION_KEY`), Telegram stays under "Coming soon" and the webhook answers 404 ([decision 0020](decisions/0020-connectors-v2.md)). | `npx wrangler secret put NAME` (owner only) |
+| `POSTHOG_PROJECT_TOKEN` | Optional runtime secret for opt-in product analytics. Leave unset to keep analytics unavailable. Events use the explicit Capture API with person-profile processing disabled. | `npx wrangler secret put POSTHOG_PROJECT_TOKEN` (owner only, only after separate approval and PostHog project setup) |
 
 Rules:
 

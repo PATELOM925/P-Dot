@@ -8,7 +8,7 @@ import { setApprovalMode, useApprovalMode, useApprovalModeChosen } from "./appro
 
 const DESCRIPTIONS: Record<ApprovalMode, string> = {
   manual: "Every action waits for your OK. Recommended.",
-  auto: `Tasks and reminders are added on their own (up to ${MAX_AUTO_ACTIONS_PER_REPLY} per reply), with Undo. Deleting, memories, outside accounts and private data still ask.`,
+  auto: `Tasks and reminders may be added without a separate OK (up to ${MAX_AUTO_ACTIONS_PER_REPLY} per reply), with Undo. Deleting, memories, outside accounts and private data still ask.`,
 };
 
 function ModeIcon({ mode }: { mode: ApprovalMode }) {

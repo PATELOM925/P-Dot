@@ -649,7 +649,7 @@ export function DynamicAgentCard() {
       <div className="agent-foot">
         <p className="small muted">
           Illustrative example. Today P-Dot can read Gmail, Calendar, Notion, Linear and Todoist when you ask. Phone
-          calls, Telegram and scheduled routines are not available yet. P-Dot asks before each action, and AI can make
+          calls, Telegram and scheduled routines are not available yet. P-Dot asks before actions that need approval. In Auto mode, it can add a limited number of tasks and reminders without a separate approval, and AI can make
           mistakes.
         </p>
       </div>

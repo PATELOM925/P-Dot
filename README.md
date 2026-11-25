@@ -1,6 +1,6 @@
 # P-Dot
 
-P-Dot is a personal assistant that brings your email, calendar, tasks and the web into one chat, with separate Personal and Work modes. It does the legwork, but nothing happens until you approve it. It answers with NVIDIA Nemotron models on Nebius Token Factory, searches and researches the web with Tavily, knows your saved memories and documents, plans your day on the Today page, and reads Gmail, Calendar, Notion, Linear and Todoist when you connect them. Each task, reminder, memory or email is a card that you approve, edit or cancel.
+P-Dot is a personal assistant that brings your email, calendar, tasks and the web into one chat, with separate Personal and Work modes. In Ask first mode, each action waits for your OK. In Auto, it can add up to three tasks and reminders without a separate approval; you can undo them. Everything else still waits. It answers with NVIDIA Nemotron models on Nebius Token Factory, searches and researches the web with Tavily, knows your saved memories and documents, plans your day on the Today page, and reads Gmail, Calendar, Notion, Linear and Todoist when you connect them. Actions that need approval appear as cards to approve, edit or cancel.
 
 **Live app:** https://pdot.iampatelom.com · **Demo video:** https://youtu.be/OhikQWepjOs · **License:** Apache 2.0 ([LICENSE](LICENSE))
 

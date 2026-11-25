@@ -235,7 +235,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
             <span className="status-pill">Coming soon</span>
           </div>
           <p>
-            <strong>Will:</strong> act on your own laptop and phone, with your approval for each action.
+            <strong>Will:</strong> act on your own laptop and phone. In Auto mode, it can add a limited number of tasks and reminders without a separate approval; other actions wait for your approval.
           </p>
           <Link href="/devices">Open devices</Link>
         </article>
