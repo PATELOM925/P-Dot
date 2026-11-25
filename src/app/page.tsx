@@ -45,8 +45,9 @@ export default function LandingPage() {
             <span className="gradient-text">Get it done.</span>
           </h1>
           <p className="lead">
-            A personal assistant on open NVIDIA Nemotron models. It asks before every action and logs each one. You can
-            see and edit everything it remembers.
+            A personal assistant on open NVIDIA Nemotron models. In Ask first mode, every action waits for your OK. In
+            Auto, it can add up to three tasks and reminders without a separate approval; you can undo them. Everything
+            else still asks before it acts.
           </p>
           <div className="actions">
             <TryWithoutAccount />
