@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { accountAnalyticsCookie, captureProductEvent, isAnalyticsAccountEligible, isAnalyticsConfigured, isAnalyticsProductionHost } from "@/server/analytics";
-import { takeActiveSample } from "@/features/analytics/active-sample";
+import { accrueVisibleActiveTime, takeActiveSample } from "@/features/analytics/active-sample";
 
 describe("product analytics", () => {
   it("does not send anything unless production has a project key", async () => {
@@ -69,6 +69,13 @@ describe("product analytics", () => {
     expect(takeActiveSample(29_999)).toBeNull();
     expect(takeActiveSample(30_000)).toEqual({ seconds: 30, remainingMs: 0 });
     expect(takeActiveSample(65_000)).toEqual({ seconds: 30, remainingMs: 35_000 });
+  });
+
+  it("counts visible time only after interaction and while the user remains active", () => {
+    expect(accrueVisibleActiveTime(0, 15_000, null, 30_000, true)).toBe(0);
+    expect(accrueVisibleActiveTime(0, 15_000, 1_000, 20_000, false)).toBe(0);
+    expect(accrueVisibleActiveTime(0, 30_000, 1_000, 61_000, true)).toBe(0);
+    expect(accrueVisibleActiveTime(0, 30_000, 1_000, 20_000, true)).toBe(15_000);
   });
 
   it("does not hide a rejected Capture v1 event in a 200 batch response", async () => {
