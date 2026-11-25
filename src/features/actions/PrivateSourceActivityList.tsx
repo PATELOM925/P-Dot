@@ -1,0 +1,61 @@
+"use client";
+
+import { useState } from "react";
+import { ApiError, errorMessage, getJson } from "@/lib/api-client";
+import type { PrivateSourceActivityDTO } from "@/types/api";
+import { LocalTime } from "@/components/ui/LocalTime";
+import Link from "next/link";
+
+function sourceLabel(source: PrivateSourceActivityDTO["source"]): string {
+  return source === "google_request" ? "Google was selected for this reply" : "Connected app access was selected for this reply";
+}
+
+export function PrivateSourceActivityList({ initialEntries }: { initialEntries: PrivateSourceActivityDTO[] }) {
+  const [entries, setEntries] = useState(initialEntries);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await getJson<{ entries: PrivateSourceActivityDTO[] }>("/api/activity-policy");
+      setEntries(response.entries);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) setError("Sign in again to refresh Activity.");
+      else setError(errorMessage(err, "Could not refresh privacy activity."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (entries.length === 0 && !loading && !error) return null;
+  return (
+    <section className="panel" aria-labelledby="privacy-activity-heading" aria-busy={loading}>
+      <div className="panel-heading">
+        <h2 id="privacy-activity-heading">Connected source and privacy policy</h2>
+        <button type="button" className="button button-small" onClick={() => void refresh()} disabled={loading}>
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+      <p className="small muted">
+        These entries show when Google or a connected app was selected for a saved reply. They do not confirm that
+        an app returned data. After a private-source reply, assistant-initiated web searches stay off in that conversation;
+        the separate web-search switch can still search with your own words.
+      </p>
+      {error && <p className="alert alert-error small" role="alert">{error}</p>}
+      <ol className="log-list">
+        {entries.map((entry) => (
+          <li key={entry.id} className="log-entry">
+            <span className="log-time"><LocalTime iso={entry.createdAt} style="time" /></span>
+            <span className="log-body">
+              <span className="log-title">{sourceLabel(entry.source)}</span>
+              <span className="hint">Assistant-initiated web search is blocked for later turns in this conversation.</span>
+              <Link className="small" href={`/chat?c=${encodeURIComponent(entry.conversationId)}`}>Open conversation</Link>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}

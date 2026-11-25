@@ -29,4 +29,18 @@ describe("old page addresses", () => {
     const labels = [...source.matchAll(/label: "([^"]+)"/g)].map((match) => match[1]);
     expect(labels).toEqual(["Chat", "Today", "Connectors", "Memory", "Activity", "Settings"]);
   });
+
+  it("keeps the public controls evidence page public and discoverable", () => {
+    const proxy = readFileSync("src/proxy.ts", "utf8");
+    const footer = readFileSync("src/components/layout/SiteFooter.tsx", "utf8");
+    const page = readFileSync("src/app/controls/page.tsx", "utf8");
+    expect(proxy).toContain("controls$");
+    expect(footer).toContain('href="/controls"');
+    expect(page).toContain("Selected-controls evidence map");
+    expect(page).toContain("AGSC");
+    for (const id of ["ALN-02", "SEC-02", "SEC-03", "SEC-04", "SEC-07", "SAF-02"]) {
+      expect(page).toContain(`id: "${id}"`);
+    }
+    expect(page).toContain("COHUMAIN-LABS/AGSC-agentic-controls-by-SafeAlignAI");
+  });
 });

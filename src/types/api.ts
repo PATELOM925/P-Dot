@@ -319,3 +319,10 @@ export interface ContextRecordDTO {
   outputTokens: number | null;
   createdAt: string;
 }
+
+export interface PrivateSourceActivityDTO {
+  id: string;
+  conversationId: string;
+  source: "google_request" | "connector_read";
+  createdAt: string;
+}
