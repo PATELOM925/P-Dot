@@ -50,11 +50,17 @@ export async function listPrivateSourceActivity(
     .select("id, conversation_id, sources, created_at")
     .eq("user_id", userId)
     .eq("role", "assistant")
-    .contains("sources", [marker])
+    .filter("sources", "cs", JSON.stringify([marker]))
     .order("created_at", { ascending: false })
     .limit(limit)));
   if (batches.some(({ error }) => error)) throw new RepositoryError("listPrivateSourceActivity");
-  return mapPrivateSourceActivityRows(batches.flatMap(({ data }) => data ?? []))
+  const rowsById = new Map<string, unknown>();
+  for (const row of batches.flatMap(({ data }) => data ?? [])) {
+    if (row && typeof row === "object" && "id" in row && typeof row.id === "string") {
+      rowsById.set(row.id, row);
+    }
+  }
+  return mapPrivateSourceActivityRows([...rowsById.values()])
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, limit);
 }
