@@ -1,11 +1,11 @@
 import { errorResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
-import { isAnalyticsProductionHost } from "@/server/analytics";
+import { captureProductEvent, isAnalyticsAccountEligible, isAnalyticsConfigured, isAnalyticsProductionHost } from "@/server/analytics";
 import { readJsonBody } from "@/server/http/request";
 
 export async function POST(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "analytics-consent", sameOrigin: true }, async ({ auth, requestId }) => {
-    if (auth.isAnonymous || !isAnalyticsProductionHost(request) || !process.env.POSTHOG_PROJECT_TOKEN) {
+    if (auth.isAnonymous || !isAnalyticsAccountEligible(request, auth.userId) || !isAnalyticsProductionHost(request) || !isAnalyticsConfigured()) {
       return errorResponse(404, "not_found", "Not found.", requestId);
     }
     const body = await readJsonBody(request, 128);
@@ -20,8 +20,9 @@ export async function POST(request: Request): Promise<Response> {
       headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
     const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-    response.headers.append("Set-Cookie", `pdot_analytics_consent=${enabled ? "yes" : "no"}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly${secure}`);
-    response.headers.append("Set-Cookie", `pdot_analytics_id=${id}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly${secure}`);
+    response.headers.append("Set-Cookie", `pdot_analytics_consent=${enabled ? `${auth.userId}.yes` : ""}; Path=/; Max-Age=${enabled ? 31536000 : 0}; SameSite=Lax; HttpOnly${secure}`);
+    response.headers.append("Set-Cookie", `pdot_analytics_id=${enabled ? `${auth.userId}.${id}` : ""}; Path=/; Max-Age=${enabled ? 31536000 : 0}; SameSite=Lax; HttpOnly${secure}`);
+    if (enabled) await captureProductEvent("account_analytics_started", id, {});
     return response;
   });
 }

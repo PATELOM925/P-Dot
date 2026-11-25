@@ -110,6 +110,7 @@ export interface AssistantDeps {
   log: Logger;
   /** Keeps work (the spend settle) running after the client disconnects. */
   waitUntil: (work: Promise<unknown>) => void;
+  onPrivateReadSuccess?: () => void;
   /**
    * Stores "what was sent" for each saved reply (decision 0009). Optional:
    * without it, no record is written. A failed write never fails the reply.
@@ -975,6 +976,7 @@ async function* runChatTurn(
             connectors,
           });
           result = outcome.content;
+          if (spec.source === "connector" || spec.source === "google") deps.onPrivateReadSuccess?.();
           deps.log("info", "tool_ran", { ...logBase, tool: spec.name, hop, ok: true });
           if (spec.kind === "propose") proposalsRun += 1;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);

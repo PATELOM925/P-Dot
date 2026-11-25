@@ -8,7 +8,7 @@ import { readRequestKey } from "@/server/http/request-key";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
-import { captureProductEvent, cookieValue, isAnalyticsProductionHost } from "@/server/analytics";
+import { accountAnalyticsCookie, captureProductEvent, isAnalyticsAccountEligible, isAnalyticsProductionHost } from "@/server/analytics";
 
 /**
  * POST /api/chat — send a message (or retry the latest unanswered one) and
@@ -33,6 +33,10 @@ export async function POST(request: Request): Promise<Response> {
 
     // Throws ConfigError (→ 503) when inference is not configured.
     const deps = createAssistantDeps(auth, getAssistantConfig());
+    if (!auth.isAnonymous && isAnalyticsAccountEligible(request, auth.userId) && isAnalyticsProductionHost(request) && accountAnalyticsCookie(request, auth.userId, "pdot_analytics_consent") === "yes") {
+      const analyticsId = accountAnalyticsCookie(request, auth.userId, "pdot_analytics_id");
+      if (analyticsId) deps.onPrivateReadSuccess = () => deps.waitUntil(captureProductEvent("connector_read_succeeded", analyticsId, {}));
+    }
     const prepared = await prepareChatTurn(deps, {
       userId: auth.userId,
       requestId,
@@ -48,8 +52,8 @@ export async function POST(request: Request): Promise<Response> {
     const turn = prepared.turn;
     async function* recordSuccess() {
       for await (const event of streamChatTurn(deps, turn, request.signal)) {
-        if (event.type === "done" && !auth.isAnonymous && isAnalyticsProductionHost(request) && cookieValue(request, "pdot_analytics_consent") === "yes") {
-          const id = cookieValue(request, "pdot_analytics_id");
+        if (event.type === "done" && !auth.isAnonymous && isAnalyticsAccountEligible(request, auth.userId) && isAnalyticsProductionHost(request) && accountAnalyticsCookie(request, auth.userId, "pdot_analytics_consent") === "yes") {
+          const id = accountAnalyticsCookie(request, auth.userId, "pdot_analytics_id");
           if (id) deps.waitUntil(captureProductEvent("assistant_reply_succeeded", id, {}));
         }
         yield event;
