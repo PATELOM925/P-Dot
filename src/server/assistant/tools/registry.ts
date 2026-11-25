@@ -103,6 +103,7 @@ export interface ToolContext {
 export interface ToolOutcome {
   /** The tool message for the model. Retrieved text in it is delimited as untrusted. */
   content: string;
+  privateReadOutcome?: { status: "succeeded"; source: "google" | "connector" };
   /** New web sources, numbered after `ToolContext.sources`. */
   sources?: WebSearchResult[];
   /** IDs of memories and document chunks sent to the model, for the context record. */
@@ -160,9 +161,7 @@ function webWithPrivate(offered: readonly ToolSpec[]): boolean {
   return sources.has("web") && (sources.has("google") || sources.has("connector"));
 }
 
-export type ToolCallResult =
-  | { status: "ran"; spec: ToolSpec; query: string | undefined; outcome: ToolOutcome }
-  | { status: "refused"; content: string };
+export type ToolCallRefusalReason = "unavailable" | "private_search_conflict" | "limit" | "invalid_arguments";
 
 /**
  * Checks one call before it runs: an offered tool, under its limit, with
@@ -173,25 +172,25 @@ export function checkToolCall(
   offered: readonly ToolSpec[],
   call: ToolCall,
   callsSoFar: ReadonlyMap<string, number>,
-): { ok: true; spec: ToolSpec; args: unknown } | { ok: false; content: string } {
+): { ok: true; spec: ToolSpec; args: unknown } | { ok: false; content: string; reason: ToolCallRefusalReason } {
   const spec = offered.find((candidate) => candidate.name === call.name);
-  if (!spec) return { ok: false, content: "This tool is not available in this request. Nothing was done." };
+  if (!spec) return { ok: false, content: "This tool is not available in this request. Nothing was done.", reason: "unavailable" };
   if (spec.source && webWithPrivate(offered)) {
-    return { ok: false, content: "This request offers web search with Google or an app, which is not allowed. Nothing was done." };
+    return { ok: false, content: "This request offers web search with Google or an app, which is not allowed. Nothing was done.", reason: "private_search_conflict" };
   }
   if ((callsSoFar.get(spec.name) ?? 0) >= spec.maxCallsPerTurn) {
-    return { ok: false, content: `The limit for ${spec.name} in this turn is reached. Nothing was done. Answer with what you have.` };
+    return { ok: false, content: `The limit for ${spec.name} in this turn is reached. Nothing was done. Answer with what you have.`, reason: "limit" };
   }
   let raw: unknown;
   try {
     raw = call.arguments.trim() === "" ? {} : JSON.parse(call.arguments);
   } catch {
-    return { ok: false, content: "The arguments were not valid JSON. Nothing was done." };
+    return { ok: false, content: "The arguments were not valid JSON. Nothing was done.", reason: "invalid_arguments" };
   }
   const parsed = spec.args.safeParse(raw);
   if (!parsed.success) {
     const fields = [...new Set(parsed.error.issues.map((issue) => issue.path.join(".") || "(arguments)"))].join(", ");
-    return { ok: false, content: `The arguments were not valid (${fields}). Nothing was done.` };
+    return { ok: false, content: `The arguments were not valid (${fields}). Nothing was done.`, reason: "invalid_arguments" };
   }
   return { ok: true, spec, args: parsed.data };
 }

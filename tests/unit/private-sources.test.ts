@@ -60,7 +60,7 @@ describe("sources for each message, in the request schema", () => {
 describe("checkToolCall refuses the model-written web search with a private source", () => {
   const callOf = (name: string, args: unknown) => ({ id: "c1", name, arguments: JSON.stringify(args) });
   const connector = TOOLS.find((tool) => tool.source === "connector")!;
-  const refusal = { ok: false, content: "This request offers web search with Google or an app, which is not allowed. Nothing was done." };
+  const refusal = { ok: false, content: "This request offers web search with Google or an app, which is not allowed. Nothing was done.", reason: "private_search_conflict" };
 
   it.each([
     ["web search and Google, a Google call", [spec("web_search"), spec("gmail_search")], callOf("gmail_search", { query: "x" })],

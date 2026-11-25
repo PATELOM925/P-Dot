@@ -72,7 +72,7 @@ beforeEach(async () => {
 describe("github_my_work", () => {
   it("lists the user's open pull requests with a query that P-Dot builds from the login", async () => {
     const run = turn("Check if there are any open PRs on my github");
-    const result = await run.run(github, myWork, { kind: "open_pull_requests" });
+    const result = (await run.run(github, myWork, { kind: "open_pull_requests" })).content;
     expect(result).toContain("untrusted_connector_data");
     expect(result).toContain("PATELOM925/P-Dot#45: fix: approval card (open, updated 2026-10-31)");
     expect(result).toContain("(merged");
@@ -99,7 +99,7 @@ describe("github_my_work", () => {
   it.each([["a b"], ["x author:other"], [""], [42]])("stops when get_me gives a login that is not a GitHub login (%s)", async (login) => {
     liveLikeGithub(app, login);
     const run = turn("my open PRs");
-    expect(await run.run(github, myWork, { kind: "open_pull_requests" })).toMatch(/^GitHub did not say who the user is/);
+    expect((await run.run(github, myWork, { kind: "open_pull_requests" })).content).toMatch(/^GitHub did not say who the user is/);
     expect(app.toolCalls().map((call) => call.name)).toEqual(["get_me"]);
     run.close();
   });
@@ -116,7 +116,7 @@ describe("github_find_repo", () => {
 
   it('finds P-Dot for "PDot" and lists its open and recent pull requests in 3 calls', async () => {
     const run = turn(MESSAGE);
-    const result = await run.run(github, findRepo, { name: "PDot" });
+    const result = (await run.run(github, findRepo, { name: "PDot" })).content;
     expect(result).toContain("Repository: PATELOM925/P-Dot (public, last push 2026-10-31). Personal assistant");
     expect(result).toMatch(/Open pull requests \(1\):\n- #46: fix: tool markup \(open, updated 2026-10-31\)/);
     expect(result).toMatch(/Recent work[^\n]*\n- #44: feat: connectors v2 \(merged 2026-10-31\)/);
@@ -126,26 +126,26 @@ describe("github_find_repo", () => {
       { name: "list_pull_requests", arguments: { owner: "PATELOM925", repo: "P-Dot", state: "all", sort: "updated", direction: "desc", perPage: 20 } },
     ]);
     // The found repository is now an ID of this turn, but the turn has no GitHub call left.
-    expect(await run.run(github, listPulls, { repo: "PATELOM925/P-Dot" })).toMatch(/limit of 3 GitHub reads/);
+    expect((await run.run(github, listPulls, { repo: "PATELOM925/P-Dot" })).content).toMatch(/limit of 3 GitHub reads/);
     expect(app.toolCalls()).toHaveLength(3);
     run.close();
   });
 
   it("refuses a name that is not in the user's message, and calls nothing", async () => {
     const run = turn(MESSAGE);
-    expect(await run.run(github, findRepo, { name: "BarLens" })).toBe(PHRASE_REFUSAL);
+    expect((await run.run(github, findRepo, { name: "BarLens" })).content).toBe(PHRASE_REFUSAL);
     expect(app.toolCalls()).toEqual([]);
     run.close();
   });
 
   it("lists the user's repositories when no name matches, and allows one of them for the next read", async () => {
     const run = turn("open PRs on the zzz repo");
-    const result = await run.run(github, findRepo, { name: "zzz" });
+    const result = (await run.run(github, findRepo, { name: "zzz" })).content;
     expect(result).toContain('No repository of PATELOM925 has a name like "zzz"');
     expect(result).toContain("- PATELOM925/BarLens (private, last push 2026-10-30)");
     expect(result).not.toContain("not a repo name");
     expect(app.toolCalls().map((call) => call.name)).toEqual(["get_me", "search_repositories"]);
-    expect(await run.run(github, listPulls, { repo: "PATELOM925/BarLens" })).toContain("untrusted_connector_data");
+    expect((await run.run(github, listPulls, { repo: "PATELOM925/BarLens" })).content).toContain("untrusted_connector_data");
     run.close();
   });
 
@@ -164,7 +164,7 @@ describe("GitHub limits", () => {
     const run = turn("my open PRs and the PDot repo");
     await run.run(github, myWork, { kind: "open_pull_requests" });
     await run.run(github, myWork, { kind: "recent_issues" });
-    expect(await run.run(github, findRepo, { name: "PDot" })).toMatch(/^The limit of 3 GitHub reads for this message is reached/);
+    expect((await run.run(github, findRepo, { name: "PDot" })).content).toMatch(/^The limit of 3 GitHub reads for this message is reached/);
     expect(app.toolCalls().map((call) => call.name)).toEqual(["get_me", "search_pull_requests", "search_issues"]);
     run.close();
   });
@@ -186,8 +186,8 @@ describe("a GitHub connection made before the new tools", () => {
     expect(connectorReconnectNotes(offered)).toEqual([expect.stringContaining('"Connect GitHub again on the Connectors page to use the new tools."')]);
 
     const run = turn("open PRs in octo/repo");
-    expect(await run.run(github, listPulls, { repo: "octo/repo" })).toContain("untrusted_connector_data");
-    expect(await run.run(github, myWork, { kind: "open_pull_requests" })).toBe("GitHub does not offer this read. Nothing was read.");
+    expect((await run.run(github, listPulls, { repo: "octo/repo" })).content).toContain("untrusted_connector_data");
+    expect((await run.run(github, myWork, { kind: "open_pull_requests" })).content).toBe("GitHub does not offer this read. Nothing was read.");
     expect(app.toolCalls().map((call) => call.name)).toEqual(["list_pull_requests"]);
     run.close();
   });

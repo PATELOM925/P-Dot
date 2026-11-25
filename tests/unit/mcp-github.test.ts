@@ -221,9 +221,9 @@ describe("GitHub IDs and arguments", () => {
     const turn = services.startTurn({ requestId: "r", userMessage: "what is open in octo/repo", servers: ["github"], signal: new AbortController().signal });
     const [, list] = github.tools;
     const before = app.mcpCalls().length;
-    expect(await turn.run(github, list!, { repo: "attacker/exfil" })).toMatch(/^Not sent/);
+    expect((await turn.run(github, list!, { repo: "attacker/exfil" })).content).toMatch(/^Not sent/);
     expect(app.mcpCalls().length).toBe(before);
-    expect(await turn.run(github, list!, { repo: "octo/repo" })).toContain("untrusted_connector_data");
+    expect((await turn.run(github, list!, { repo: "octo/repo" })).content).toContain("untrusted_connector_data");
     expect(app.toolCalls()).toEqual([{ name: "list_pull_requests", arguments: { owner: "octo", repo: "repo", state: "open", perPage: 10 } }]);
     turn.close();
   });

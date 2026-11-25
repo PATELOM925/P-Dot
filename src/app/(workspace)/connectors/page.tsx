@@ -24,6 +24,8 @@ import { createReminderRepository } from "@/server/db/reminders";
 import { createTaskRepository } from "@/server/db/tasks";
 import { createTelegramLinkRepository } from "@/server/db/telegram-links";
 import { listConnections, type McpConnectionView } from "@/server/mcp/health";
+import { MCP_SERVERS } from "@/server/mcp/catalog";
+import { GOOGLE_TOOLS } from "@/server/assistant/tools/google";
 import { getMode } from "@/server/mode";
 import { telegramLinkState } from "@/server/telegram/view";
 import type { Mode } from "@/types/api";
@@ -98,6 +100,11 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
   const googleMessage = googleOutcomeMessage(params.google);
   const mcpMessage = mcpOutcomeMessage(params.mcp, params.app);
   const telegramMessage = telegramOutcomeMessage(params.telegram);
+  const appCapabilities = layout.apps.map((id) => {
+    const server = MCP_SERVERS[id];
+    return { name: server.name, tools: server.tools.map((tool) => tool.description) };
+  });
+  const googleCapabilities = GOOGLE_TOOLS.map((tool) => tool.description);
 
   // P-Dot's own lists and files. The first three are the only things an approved action can change (decision 0009).
   const builtIn = [
@@ -135,6 +142,28 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
           </>
         }
       />
+
+      <details className="card stack card-details" aria-labelledby="capabilities-heading">
+        <summary><h2 id="capabilities-heading">What connected accounts can do</h2></summary>
+        <p className="small">A capability is available only when the account is set up, connected, its required permissions are granted, and the card says the tool is ready. You still choose the source for each message.</p>
+        <h3>Google (when configured and connected)</h3>
+        <ul className="plain-list">{googleCapabilities.map((capability) => <li key={capability}>{capability}</li>)}</ul>
+        <h3>Read-only app tools</h3>
+        {appCapabilities.map((app) => (
+          <div key={app.name}>
+            <h4>{app.name}</h4>
+            <ul className="plain-list">{app.tools.map((capability) => <li key={capability}>{capability}</li>)}</ul>
+          </div>
+        ))}
+        <p className="small">
+          For connected-app searches, P-Dot sends one phrase copied from your message. A fetched item must be identified
+          by your message or the current turn&apos;s typed search results. Notion, Linear, Todoist and GitHub chat tools
+          are read-only. Google email sends and calendar additions are proposals; they run only after you approve the
+          full card. Retrieved app content is treated as untrusted data. After a private-source reply, assistant-initiated
+          web search is disabled for later turns in that conversation; the separate web-search switch still searches
+          with your own words.
+        </p>
+      </details>
 
       <CardRail
         title="Your accounts"
@@ -206,7 +235,7 @@ export default async function ConnectorsPage({ searchParams }: ConnectorsPagePro
             <span className="status-pill">Coming soon</span>
           </div>
           <p>
-            <strong>Will:</strong> act on your own laptop and phone, with your approval for each action.
+            <strong>Will:</strong> act on your own laptop and phone. In Auto mode, it can add a limited number of tasks and reminders without a separate approval; other actions wait for your approval.
           </p>
           <Link href="/devices">Open devices</Link>
         </article>

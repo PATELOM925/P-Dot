@@ -4,6 +4,7 @@ import { ApprovalModeOptions } from "@/features/actions/ApprovalModePicker";
 import { KIND_LABELS } from "@/features/actions/format";
 import { signOutAction } from "@/features/auth/actions";
 import { FeedbackCard } from "@/features/feedback/FeedbackCard";
+import { AnalyticsSettings } from "@/features/analytics/AnalyticsSettings";
 import { AppSettings } from "@/features/pwa/AppSettings";
 import { ACTION_EFFECTS, ALWAYS_ASK_REASONS, MAX_AUTO_ACTIONS_PER_REPLY } from "@/lib/approval-policy";
 import { requireAuth } from "@/server/auth/session";
@@ -84,6 +85,12 @@ export default async function SettingsPage() {
       </section>
 
       <AppSettings />
+
+      <section className="card stack" aria-labelledby="analytics-heading">
+        <h2 id="analytics-heading">Product analytics</h2>
+        <p className="small">Optional PostHog analytics records an opt-in start, successful assistant replies and connector reads, and bounded active time by coarse screen. A pseudonymous identifier is sent; message text, URLs, DOM content and browser details are not. Anonymous trial activity is excluded, so the activation funnel covers only signed-in users after opt-in. Analytics are unavailable on trials, configured demo accounts and previews.</p>
+        <AnalyticsSettings />
+      </section>
 
       <section className="card stack" aria-labelledby="devices-heading">
         <h2 id="devices-heading">Devices</h2>

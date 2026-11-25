@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { z } from "zod";
 import { readIdentity } from "@/lib/auth-identity";
 import { emailSchema, newPasswordSchema } from "@/lib/schemas";
@@ -167,5 +168,8 @@ export async function signOutAction(): Promise<void> {
   const supabase = await supabaseOrNull();
   // "local" ends this browser's session only; other devices stay signed in.
   if (supabase) await supabase.auth.signOut({ scope: "local" });
+  const cookieStore = await cookies();
+  cookieStore.set("pdot_analytics_consent", "", { path: "/", maxAge: 0 });
+  cookieStore.set("pdot_analytics_id", "", { path: "/", maxAge: 0 });
   redirect("/");
 }

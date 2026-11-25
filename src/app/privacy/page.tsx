@@ -10,6 +10,19 @@ export default function PrivacyPage() {
   return (
     <LegalPage title="Privacy" updated="30 October 2026">
       <section>
+        <h2>Optional product analytics</h2>
+        <p>
+          If product analytics are configured, signed-in account holders can opt in from Settings. P-Dot sends a
+          pseudonymous identifier and limited events to PostHog: when an account opts in, successful assistant replies,
+          successful connector use, and up to 30-second active intervals on a coarse workspace screen after recent
+          activity. This activation funnel covers only eligible signed-in users after opt-in; anonymous trial starts
+          and activity before opt-in are not measured. Events do not include message text, page URLs, DOM content,
+          browser details or direct account identifiers. PostHog receives a pseudonymous identifier; GeoIP enrichment
+          must remain disabled in the project, and P-Dot does not include an IP property in events.
+          Analytics are off until you opt in, unavailable for trials and preview sites, and can be turned off in Settings.
+        </p>
+      </section>
+      <section>
         <h2>What P-Dot stores</h2>
         <p>
           P-Dot stores your data in a Supabase Postgres database. Each row belongs to one account, and database rules
@@ -63,7 +76,7 @@ export default function PrivacyPage() {
           <li>Delete a conversation in the chat list. Its messages go from the database at once.</li>
           <li>Delete a memory or a document on the Memory page. Its text and search vector go at once.</li>
           <li>Disconnect Google or an app on the Connectors page.</li>
-          <li>The Activity record and the action proposals stay as an audit record.</li>
+          <li>Connected-source Activity metadata is conversation history and is deleted with its conversation. Action history and proposals are stored separately as protected activity records.</li>
           <li>Database backups can keep a copy until they expire under the hosting plan.</li>
           <li>Trial accounts and their data are deleted by 31 January 2027.</li>
           <li>
