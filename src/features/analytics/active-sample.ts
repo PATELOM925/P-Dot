@@ -2,6 +2,10 @@ const ACTIVE_SAMPLE_MS = 30_000;
 const IDLE_MS = 60_000;
 const MAX_TICK_MS = 15_000;
 
+export function supportsActiveTimeLock(locks: { request?: unknown } | undefined): locks is Pick<LockManager, "request"> {
+  return typeof locks?.request === "function";
+}
+
 export function shouldAcquireActiveTimeLock(state: {
   enabled: boolean;
   visible: boolean;
@@ -13,11 +17,12 @@ export function shouldAcquireActiveTimeLock(state: {
 
 export function shouldRetryActiveTimeLock(state: {
   acquired: boolean;
+  failed: boolean;
   enabled: boolean;
   visible: boolean;
   disposed: boolean;
 }): boolean {
-  return !state.acquired && state.enabled && state.visible && !state.disposed;
+  return !state.acquired && !state.failed && state.enabled && state.visible && !state.disposed;
 }
 
 export function isCurrentConsentStatusResponse(statusGeneration: number, currentGeneration: number, disposed: boolean): boolean {

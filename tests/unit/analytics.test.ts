@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { accountAnalyticsCookie, captureProductEvent, isAnalyticsAccountEligible, isAnalyticsConfigured, isAnalyticsProductionHost } from "@/server/analytics";
-import { accrueVisibleActiveTime, isCurrentConsentStatusResponse, shouldAcquireActiveTimeLock, shouldRetryActiveTimeLock, takeActiveSample } from "@/features/analytics/active-sample";
+import { accrueVisibleActiveTime, isCurrentConsentStatusResponse, shouldAcquireActiveTimeLock, shouldRetryActiveTimeLock, supportsActiveTimeLock, takeActiveSample } from "@/features/analytics/active-sample";
 
 describe("product analytics", () => {
   it("does not send anything unless production has a project key", async () => {
@@ -86,9 +86,16 @@ describe("product analytics", () => {
   });
 
   it("retries after an ifAvailable lock miss but not after acquisition or opt-out", () => {
-    expect(shouldRetryActiveTimeLock({ acquired: false, enabled: true, visible: true, disposed: false })).toBe(true);
-    expect(shouldRetryActiveTimeLock({ acquired: true, enabled: true, visible: true, disposed: false })).toBe(false);
-    expect(shouldRetryActiveTimeLock({ acquired: false, enabled: false, visible: true, disposed: false })).toBe(false);
+    expect(shouldRetryActiveTimeLock({ acquired: false, failed: false, enabled: true, visible: true, disposed: false })).toBe(true);
+    expect(shouldRetryActiveTimeLock({ acquired: true, failed: false, enabled: true, visible: true, disposed: false })).toBe(false);
+    expect(shouldRetryActiveTimeLock({ acquired: false, failed: true, enabled: true, visible: true, disposed: false })).toBe(false);
+    expect(shouldRetryActiveTimeLock({ acquired: false, failed: false, enabled: false, visible: true, disposed: false })).toBe(false);
+  });
+
+  it("skips active-time tracking when Web Locks are unavailable", () => {
+    expect(supportsActiveTimeLock(undefined)).toBe(false);
+    expect(supportsActiveTimeLock({})).toBe(false);
+    expect(supportsActiveTimeLock({ request: () => Promise.resolve() })).toBe(true);
   });
 
   it("ignores a status response made stale by a consent change or unmount", () => {

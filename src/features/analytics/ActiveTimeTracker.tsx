@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-import { accrueVisibleActiveTime, isCurrentConsentStatusResponse, shouldAcquireActiveTimeLock, shouldRetryActiveTimeLock, takeActiveSample } from "./active-sample";
+import { accrueVisibleActiveTime, isCurrentConsentStatusResponse, shouldAcquireActiveTimeLock, shouldRetryActiveTimeLock, supportsActiveTimeLock, takeActiveSample } from "./active-sample";
 
 const LOCK_NAME = "pdot-product-analytics-active-time";
 const TICK_MS = 15_000;
@@ -34,9 +34,12 @@ export function ActiveTimeTracker() {
 
     const acquire = () => {
       if (!shouldAcquireActiveTimeLock({ enabled, visible: document.visibilityState === "visible", disposed, hasController: controller !== null })) return;
+      const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+      if (!supportsActiveTimeLock(locks)) return;
       const lockController = new AbortController();
       controller = lockController;
       let acquired = false;
+      let failed = false;
       let activeMs = 0;
       let previous = Date.now();
       let sending = false;
@@ -66,7 +69,7 @@ export function ActiveTimeTracker() {
       };
       const onInteraction = () => { lastInteraction = Date.now(); };
       const events = ["pointerdown", "keydown", "touchstart", "scroll"] as const;
-      void navigator.locks.request(LOCK_NAME, { ifAvailable: true, signal: lockController.signal }, async (lock) => {
+      void locks.request(LOCK_NAME, { ifAvailable: true, signal: lockController.signal }, async (lock) => {
         if (!lock || lockController.signal.aborted) return;
         acquired = true;
         previous = Date.now();
@@ -78,10 +81,10 @@ export function ActiveTimeTracker() {
           window.clearInterval(timer);
           events.forEach((name) => window.removeEventListener(name, onInteraction));
         }
-      }).catch(() => {}).finally(() => {
+      }).catch(() => { failed = true; }).finally(() => {
         if (controller !== lockController) return;
         controller = null;
-        if (shouldRetryActiveTimeLock({ acquired, enabled, visible: document.visibilityState === "visible", disposed })) retryTimer = window.setTimeout(acquire, 1_000);
+        if (shouldRetryActiveTimeLock({ acquired, failed, enabled, visible: document.visibilityState === "visible", disposed })) retryTimer = window.setTimeout(acquire, 1_000);
       });
     };
 
