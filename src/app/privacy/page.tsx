@@ -12,10 +12,14 @@ export default function PrivacyPage() {
       <section>
         <h2>Optional product analytics</h2>
         <p>
-          If product analytics are configured, signed-in account holders can opt in from Settings. P-Dot sends only
-          successful assistant reply counts and active time while a workspace is visible and recently used. It does not
-          send message text, page URLs, DOM content, browser details or IP addresses. Analytics are off until you opt in,
-          and are not available for trials or preview sites. You can turn them off in Settings.
+          If product analytics are configured, signed-in account holders can opt in from Settings. P-Dot sends a
+          pseudonymous identifier and limited events to PostHog: when an account opts in, successful assistant replies,
+          successful connector use, and up to 30-second active intervals on a coarse workspace screen after recent
+          activity. This activation funnel covers only eligible signed-in users after opt-in; anonymous trial starts
+          and activity before opt-in are not measured. Events do not include message text, page URLs, DOM content,
+          browser details or direct account identifiers. PostHog receives a pseudonymous identifier; GeoIP enrichment
+          must remain disabled in the project, and P-Dot does not include an IP property in events.
+          Analytics are off until you opt in, unavailable for trials and preview sites, and can be turned off in Settings.
         </p>
       </section>
       <section>

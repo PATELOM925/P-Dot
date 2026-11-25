@@ -96,6 +96,8 @@ If `npm run check` fails, the build stops and nothing is deployed.
 | `GITHUB_MCP_CLIENT_ID`, `GITHUB_MCP_CLIENT_SECRET` | Runtime secrets, optional. The read-only GitHub App. Without both, GitHub stays under "Coming soon" and chat does not offer it ([decision 0020](decisions/0020-connectors-v2.md)). | `npx wrangler secret put NAME` (owner only) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` | Runtime secrets, optional. One bot. Without all three (and `CONNECTOR_TOKEN_ENCRYPTION_KEY`), Telegram stays under "Coming soon" and the webhook answers 404 ([decision 0020](decisions/0020-connectors-v2.md)). | `npx wrangler secret put NAME` (owner only) |
 | `POSTHOG_PROJECT_TOKEN` | Optional runtime secret for opt-in product analytics. Leave unset to keep analytics unavailable. Events use the explicit Capture API with person-profile processing disabled. | `npx wrangler secret put POSTHOG_PROJECT_TOKEN` (owner only, only after separate approval and PostHog project setup) |
+| `POSTHOG_GEOIP_DISABLED` | Must be exactly `true` before opt-in analytics is available. Set GeoIP disabled in the PostHog project as well; this runtime guard records the owner's explicit configuration assertion. | Wrangler variable, owner only after project privacy settings are verified |
+| `POSTHOG_EXCLUDED_ACCOUNT_IDS` | Comma-separated verified auth user IDs to exclude (must include the shared judge/demo account before analytics can be enabled). Requests marked `x-pdot-smoke-test: 1` are also excluded. | Wrangler variable, owner only |
 
 Rules:
 

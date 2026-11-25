@@ -88,7 +88,7 @@ export default async function SettingsPage() {
 
       <section className="card stack" aria-labelledby="analytics-heading">
         <h2 id="analytics-heading">Product analytics</h2>
-        <p className="small">Optional PostHog Free analytics records successful assistant replies and time active in a visible workspace after you opt in. It does not collect message text, page URLs, browser details, or inferred profiles. Analytics are unavailable on trials and previews.</p>
+        <p className="small">Optional PostHog analytics records an opt-in start, successful assistant replies and connector reads, and bounded active time by coarse screen. A pseudonymous identifier is sent; message text, URLs, DOM content and browser details are not. Anonymous trial activity is excluded, so the activation funnel covers only signed-in users after opt-in. Analytics are unavailable on trials, configured demo accounts and previews.</p>
         <AnalyticsSettings />
       </section>
 
