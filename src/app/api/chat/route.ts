@@ -8,6 +8,7 @@ import { readRequestKey } from "@/server/http/request-key";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
+import { captureProductEvent, cookieValue, isAnalyticsProductionHost } from "@/server/analytics";
 
 /**
  * POST /api/chat — send a message (or retry the latest unanswered one) and
@@ -45,7 +46,16 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const turn = prepared.turn;
-    const stream = toNdjsonStream(streamChatTurn(deps, turn, request.signal), () => releaseTurn(deps, turn));
+    async function* recordSuccess() {
+      for await (const event of streamChatTurn(deps, turn, request.signal)) {
+        if (event.type === "done" && !auth.isAnonymous && isAnalyticsProductionHost(request) && cookieValue(request, "pdot_analytics_consent") === "yes") {
+          const id = cookieValue(request, "pdot_analytics_id");
+          if (id) deps.waitUntil(captureProductEvent("assistant_reply_succeeded", id, {}));
+        }
+        yield event;
+      }
+    }
+    const stream = toNdjsonStream(recordSuccess(), () => releaseTurn(deps, turn));
     return new Response(stream, {
       headers: {
         "Content-Type": "application/x-ndjson; charset=utf-8",

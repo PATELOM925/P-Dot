@@ -10,6 +10,15 @@ export default function PrivacyPage() {
   return (
     <LegalPage title="Privacy" updated="30 October 2026">
       <section>
+        <h2>Optional product analytics</h2>
+        <p>
+          If product analytics are configured, signed-in account holders can opt in from Settings. P-Dot sends only
+          successful assistant reply counts and active time while a workspace is visible and recently used. It does not
+          send message text, page URLs, DOM content, browser details or IP addresses. Analytics are off until you opt in,
+          and are not available for trials or preview sites. You can turn them off in Settings.
+        </p>
+      </section>
+      <section>
         <h2>What P-Dot stores</h2>
         <p>
           P-Dot stores your data in a Supabase Postgres database. Each row belongs to one account, and database rules

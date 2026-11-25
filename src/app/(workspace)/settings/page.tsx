@@ -4,6 +4,7 @@ import { ApprovalModeOptions } from "@/features/actions/ApprovalModePicker";
 import { KIND_LABELS } from "@/features/actions/format";
 import { signOutAction } from "@/features/auth/actions";
 import { FeedbackCard } from "@/features/feedback/FeedbackCard";
+import { AnalyticsSettings } from "@/features/analytics/AnalyticsSettings";
 import { AppSettings } from "@/features/pwa/AppSettings";
 import { ACTION_EFFECTS, ALWAYS_ASK_REASONS, MAX_AUTO_ACTIONS_PER_REPLY } from "@/lib/approval-policy";
 import { requireAuth } from "@/server/auth/session";
@@ -84,6 +85,12 @@ export default async function SettingsPage() {
       </section>
 
       <AppSettings />
+
+      <section className="card stack" aria-labelledby="analytics-heading">
+        <h2 id="analytics-heading">Product analytics</h2>
+        <p className="small">Optional PostHog Free analytics records successful assistant replies and time active in a visible workspace after you opt in. It does not collect message text, page URLs, browser details, or inferred profiles. Analytics are unavailable on trials and previews.</p>
+        <AnalyticsSettings />
+      </section>
 
       <section className="card stack" aria-labelledby="devices-heading">
         <h2 id="devices-heading">Devices</h2>

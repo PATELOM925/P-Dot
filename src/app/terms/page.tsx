@@ -27,8 +27,9 @@ export default function TermsPage() {
       <section>
         <h2>Your approval</h2>
         <p>
-          P-Dot asks before it adds a task, a reminder or a memory, and before it changes a connected account. You are
-          responsible for what you approve.
+          In Ask first mode, each action waits for your approval. In Auto mode, P-Dot can add a limited number of tasks
+          and reminders for a reply without a separate approval; you can undo them. Deletions, memories, private data
+          reads and connected account changes still require approval. You are responsible for what you approve.
         </p>
       </section>
       <section>
