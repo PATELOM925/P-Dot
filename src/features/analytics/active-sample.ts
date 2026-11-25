@@ -2,7 +2,7 @@ const ACTIVE_SAMPLE_MS = 30_000;
 const IDLE_MS = 60_000;
 const MAX_TICK_MS = 15_000;
 
-export function supportsActiveTimeLock(locks: { request?: unknown } | undefined): locks is Pick<LockManager, "request"> {
+export function supportsActiveTimeLock(locks: { request?: unknown } | undefined): boolean {
   return typeof locks?.request === "function";
 }
 
