@@ -16,7 +16,7 @@ export function ActiveTimeTracker() {
       window,
       document,
       locks: typeof navigator === "undefined" ? undefined : navigator.locks,
-      fetch,
+      fetch: (input, init) => window.fetch(input, init),
     });
   }, [pathname]);
   return null;
