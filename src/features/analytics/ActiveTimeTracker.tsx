@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-import { accrueVisibleActiveTime, takeActiveSample } from "./active-sample";
+import { accrueVisibleActiveTime, isCurrentConsentStatusResponse, shouldAcquireActiveTimeLock, shouldRetryActiveTimeLock, takeActiveSample } from "./active-sample";
 
 const LOCK_NAME = "pdot-product-analytics-active-time";
 const TICK_MS = 15_000;
@@ -33,7 +33,7 @@ export function ActiveTimeTracker() {
     };
 
     const acquire = () => {
-      if (disposed || !enabled || document.visibilityState !== "visible" || controller) return;
+      if (!shouldAcquireActiveTimeLock({ enabled, visible: document.visibilityState === "visible", disposed, hasController: controller !== null })) return;
       const lockController = new AbortController();
       controller = lockController;
       let acquired = false;
@@ -81,7 +81,7 @@ export function ActiveTimeTracker() {
       }).catch(() => {}).finally(() => {
         if (controller !== lockController) return;
         controller = null;
-        if (!acquired && enabled && document.visibilityState === "visible" && !disposed) retryTimer = window.setTimeout(acquire, 1_000);
+        if (shouldRetryActiveTimeLock({ acquired, enabled, visible: document.visibilityState === "visible", disposed })) retryTimer = window.setTimeout(acquire, 1_000);
       });
     };
 
@@ -104,7 +104,7 @@ export function ActiveTimeTracker() {
     void fetch("/api/analytics/status", { cache: "no-store" }).then(async (response) => {
       if (!response.ok) return;
       const data = await response.json() as { available: boolean; enabled: boolean };
-      if (!disposed && generation === statusGeneration) setEnabled(data.available && data.enabled);
+      if (isCurrentConsentStatusResponse(statusGeneration, generation, disposed)) setEnabled(data.available && data.enabled);
     }).catch(() => {});
     return () => {
       disposed = true;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { accountAnalyticsCookie, captureProductEvent, isAnalyticsAccountEligible, isAnalyticsConfigured, isAnalyticsProductionHost } from "@/server/analytics";
-import { accrueVisibleActiveTime, takeActiveSample } from "@/features/analytics/active-sample";
+import { accrueVisibleActiveTime, isCurrentConsentStatusResponse, shouldAcquireActiveTimeLock, shouldRetryActiveTimeLock, takeActiveSample } from "@/features/analytics/active-sample";
 
 describe("product analytics", () => {
   it("does not send anything unless production has a project key", async () => {
@@ -76,6 +76,25 @@ describe("product analytics", () => {
     expect(accrueVisibleActiveTime(0, 15_000, 1_000, 20_000, false)).toBe(0);
     expect(accrueVisibleActiveTime(0, 30_000, 1_000, 61_000, true)).toBe(0);
     expect(accrueVisibleActiveTime(0, 30_000, 1_000, 20_000, true)).toBe(15_000);
+  });
+
+  it("keeps the visibility listener eligible to reacquire after hide/show", () => {
+    const state = { enabled: true, visible: false, disposed: false, hasController: false };
+    expect(shouldAcquireActiveTimeLock(state)).toBe(false);
+    state.visible = true;
+    expect(shouldAcquireActiveTimeLock(state)).toBe(true);
+  });
+
+  it("retries after an ifAvailable lock miss but not after acquisition or opt-out", () => {
+    expect(shouldRetryActiveTimeLock({ acquired: false, enabled: true, visible: true, disposed: false })).toBe(true);
+    expect(shouldRetryActiveTimeLock({ acquired: true, enabled: true, visible: true, disposed: false })).toBe(false);
+    expect(shouldRetryActiveTimeLock({ acquired: false, enabled: false, visible: true, disposed: false })).toBe(false);
+  });
+
+  it("ignores a status response made stale by a consent change or unmount", () => {
+    expect(isCurrentConsentStatusResponse(0, 0, false)).toBe(true);
+    expect(isCurrentConsentStatusResponse(0, 1, false)).toBe(false);
+    expect(isCurrentConsentStatusResponse(0, 0, true)).toBe(false);
   });
 
   it("does not hide a rejected Capture v1 event in a 200 batch response", async () => {

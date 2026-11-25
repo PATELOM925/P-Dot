@@ -2,6 +2,28 @@ const ACTIVE_SAMPLE_MS = 30_000;
 const IDLE_MS = 60_000;
 const MAX_TICK_MS = 15_000;
 
+export function shouldAcquireActiveTimeLock(state: {
+  enabled: boolean;
+  visible: boolean;
+  disposed: boolean;
+  hasController: boolean;
+}): boolean {
+  return state.enabled && state.visible && !state.disposed && !state.hasController;
+}
+
+export function shouldRetryActiveTimeLock(state: {
+  acquired: boolean;
+  enabled: boolean;
+  visible: boolean;
+  disposed: boolean;
+}): boolean {
+  return !state.acquired && state.enabled && state.visible && !state.disposed;
+}
+
+export function isCurrentConsentStatusResponse(statusGeneration: number, currentGeneration: number, disposed: boolean): boolean {
+  return !disposed && statusGeneration === currentGeneration;
+}
+
 export function accrueVisibleActiveTime(
   activeMs: number,
   elapsedMs: number,
