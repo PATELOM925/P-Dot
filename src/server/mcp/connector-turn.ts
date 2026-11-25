@@ -20,7 +20,7 @@ import { McpAccessError, openMcpAccess, type McpAccess } from "./token-store";
 export type ConnectorTools = ReadonlyMap<McpServerId, ReadonlySet<AssistantToolName>>;
 
 export interface ConnectorTurn {
-  run(server: McpServer, tool: CatalogTool, args: Record<string, unknown>): Promise<string>;
+  run(server: McpServer, tool: CatalogTool, args: Record<string, unknown>): Promise<{ content: string; succeeded: boolean }>;
   close(): void;
 }
 
@@ -118,17 +118,17 @@ export function createConnectorServices(deps: ConnectorDeps): ConnectorServices 
           const outbound = { ...args };
           if (tool.outbound.kind === "words" && !isUserPhrase(String(args[tool.outbound.field] ?? ""), userMessage)) {
             log("mcp_outbound_refused", { server: server.id, tool: tool.name, rule: "user_phrase" });
-            return PHRASE_REFUSAL;
+            return { content: PHRASE_REFUSAL, succeeded: false };
           }
           if (tool.outbound.kind === "id") {
             const id = ids.allowed(server, String(args[tool.outbound.field] ?? ""));
             if (!id) {
               log("mcp_outbound_refused", { server: server.id, tool: tool.name, rule: "turn_ids" });
-              return ID_REFUSAL;
+              return { content: ID_REFUSAL, succeeded: false };
             }
             outbound[tool.outbound.field] = id;
           }
-          if (used >= MAX_TURN_CHARS) return "The limit for app data in this turn is reached. Nothing was read.";
+          if (used >= MAX_TURN_CHARS) return { content: "The limit for app data in this turn is reached. Nothing was read.", succeeded: false };
 
           const call = async (remote: string, remoteArgs: Record<string, unknown>) => {
             if (!remoteSteps(tool).some((step) => step.remote === remote)) throw new StepStop("P-Dot does not use this read. Nothing was read.");
@@ -177,18 +177,18 @@ export function createConnectorServices(deps: ConnectorDeps): ConnectorServices 
             }
             const cleaned = cleanText(text, Math.min(MAX_RESULT_CHARS, MAX_TURN_CHARS - used));
             used += cleaned.text.length;
-            if (!cleaned.text.trim()) return `${server.name} returned nothing.`;
-            return untrustedConnectorBlock(server.id, tool.name, cleaned.cut ? `${cleaned.text}\n[cut]` : cleaned.text);
+            if (!cleaned.text.trim()) return { content: `${server.name} returned nothing.`, succeeded: true };
+            return { content: untrustedConnectorBlock(server.id, tool.name, cleaned.cut ? `${cleaned.text}\n[cut]` : cleaned.text), succeeded: true };
           } catch (error) {
             if (signal.aborted) throw error;
-            if (error instanceof StepStop) return error.text;
+            if (error instanceof StepStop) return { content: error.text, succeeded: false };
             if (error instanceof McpAccessError) {
               log("mcp_access_failed", { server: server.id, reason: error.reason });
-              return `${server.name} ${ACCESS_TEXT[error.reason]} Nothing was read.`;
+              return { content: `${server.name} ${ACCESS_TEXT[error.reason]} Nothing was read.`, succeeded: false };
             }
             const kind = error instanceof McpError ? error.kind : "bad_response";
             log("mcp_call_failed", { server: server.id, tool: tool.name, kind });
-            return `${server.name} ${ERROR_TEXT[kind]} Nothing was read.`;
+            return { content: `${server.name} ${ERROR_TEXT[kind]} Nothing was read.`, succeeded: false };
           }
         },
 

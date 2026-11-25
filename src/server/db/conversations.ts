@@ -45,6 +45,7 @@ export interface NewMessage {
   content: string;
   webSearch?: WebSearchStatus;
   sources?: SourceRef[];
+  activityEvents?: Array<{ kind: "connector_read_succeeded"; source: "google" | "connector" } | { kind: "assistant_search_blocked"; source: "assistant_search" }>;
   /** Assistant replies only: which model answered and why. */
   route?: MessageRoute;
   /** User messages only (decision 0012). */
@@ -328,7 +329,10 @@ export function createConversationRepository(supabase: SupabaseClient): Conversa
         role: message.role,
         content: message.content,
         web_search: message.webSearch ?? "off",
-        sources: message.sources ?? [],
+        sources: [
+          ...(message.sources ?? []),
+          ...(message.activityEvents ?? []).map((activity) => ({ __pdot_activity: activity })),
+        ],
         ...clientRequestColumns(message.clientRequest),
         ...(message.replyClaimId ? { reply_claim_id: message.replyClaimId } : {}),
         ...(message.replyTo ? { reply_to: message.replyTo } : {}),

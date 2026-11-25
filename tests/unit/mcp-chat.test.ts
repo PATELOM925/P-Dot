@@ -109,6 +109,22 @@ describe("connector reads in chat", () => {
     expect(s.requests[0]!.messages[0]!.content).toContain("untrusted_connector_data");
   });
 
+  it("does not record a read when an app is selected but the model makes no call", async () => {
+    const s = await setup([{ text: "I can help without reading it." }]);
+    await runTurn(s.deps, send("hello", { connectors: ["notion"] }));
+    expect(s.repo.messages.find((message) => message.role === "assistant")?.activityEvents).toEqual([]);
+    expect(s.notion.mcpCalls()).toEqual([]);
+  });
+
+  it("records the actual refusal when a model attempts web search with a private source on", async () => {
+    const s = await setup([{ calls: [call("web_search", { query: "only the public phrase" })] }, { text: "I did not search." }]);
+    await runTurn(s.deps, send("Search my Notion and the web", { webSearch: true }));
+    expect(s.searches).toEqual(["Search my Notion and the web"]);
+    expect(s.repo.messages.find((message) => message.role === "assistant")?.activityEvents).toEqual([
+      { kind: "assistant_search_blocked", source: "assistant_search" },
+    ]);
+  });
+
   it("searches with a phrase of the user's message and gives the result as an untrusted block", async () => {
     const s = await setup([{ calls: [call("notion_search", { query: "launch plan" })] }, { text: "Found it." }]);
     s.notion.onCall(() => ({
@@ -122,6 +138,9 @@ describe("connector reads in chat", () => {
     expect(result!.match(/<\/untrusted_connector_data>/g)).toHaveLength(1);
     expect(events.find((event) => event.type === "status")).toEqual({ type: "status", tool: "notion_search", query: "launch plan" });
     expect(s.closed).toEqual([1]);
+    expect(s.repo.messages.find((message) => message.role === "assistant")?.activityEvents).toEqual([
+      { kind: "connector_read_succeeded", source: "connector" },
+    ]);
     expect(s.notion.openStreams.every((stream) => stream.cancelled)).toBe(true);
   });
 

@@ -166,6 +166,8 @@ export interface PreparedTurn {
   /** Chronological history ending with `userMessage`. */
   history: HistoryMessage[];
   webSearch: boolean;
+  /** Whether an assistant-written web search is disabled by a selected or earlier private source. */
+  privateSearchDisabled: boolean;
   /**
    * How the web is read: one basic search, deep research (decision 0018) or
    * the morning brief. Null when web search is off or not set up.
@@ -359,7 +361,8 @@ export async function prepareChatTurn(
     const webSearchOn = request.webSearch || (brief !== null && noPrivateSource);
     // The model may write a web search only in a turn with no Google and no app, in a conversation
     // that never read Google or an app. A mixed turn has only the first search with the user's words.
-    const webSearchTool = noPrivateSource && !(await hadPrivateSourceReply(deps, userId, existing));
+    const privateSourceHistory = await hadPrivateSourceReply(deps, userId, existing);
+    const webSearchTool = noPrivateSource && !privateSourceHistory;
     // Every tool this turn can offer. If the search credit is refused below, web_search drops out,
     // which only makes the prompt smaller than the one this hold prices.
     // Memories go into every turn when the data services exist. The own-data tools only
@@ -504,6 +507,7 @@ export async function prepareChatTurn(
         repeat: answering !== null,
         history: recent.map(({ role, content }) => ({ role, content })),
         webSearch: webSearchOn,
+        privateSearchDisabled: !noPrivateSource || privateSourceHistory,
         retrieval,
         briefTopics,
         timeZone: request.timeZone ?? null,
@@ -799,6 +803,10 @@ async function* runChatTurn(
   // A message that asks to remember, or to add a task or a reminder, must get a tool call in the first hop.
   let forced = forcedToolChoice(turn.toolIntent, tools, turn.userMessage.content);
   let proposalsRun = 0;
+  const activityEvents: Array<{ kind: "connector_read_succeeded"; source: "google" | "connector" } | { kind: "assistant_search_blocked"; source: "assistant_search" }> = [];
+  const markActivity = (activity: (typeof activityEvents)[number]) => {
+    if (activityEvents.length < 3 && !activityEvents.some((stored) => stored.kind === activity.kind && stored.source === activity.source)) activityEvents.push(activity);
+  };
 
   for (let hop = 0; hop <= MAX_TOOL_HOPS; hop += 1) {
     // Tools are off on the last pass, so the turn always ends with a reply.
@@ -949,10 +957,15 @@ async function* runChatTurn(
     for (const [index, call] of calls.entries()) {
       let result: string;
       const checked =
-        index < MAX_TOOL_CALLS_PER_HOP
+        call.name === "web_search" && turn.privateSearchDisabled && !tools.some((tool) => tool.name === "web_search")
+          ? { ok: false as const, content: "This tool is not available in this request because assistant web search is disabled after a private-source choice. Nothing was searched.", reason: "private_search_conflict" as const }
+          : index < MAX_TOOL_CALLS_PER_HOP
           ? checkToolCall(tools, call, callsPerTool)
-          : { ok: false as const, content: `At most ${MAX_TOOL_CALLS_PER_HOP} tool calls run in one step. Nothing was done.` };
+          : { ok: false as const, content: `At most ${MAX_TOOL_CALLS_PER_HOP} tool calls run in one step. Nothing was done.`, reason: "limit" as const };
       if (!checked.ok) {
+        if (checked.reason === "private_search_conflict" && call.name === "web_search") {
+          markActivity({ kind: "assistant_search_blocked", source: "assistant_search" });
+        }
         deps.log("warn", "tool_call_refused", { ...logBase, tool: knownToolName(tools, call.name), hop });
         result = checked.content;
       } else {
@@ -975,6 +988,7 @@ async function* runChatTurn(
             connectors,
           });
           result = outcome.content;
+          if (outcome.privateReadOutcome?.status === "succeeded") markActivity({ kind: "connector_read_succeeded", source: outcome.privateReadOutcome.source });
           deps.log("info", "tool_ran", { ...logBase, tool: spec.name, hop, ok: true });
           if (spec.kind === "propose") proposalsRun += 1;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);
@@ -1034,6 +1048,7 @@ async function* runChatTurn(
       content,
       webSearch,
       sources: webSearch === "used" ? toSourceRefs(sources) : [],
+      activityEvents,
       route: { model: report.model, tier: plan.tier, reason: turn.route.reason, fallback },
       replyTo: turn.userMessage.id,
     });
