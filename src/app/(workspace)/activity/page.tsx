@@ -11,10 +11,14 @@ export const metadata: Metadata = { title: "Activity · P-Dot" };
 
 export default async function ActivityPage() {
   const auth = await requireAuth("/activity");
-  const [entries, policyEntries] = await Promise.all([
-    createActionLogRepository(auth.supabase).list(auth.userId, ACTION_LOG_LIMIT),
-    listPrivateSourceActivity(auth.supabase, auth.userId, ACTION_LOG_LIMIT),
-  ]);
+  const entries = await createActionLogRepository(auth.supabase).list(auth.userId, ACTION_LOG_LIMIT);
+  let policyEntries = [] as Awaited<ReturnType<typeof listPrivateSourceActivity>>;
+  let policyEntriesFailed = false;
+  try {
+    policyEntries = await listPrivateSourceActivity(auth.supabase, auth.userId, ACTION_LOG_LIMIT);
+  } catch {
+    policyEntriesFailed = true;
+  }
 
   return (
     <main className="page stack">
@@ -36,7 +40,11 @@ export default async function ActivityPage() {
       />
 
       <ActionLogList initialEntries={entries} limit={ACTION_LOG_LIMIT} />
-      <PrivateSourceActivityList initialEntries={policyEntries} />
+      {policyEntriesFailed ? (
+        <p role="status" className="muted">Connected-source history could not be loaded. Your protected action history is available above; refresh the page to try again.</p>
+      ) : (
+        <PrivateSourceActivityList initialEntries={policyEntries} />
+      )}
     </main>
   );
 }
