@@ -40,13 +40,21 @@ export async function listPrivateSourceActivity(
   userId: string,
   limit: number,
 ): Promise<PrivateSourceActivityDTO[]> {
-  const { data, error } = await supabase
+  const markers = [
+    { __pdot_activity: { kind: "connector_read_succeeded", source: "google" } },
+    { __pdot_activity: { kind: "connector_read_succeeded", source: "connector" } },
+    { __pdot_activity: { kind: "assistant_search_blocked", source: "assistant_search" } },
+  ];
+  const batches = await Promise.all(markers.map((marker) => supabase
     .from("messages")
     .select("id, conversation_id, sources, created_at")
     .eq("user_id", userId)
     .eq("role", "assistant")
+    .contains("sources", [marker])
     .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) throw new RepositoryError("listPrivateSourceActivity");
-  return mapPrivateSourceActivityRows(data ?? []).slice(0, limit);
+    .limit(limit)));
+  if (batches.some(({ error }) => error)) throw new RepositoryError("listPrivateSourceActivity");
+  return mapPrivateSourceActivityRows(batches.flatMap(({ data }) => data ?? []))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, limit);
 }

@@ -25,14 +25,17 @@ describe("private-source Activity metadata", () => {
 
   it("scopes the read to the authenticated user and selects metadata columns only", async () => {
     const calls: unknown[][] = [];
+    let reads = 0;
     const query = {
       select: vi.fn((...args: unknown[]) => { calls.push(["select", ...args]); return query; }),
       eq: vi.fn((...args: unknown[]) => { calls.push(["eq", ...args]); return query; }),
       in: vi.fn((...args: unknown[]) => { calls.push(["in", ...args]); return query; }),
+      contains: vi.fn((...args: unknown[]) => { calls.push(["contains", ...args]); return query; }),
       order: vi.fn((...args: unknown[]) => { calls.push(["order", ...args]); return query; }),
       limit: vi.fn(async (...args: unknown[]) => {
         calls.push(["limit", ...args]);
-        return { data: [{ id: "00000000-0000-4000-8000-000000000001", conversation_id: "00000000-0000-4000-8000-000000000002", sources: [{ __pdot_activity: { kind: "connector_read_succeeded", source: "google" } }], created_at: "2026-11-25T10:00:00Z", content: "secret" }], error: null };
+        reads += 1;
+        return { data: reads === 1 ? [{ id: "00000000-0000-4000-8000-000000000001", conversation_id: "00000000-0000-4000-8000-000000000002", sources: [{ __pdot_activity: { kind: "connector_read_succeeded", source: "google" } }], created_at: "2026-11-25T10:00:00Z", content: "secret" }] : [], error: null };
       }),
     };
     const supabase = { from: vi.fn(() => query) } as unknown as SupabaseClient;
@@ -41,6 +44,7 @@ describe("private-source Activity metadata", () => {
     expect(calls).toContainEqual(["select", "id, conversation_id, sources, created_at"]);
     expect(calls).toContainEqual(["eq", "user_id", "user-a"]);
     expect(calls).toContainEqual(["eq", "role", "assistant"]);
+    expect(calls.filter(([method]) => method === "contains")).toHaveLength(3);
     expect(entries).toHaveLength(1);
     expect(JSON.stringify(entries)).not.toContain("secret");
   });

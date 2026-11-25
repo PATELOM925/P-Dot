@@ -44,6 +44,7 @@ export function PrivateSourceActivityList({ initialEntries }: { initialEntries: 
         a source alone does not create a read entry. After a private-source reply, assistant-initiated web searches
         stay off in that conversation; the separate web-search switch can still search with your own words.
       </p>
+      <p className="small muted">These are conversation-history metadata, not protected audit records. They are removed when you delete the conversation. Action history below is stored separately.</p>
       {error && <p className="alert alert-error small" role="alert">{error}</p>}
       <ol className="log-list">
         {entries.map((entry) => (

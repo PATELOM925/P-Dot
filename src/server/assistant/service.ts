@@ -957,15 +957,13 @@ async function* runChatTurn(
     for (const [index, call] of calls.entries()) {
       let result: string;
       const checked =
-        index < MAX_TOOL_CALLS_PER_HOP
+        call.name === "web_search" && turn.privateSearchDisabled && !tools.some((tool) => tool.name === "web_search")
+          ? { ok: false as const, content: "This tool is not available in this request because assistant web search is disabled after a private-source choice. Nothing was searched.", reason: "private_search_conflict" as const }
+          : index < MAX_TOOL_CALLS_PER_HOP
           ? checkToolCall(tools, call, callsPerTool)
-          : { ok: false as const, content: `At most ${MAX_TOOL_CALLS_PER_HOP} tool calls run in one step. Nothing was done.` };
+          : { ok: false as const, content: `At most ${MAX_TOOL_CALLS_PER_HOP} tool calls run in one step. Nothing was done.`, reason: "limit" as const };
       if (!checked.ok) {
-        if (call.name === "web_search" && turn.webSearch && turn.privateSearchDisabled) {
-          markActivity({ kind: "assistant_search_blocked", source: "assistant_search" });
-        }
-        const refusedSpec = tools.find((candidate) => candidate.name === call.name);
-        if (refusedSpec?.source && tools.some((candidate) => candidate.source === "web") && tools.some((candidate) => candidate.source === "google" || candidate.source === "connector")) {
+        if (checked.reason === "private_search_conflict" && call.name === "web_search") {
           markActivity({ kind: "assistant_search_blocked", source: "assistant_search" });
         }
         deps.log("warn", "tool_call_refused", { ...logBase, tool: knownToolName(tools, call.name), hop });
@@ -990,10 +988,7 @@ async function* runChatTurn(
             connectors,
           });
           result = outcome.content;
-          if (outcome.privateReadSucceeded && (spec.source === "connector" || spec.source === "google")) {
-            const source = spec.source;
-            markActivity({ kind: "connector_read_succeeded", source });
-          }
+          if (outcome.privateReadOutcome?.status === "succeeded") markActivity({ kind: "connector_read_succeeded", source: outcome.privateReadOutcome.source });
           deps.log("info", "tool_ran", { ...logBase, tool: spec.name, hop, ok: true });
           if (spec.kind === "propose") proposalsRun += 1;
           for (const id of outcome.memoryIds ?? []) memoryIds.add(id);

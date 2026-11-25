@@ -30,7 +30,7 @@ export default async function ActivityPage() {
               Action entries keep kinds, counts and IDs only, never the text of your messages, tasks, memories or documents.
               To-do items that you add or tick off on the Today page are not recorded.
             </p>
-            <p>Connected-source entries show source selection and the follow-up search boundary from saved reply metadata, not the data an app returned.</p>
+            <p>Connected-source entries record successful private reads and assistant web searches refused by policy. They are conversation-history metadata, removed with the conversation, and are not protected audit records. Action history remains separate.</p>
           </>
         }
       />

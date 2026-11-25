@@ -103,7 +103,7 @@ export default function ControlsPage() {
         <h2>Proposed bounded work</h2>
         <p>
           Memory expiry and a server-side pause for connected tools are only assessed as possible future slices in{" "}
-          <a href={`${REPOSITORY}docs/CONTROLS-FOLLOW-UP.md`} rel="noopener noreferrer">the follow-up note</a>.
+          <a href="https://github.com/PATELOM925/P-Dot/blob/main/docs/CONTROLS-FOLLOW-UP.md" rel="noopener noreferrer">the follow-up note</a>.
           Neither is a current control. A pause would stop P-Dot from starting new calls after the server observes the
           saved setting; it would not instantly revoke provider tokens or cancel a provider request already in flight.
         </p>
